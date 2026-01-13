@@ -57,7 +57,7 @@ def get_zmq_transport_url(
 ) -> str:
     """Get ZMQ transport URL for given port/host/mode."""
     config = config or _default_config
-    mode = mode or get_default_transport_mode()
+    mode = coerce_transport_mode(mode) or get_default_transport_mode()
     if mode == TransportMode.IPC:
         if platform.system() == "Windows":
             raise ValueError(
