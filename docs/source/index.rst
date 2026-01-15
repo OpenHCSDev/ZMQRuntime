@@ -8,4 +8,6 @@ acknowledgment tracking for real-time visualization workflows.
 .. toctree::
    :maxdepth: 2
 
+   installation
+   api/index
    architecture/index

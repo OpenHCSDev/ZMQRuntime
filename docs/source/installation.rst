@@ -1,8 +1,16 @@
 Installation
 ============
 
-The canonical installation instructions live in the Getting Started guide.
+Install the core package from PyPI:
 
-See :doc:`getting_started/getting_started` for full installation options (1-minute quick start, CPU/GPU options, and development install).
+.. code-block:: bash
 
-If you have a CI or headless environment, prefer the "CPU-Only Installation" section in the Getting Started guide.
+    pip install zmqruntime
+
+If you're developing locally:
+
+.. code-block:: bash
+
+    git clone https://github.com/OpenHCSDev/zmqruntime.git
+    cd zmqruntime
+    pip install -e .

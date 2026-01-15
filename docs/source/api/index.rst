@@ -1,57 +1,34 @@
 API Reference
 =============
 
-The API reference documentation is currently being updated to reflect the latest OpenHCS architecture and remove outdated content.
+zmqruntime exposes a small, focused surface area for ZMQ-based execution
+and streaming. Key classes live in the public package namespace.
 
-For now, please refer to:
+Core Types
+----------
 
-**Core Concepts**: :doc:`../concepts/index`
-  Understanding pipelines, steps, function patterns, and system architecture
-
-**Getting Started**: :doc:`../getting_started/getting_started`
-  Basic examples and common usage patterns
-
-**Function Library**: :doc:`../concepts/function_library`
-  Available processing functions and library integrations
-
-Key Classes
------------
-
-**PipelineOrchestrator**
+**Configuration**
 
 .. code-block:: python
 
-    from openhcs.core.orchestrator.orchestrator import PipelineOrchestrator
-    from openhcs.core.config import GlobalPipelineConfig
-    from openhcs.core.lazy_config import ensure_global_config_context
+    from zmqruntime import ZMQConfig, TransportMode
 
-    # Set global context first (done at application startup)
-    config = GlobalPipelineConfig(num_workers=4)
-    ensure_global_config_context(GlobalPipelineConfig, config)
-
-    # Create orchestrator with simplified constructor
-    orchestrator = PipelineOrchestrator(plate_path="/path/to/data")
-
-**FunctionStep**
+**Execution**
 
 .. code-block:: python
 
-    from openhcs.core.steps.function_step import FunctionStep
-    from openhcs.constants.constants import VariableComponents
+    from zmqruntime.execution import ExecutionClient, ExecutionServer
 
-    step = FunctionStep(
-        func=(processing_function, {'param': value}),
-        variable_components=[VariableComponents.SITE],
-        name="step_name"
-    )
-
-**Pipeline**
+**Streaming**
 
 .. code-block:: python
 
-    from openhcs.core.pipeline import Pipeline
+    from zmqruntime.streaming import StreamingVisualizerServer, VisualizerProcessManager
 
-    pipeline = Pipeline([step1, step2, step3])
-    orchestrator.run_pipeline(pipeline)
+**Low-level sockets**
 
-The complete API reference will be restored with updated examples and correct module paths.
+.. code-block:: python
+
+    from zmqruntime import ZMQClient, ZMQServer
+
+Refer to the architecture docs for usage patterns and lifecycle details.

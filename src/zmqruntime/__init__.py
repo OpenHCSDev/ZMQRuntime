@@ -21,6 +21,7 @@ from zmqruntime.messages import (
     StatusRequest,
 )
 from zmqruntime.queue_tracker import QueueTracker, GlobalQueueTrackerRegistry
+from zmqruntime.runner import serve_forever
 from zmqruntime.server import ZMQServer
 from zmqruntime.transport import (
     coerce_transport_mode,
@@ -56,6 +57,7 @@ __all__ = [
     "StatusRequest",
     "QueueTracker",
     "GlobalQueueTrackerRegistry",
+    "serve_forever",
     "ZMQServer",
     "coerce_transport_mode",
     "get_control_port",
