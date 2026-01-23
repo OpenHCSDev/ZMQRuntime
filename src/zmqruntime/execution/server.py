@@ -233,9 +233,12 @@ class ExecutionServer(ZMQServer, ABC):
             if isinstance(e, BrokenProcessPool) and record[MessageFields.STATUS] == ExecutionStatus.CANCELLED.value:
                 logger.info("[%s] Cancelled", execution_id)
             else:
+                import traceback
+                full_traceback = traceback.format_exc()
                 record[MessageFields.STATUS] = ExecutionStatus.FAILED.value
                 record[MessageFields.END_TIME] = time.time()
                 record[MessageFields.ERROR] = str(e)
+                record['traceback'] = full_traceback  # Add full traceback to record
                 logger.error("[%s] ✗ Failed: %s", execution_id, e, exc_info=True)
         finally:
             record.pop("orchestrator", None)
