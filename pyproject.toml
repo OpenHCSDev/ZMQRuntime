@@ -6,15 +6,57 @@ build-backend = "hatchling.build"
 name = "zmqruntime"
 version = "0.1.0"
 description = "Generic ZMQ-based distributed execution framework"
+authors = [{name = "Tristan Simas", email = "tristan.simas@mail.mcgill.ca"}]
+license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Distributed Computing",
+]
+keywords = ["zmq", "zeromq", "distributed", "execution", "rpc", "messaging"]
+
 dependencies = [
     "pyzmq>=22.0",
 ]
 
 [project.optional-dependencies]
 registry = ["metaclass-registry"]
-dev = ["pytest", "pytest-cov"]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "black>=23.0",
+    "ruff>=0.1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/OpenHCSDev/zmqruntime"
+Documentation = "https://github.com/OpenHCSDev/zmqruntime#readme"
+Repository = "https://github.com/OpenHCSDev/zmqruntime"
+Issues = "https://github.com/OpenHCSDev/zmqruntime/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/zmqruntime"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312", "py313"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+select = ["E", "F", "I", "N", "W", "UP"]
