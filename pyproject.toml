@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "zmqruntime"
-version = "0.1.0"
+version = "0.1.2"
 description = "Generic ZMQ-based distributed execution framework"
 authors = [{name = "Tristan Simas", email = "tristan.simas@mail.mcgill.ca"}]
 license = {text = "MIT"}
