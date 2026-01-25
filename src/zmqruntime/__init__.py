@@ -1,7 +1,7 @@
 """Public API for zmqruntime."""
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 from zmqruntime.ack_listener import GlobalAckListener
 from zmqruntime.client import ZMQClient
