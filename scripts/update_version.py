@@ -74,8 +74,18 @@ def update_version(new_version=None):
         )
         init_file.write_text(new_content)
 
+        # Update version in pyproject.toml
+        pyproject_file = Path("pyproject.toml")
+        content = pyproject_file.read_text()
+        new_content = re.sub(
+            r'(version\s*=\s*[\'"])[^\'"]+([\'"])',
+            rf'\g<1>{new_version}\2',
+            content
+        )
+        pyproject_file.write_text(new_content)
+
         # Commit and push changes
-        subprocess.run(['git', 'add', 'src/zmqruntime/__init__.py'], check=True)
+        subprocess.run(['git', 'add', 'src/zmqruntime/__init__.py', 'pyproject.toml'], check=True)
         subprocess.run(['git', 'commit', '-m', f'bump version to {new_version}'], check=True)
         subprocess.run(['git', 'push', 'origin', 'main'], check=True)
         
