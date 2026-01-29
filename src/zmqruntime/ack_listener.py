@@ -1,4 +1,5 @@
 """Global acknowledgment listener for ZMQ visualizers."""
+
 from __future__ import annotations
 
 import logging
@@ -11,6 +12,8 @@ import zmq
 from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.messages import ImageAck
 from zmqruntime.queue_tracker import GlobalQueueTrackerRegistry
+
+from zmqruntime.viewer_state import ViewerStateManager
 from zmqruntime.transport import get_default_transport_mode, get_zmq_transport_url
 
 logger = logging.getLogger(__name__)
@@ -47,6 +50,13 @@ class GlobalAckListener:
             tracker = GlobalQueueTrackerRegistry().get_tracker(ack.viewer_port)
             if tracker:
                 tracker.mark_processed(ack.image_id)
+                return
+
+            # If no tracker exists, still notify ViewerStateManager
+            ViewerStateManager.get_instance().increment_processed(ack.viewer_type, ack.viewer_port)
+            ViewerStateManager.get_instance().update_queued_images(
+                ack.viewer_type, ack.viewer_port, 0
+            )
 
         self._callbacks.append(_mark_processed)
 

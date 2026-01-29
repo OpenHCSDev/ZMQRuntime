@@ -1,4 +1,5 @@
 """Public API for zmqruntime."""
+
 from __future__ import annotations
 
 __version__ = "0.1.2"
@@ -37,6 +38,12 @@ from zmqruntime.transport import (
     remove_ipc_socket,
     wait_for_server_ready,
 )
+from zmqruntime.viewer_state import (
+    ViewerState,
+    ViewerStateManager,
+    ViewerInstance,
+    get_or_create_viewer,
+)
 
 __all__ = [
     "GlobalAckListener",
@@ -71,4 +78,8 @@ __all__ = [
     "ping_control_port",
     "remove_ipc_socket",
     "wait_for_server_ready",
+    "ViewerState",
+    "ViewerStateManager",
+    "ViewerInstance",
+    "get_or_create_viewer",
 ]

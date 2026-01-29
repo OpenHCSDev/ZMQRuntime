@@ -8,22 +8,25 @@ import logging
 import threading
 import time
 from typing import Dict, Tuple, Optional, Set
+from typing import Any
+
+from zmqruntime.viewer_state import ViewerStateManager
 
 logger = logging.getLogger(__name__)
 
 
 class QueueTracker:
     """Tracks pending images for a single viewer.
-    
+
     Thread-safe tracker that maintains:
     - Set of sent image IDs (pending processing)
     - Set of processed image IDs (received acks)
     - Timestamps for timeout detection
     """
-    
+
     def __init__(self, viewer_port: int, viewer_type: str, timeout_seconds: float = 30.0):
         """Initialize queue tracker.
-        
+
         Args:
             viewer_port: Port of the viewer being tracked
             viewer_type: 'napari' or 'fiji'
@@ -32,24 +35,30 @@ class QueueTracker:
         self.viewer_port = viewer_port
         self.viewer_type = viewer_type
         self.timeout_seconds = timeout_seconds
-        
+
         self._lock = threading.Lock()
         self._pending: Dict[str, float] = {}  # {image_id: timestamp_sent}
-        self._processed: Set[str] = set()     # {image_id}
+        self._processed: Set[str] = set()  # {image_id}
         self._total_sent = 0
         self._total_processed = 0
-    
+
     def register_sent(self, image_id: str):
         """Register that an image was sent to the viewer.
-        
+
         Args:
             image_id: UUID of the sent image
         """
         with self._lock:
             self._pending[image_id] = time.time()
             self._total_sent += 1
-            logger.debug(f"[{self.viewer_type}:{self.viewer_port}] Registered sent image {image_id} (pending: {len(self._pending)})")
-    
+            logger.debug(
+                f"[{self.viewer_type}:{self.viewer_port}] Registered sent image {image_id} (pending: {len(self._pending)})"
+            )
+            # Update centralized viewer state so UI shows queued count
+            ViewerStateManager.get_instance().update_queued_images(
+                self.viewer_type, self.viewer_port, len(self._pending)
+            )
+
     def mark_processed(self, image_id: str):
         """Mark an image as processed (ack received).
 
@@ -62,12 +71,21 @@ class QueueTracker:
                 del self._pending[image_id]
                 self._processed.add(image_id)
                 self._total_processed += 1
-                logger.debug(f"[{self.viewer_type}:{self.viewer_port}] Marked processed {image_id} (took {elapsed:.2f}s, pending: {len(self._pending)})")
+                logger.debug(
+                    f"[{self.viewer_type}:{self.viewer_port}] Marked processed {image_id} (took {elapsed:.2f}s, pending: {len(self._pending)})"
+                )
 
                 # Log when all images are processed (but don't auto-clear)
                 # The UI needs to read the final progress before the tracker is cleared
                 if len(self._pending) == 0 and self._total_sent > 0:
-                    logger.info(f"[{self.viewer_type}:{self.viewer_port}] All {self._total_sent} images processed")
+                    logger.info(
+                        f"[{self.viewer_type}:{self.viewer_port}] All {self._total_sent} images processed"
+                    )
+
+                # Notify centralized manager about processed image and queued count
+                mgr = ViewerStateManager.get_instance()
+                mgr.increment_processed(self.viewer_type, self.viewer_port)
+                mgr.update_queued_images(self.viewer_type, self.viewer_port, len(self._pending))
             else:
                 # Image was not registered (likely sent from worker process with separate registry)
                 # Still count it as processed so UI can track progress
@@ -75,29 +93,34 @@ class QueueTracker:
                     self._processed.add(image_id)
                     self._total_processed += 1
                     self._total_sent += 1  # Retroactively count as sent
-                    logger.debug(f"[{self.viewer_type}:{self.viewer_port}] Received ack for unregistered image {image_id}, counted retroactively (processed: {self._total_processed}/{self._total_sent})")
-    
+                    logger.debug(
+                        f"[{self.viewer_type}:{self.viewer_port}] Received ack for unregistered image {image_id}, counted retroactively (processed: {self._total_processed}/{self._total_sent})"
+                    )
+                    mgr = ViewerStateManager.get_instance()
+                    mgr.increment_processed(self.viewer_type, self.viewer_port)
+                    mgr.update_queued_images(self.viewer_type, self.viewer_port, len(self._pending))
+
     def get_progress(self) -> Tuple[int, int]:
         """Get current progress.
-        
+
         Returns:
             (processed_count, total_sent_count)
         """
         with self._lock:
             return (self._total_processed, self._total_sent)
-    
+
     def get_pending_count(self) -> int:
         """Get number of pending images (sent but not acked).
-        
+
         Returns:
             Number of pending images
         """
         with self._lock:
             return len(self._pending)
-    
+
     def has_stuck_images(self) -> bool:
         """Check if any images have been pending longer than timeout.
-        
+
         Returns:
             True if any images are stuck (no ack within timeout)
         """
@@ -107,10 +130,10 @@ class QueueTracker:
                 if now - sent_time > self.timeout_seconds:
                     return True
             return False
-    
+
     def get_stuck_images(self) -> list:
         """Get list of stuck image IDs (pending longer than timeout).
-        
+
         Returns:
             List of (image_id, elapsed_seconds) tuples
         """
@@ -122,7 +145,7 @@ class QueueTracker:
                 if elapsed > self.timeout_seconds:
                     stuck.append((image_id, elapsed))
             return stuck
-    
+
     def clear(self):
         """Clear all tracking data (e.g., when viewer is closed)."""
         with self._lock:
@@ -131,6 +154,9 @@ class QueueTracker:
             self._total_sent = 0
             self._total_processed = 0
             logger.debug(f"[{self.viewer_type}:{self.viewer_port}] Cleared queue tracker")
+            ViewerStateManager.get_instance().update_queued_images(
+                self.viewer_type, self.viewer_port, 0
+            )
 
     def reset_for_new_batch(self):
         """Reset tracker for a new batch of images (e.g., new pipeline execution).
@@ -142,8 +168,10 @@ class QueueTracker:
             self._processed.clear()
             self._total_sent = 0
             self._total_processed = 0
-            logger.debug(f"[{self.viewer_type}:{self.viewer_port}] Reset queue tracker for new batch")
-    
+            logger.debug(
+                f"[{self.viewer_type}:{self.viewer_port}] Reset queue tracker for new batch"
+            )
+
     def __repr__(self):
         with self._lock:
             return f"QueueTracker({self.viewer_type}:{self.viewer_port}, processed={self._total_processed}/{self._total_sent}, pending={len(self._pending)})"
@@ -151,14 +179,14 @@ class QueueTracker:
 
 class GlobalQueueTrackerRegistry:
     """Global registry of queue trackers for all viewers.
-    
+
     Singleton that maintains queue trackers for each active viewer.
     Used by the ack listener to route acks to the correct tracker.
     """
-    
+
     _instance = None
     _lock = threading.Lock()
-    
+
     def __new__(cls):
         if cls._instance is None:
             with cls._lock:
@@ -166,7 +194,7 @@ class GlobalQueueTrackerRegistry:
                     cls._instance = super().__new__(cls)
                     cls._instance._initialized = False
         return cls._instance
-    
+
     def __init__(self):
         if self._initialized:
             return
@@ -174,14 +202,14 @@ class GlobalQueueTrackerRegistry:
         self._trackers: Dict[int, QueueTracker] = {}  # {viewer_port: QueueTracker}
         self._registry_lock = threading.Lock()
         logger.info("Initialized GlobalQueueTrackerRegistry")
-    
+
     def get_or_create_tracker(self, viewer_port: int, viewer_type: str) -> QueueTracker:
         """Get existing tracker or create new one for a viewer.
-        
+
         Args:
             viewer_port: Port of the viewer
             viewer_type: 'napari' or 'fiji'
-            
+
         Returns:
             QueueTracker for this viewer
         """
@@ -190,22 +218,22 @@ class GlobalQueueTrackerRegistry:
                 self._trackers[viewer_port] = QueueTracker(viewer_port, viewer_type)
                 logger.info(f"Created queue tracker for {viewer_type} viewer on port {viewer_port}")
             return self._trackers[viewer_port]
-    
+
     def get_tracker(self, viewer_port: int) -> Optional[QueueTracker]:
         """Get tracker for a viewer port.
-        
+
         Args:
             viewer_port: Port of the viewer
-            
+
         Returns:
             QueueTracker if exists, None otherwise
         """
         with self._registry_lock:
             return self._trackers.get(viewer_port)
-    
+
     def remove_tracker(self, viewer_port: int):
         """Remove tracker for a viewer (e.g., when viewer is closed).
-        
+
         Args:
             viewer_port: Port of the viewer
         """
@@ -213,19 +241,18 @@ class GlobalQueueTrackerRegistry:
             if viewer_port in self._trackers:
                 del self._trackers[viewer_port]
                 logger.info(f"Removed queue tracker for viewer on port {viewer_port}")
-    
+
     def get_all_trackers(self) -> Dict[int, QueueTracker]:
         """Get all active trackers.
-        
+
         Returns:
             Dict of {viewer_port: QueueTracker}
         """
         with self._registry_lock:
             return dict(self._trackers)
-    
+
     def clear_all(self):
         """Clear all trackers (e.g., on shutdown)."""
         with self._registry_lock:
             self._trackers.clear()
             logger.info("Cleared all queue trackers")
-
