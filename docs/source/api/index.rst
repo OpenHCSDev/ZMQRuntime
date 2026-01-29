@@ -25,6 +25,17 @@ Core Types
 
     from zmqruntime.streaming import StreamingVisualizerServer, VisualizerProcessManager
 
+**Viewer State Management**
+
+.. code-block:: python
+
+    from zmqruntime import (
+        ViewerState,
+        ViewerStateManager,
+        ViewerInstance,
+        get_or_create_viewer,
+    )
+
 **Low-level sockets**
 
 .. code-block:: python
