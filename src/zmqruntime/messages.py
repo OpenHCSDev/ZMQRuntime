@@ -3,6 +3,7 @@
 import logging
 from enum import Enum
 from dataclasses import dataclass
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,17 @@ class MessageFields:
     WELL_ID = "well_id"
     STEP = "step"
     TIMESTAMP = "timestamp"
+    AXIS_ID = "axis_id"
+    STEP_NAME = "step_name"
+    STEP_INDEX = "step_index"
+    TOTAL_STEPS = "total_steps"
+    PHASE = "phase"
+    COMPLETED = "completed"
+    TOTAL = "total"
+    PERCENT = "percent"
+    PATTERN = "pattern"
+    COMPONENT = "component"
+    TRACEBACK = "traceback"
     # Acknowledgment message fields
     IMAGE_ID = "image_id"
     VIEWER_PORT = "viewer_port"
@@ -112,10 +124,10 @@ class SocketType(Enum):
 class ExecuteRequest:
     plate_id: str
     pipeline_code: str
-    config_params: dict = None
-    config_code: str = None
-    pipeline_config_code: str = None
-    client_address: str = None
+    config_params: Optional[dict] = None
+    config_code: Optional[str] = None
+    pipeline_config_code: Optional[str] = None
+    client_address: Optional[str] = None
     compile_only: bool = False
 
     def validate(self):
@@ -128,7 +140,10 @@ class ExecuteRequest:
         return None
 
     def to_dict(self):
-        result = {MessageFields.TYPE: ControlMessageType.EXECUTE.value, MessageFields.PLATE_ID: self.plate_id, MessageFields.PIPELINE_CODE: self.pipeline_code}
+        result: Dict[str, Any] = {}
+        result[MessageFields.TYPE] = ControlMessageType.EXECUTE.value
+        result[MessageFields.PLATE_ID] = self.plate_id
+        result[MessageFields.PIPELINE_CODE] = self.pipeline_code
         if self.config_params is not None:
             result[MessageFields.CONFIG_PARAMS] = self.config_params
         if self.config_code is not None:
@@ -152,12 +167,12 @@ class ExecuteRequest:
 @dataclass(frozen=True)
 class ExecuteResponse:
     status: ResponseType
-    execution_id: str = None
-    message: str = None
-    error: str = None
+    execution_id: Optional[str] = None
+    message: Optional[str] = None
+    error: Optional[str] = None
 
     def to_dict(self):
-        result = {MessageFields.STATUS: self.status.value}
+        result: Dict[str, Any] = {MessageFields.STATUS: self.status.value}
         if self.execution_id is not None:
             result[MessageFields.EXECUTION_ID] = self.execution_id
         if self.message is not None:
@@ -169,7 +184,7 @@ class ExecuteResponse:
 
 @dataclass(frozen=True)
 class StatusRequest:
-    execution_id: str = None
+    execution_id: Optional[str] = None
 
     def to_dict(self):
         result = {MessageFields.TYPE: ControlMessageType.STATUS.value}
@@ -203,16 +218,16 @@ class PongResponse:
     control_port: int
     ready: bool
     server: str
-    log_file_path: str = None
-    active_executions: int = None
-    running_executions: list = None
-    workers: list = None
-    uptime: float = None
-    compile_status: str = None
-    compile_message: str = None
+    log_file_path: Optional[str] = None
+    active_executions: Optional[int] = None
+    running_executions: Optional[list] = None
+    workers: Optional[list] = None
+    uptime: Optional[float] = None
+    compile_status: Optional[str] = None
+    compile_message: Optional[str] = None
 
     def to_dict(self):
-        result = {MessageFields.TYPE: ResponseType.PONG.value, MessageFields.PORT: self.port,
+        result: Dict[str, Any] = {MessageFields.TYPE: ResponseType.PONG.value, MessageFields.PORT: self.port,
                  MessageFields.CONTROL_PORT: self.control_port, MessageFields.READY: self.ready, MessageFields.SERVER: self.server}
         if self.log_file_path is not None:
             result[MessageFields.LOG_FILE_PATH] = self.log_file_path
@@ -233,14 +248,51 @@ class PongResponse:
 
 @dataclass(frozen=True)
 class ProgressUpdate:
-    well_id: str
-    step: str
+    execution_id: str
+    plate_id: str
+    axis_id: str
+    step_name: str
+    step_index: int
+    total_steps: int
+    phase: str
     status: str
+    completed: int
+    total: int
+    percent: float
     timestamp: float
+    pattern: Optional[str] = None
+    component: Optional[str] = None
+    message: Optional[str] = None
+    error: Optional[str] = None
+    traceback: Optional[str] = None
 
     def to_dict(self):
-        return {MessageFields.TYPE: "progress", MessageFields.WELL_ID: self.well_id,
-                MessageFields.STEP: self.step, MessageFields.STATUS: self.status, MessageFields.TIMESTAMP: self.timestamp}
+        result: Dict[str, Any] = {
+            MessageFields.TYPE: "progress",
+            MessageFields.EXECUTION_ID: self.execution_id,
+            MessageFields.PLATE_ID: self.plate_id,
+            MessageFields.AXIS_ID: self.axis_id,
+            MessageFields.STEP_NAME: self.step_name,
+            MessageFields.STEP_INDEX: self.step_index,
+            MessageFields.TOTAL_STEPS: self.total_steps,
+            MessageFields.PHASE: self.phase,
+            MessageFields.STATUS: self.status,
+            MessageFields.COMPLETED: self.completed,
+            MessageFields.TOTAL: self.total,
+            MessageFields.PERCENT: self.percent,
+            MessageFields.TIMESTAMP: self.timestamp,
+        }
+        if self.pattern is not None:
+            result[MessageFields.PATTERN] = self.pattern
+        if self.component is not None:
+            result[MessageFields.COMPONENT] = self.component
+        if self.message is not None:
+            result[MessageFields.MESSAGE] = self.message
+        if self.error is not None:
+            result[MessageFields.ERROR] = self.error
+        if self.traceback is not None:
+            result[MessageFields.TRACEBACK] = self.traceback
+        return result
 
 
 @dataclass(frozen=True)
@@ -254,8 +306,8 @@ class ImageAck:
     viewer_port: int       # Port of the viewer that processed it (for routing)
     viewer_type: str       # 'napari' or 'fiji'
     status: str = 'success'  # 'success', 'error', etc.
-    timestamp: float = None  # When it was processed
-    error: str = None      # Error message if status='error'
+    timestamp: Optional[float] = None  # When it was processed
+    error: Optional[str] = None      # Error message if status='error'
 
     def to_dict(self):
         result = {

@@ -59,10 +59,24 @@ class ExecutionClient(ZMQClient, ABC):
                     message = self.data_socket.recv_string(zmq.NOBLOCK)
                     data = json.loads(message)
                     if self.progress_callback and data.get("type") == "progress":
-                        try:
-                            self.progress_callback(data)
-                        except Exception as e:
-                            logger.warning("Progress callback error: %s", e)
+                        required_fields = [
+                            MessageFields.EXECUTION_ID,
+                            MessageFields.PLATE_ID,
+                            MessageFields.AXIS_ID,
+                            MessageFields.STEP_NAME,
+                            MessageFields.STEP_INDEX,
+                            MessageFields.TOTAL_STEPS,
+                            MessageFields.PHASE,
+                            MessageFields.STATUS,
+                            MessageFields.COMPLETED,
+                            MessageFields.TOTAL,
+                            MessageFields.PERCENT,
+                            MessageFields.TIMESTAMP,
+                        ]
+                        for field in required_fields:
+                            if field not in data:
+                                raise KeyError(f"Missing progress field: {field}")
+                        self.progress_callback(data)
                 except zmq.Again:
                     time.sleep(0.05)
                 except Exception as e:

@@ -326,19 +326,8 @@ class ExecutionServer(ZMQServer, ABC):
     def _handle_force_shutdown(self, msg):
         return self._shutdown_workers(force=True)
 
-    def send_progress_update(self, well_id, step, status):
-        try:
-            self.progress_queue.put_nowait(
-                {
-                    "type": "progress",
-                    "well_id": well_id,
-                    "step": step,
-                    "status": status,
-                    "timestamp": time.time(),
-                }
-            )
-        except queue.Full:
-            logger.warning("Progress queue full, dropping %s", well_id)
+    def send_progress_update(self, progress_update: dict) -> None:
+        self.progress_queue.put(progress_update)
 
     def _get_worker_info(self):
         try:
