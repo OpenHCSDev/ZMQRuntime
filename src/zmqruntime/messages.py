@@ -15,6 +15,9 @@ class MessageFields:
     CONFIG_CODE = "config_code"
     PIPELINE_CONFIG_CODE = "pipeline_config_code"
     CLIENT_ADDRESS = "client_address"
+    COMPILE_ONLY = "compile_only"
+    COMPILE_STATUS = "compile_status"
+    COMPILE_MESSAGE = "compile_message"
     EXECUTION_ID = "execution_id"
     START_TIME = "start_time"
     END_TIME = "end_time"
@@ -113,6 +116,7 @@ class ExecuteRequest:
     config_code: str = None
     pipeline_config_code: str = None
     client_address: str = None
+    compile_only: bool = False
 
     def validate(self):
         if not self.plate_id:
@@ -133,13 +137,16 @@ class ExecuteRequest:
             result[MessageFields.PIPELINE_CONFIG_CODE] = self.pipeline_config_code
         if self.client_address is not None:
             result[MessageFields.CLIENT_ADDRESS] = self.client_address
+        if self.compile_only:
+            result[MessageFields.COMPILE_ONLY] = True
         return result
 
     @classmethod
     def from_dict(cls, data):
         return cls(plate_id=data[MessageFields.PLATE_ID], pipeline_code=data[MessageFields.PIPELINE_CODE],
                   config_params=data.get(MessageFields.CONFIG_PARAMS), config_code=data.get(MessageFields.CONFIG_CODE),
-                  pipeline_config_code=data.get(MessageFields.PIPELINE_CONFIG_CODE), client_address=data.get(MessageFields.CLIENT_ADDRESS))
+                  pipeline_config_code=data.get(MessageFields.PIPELINE_CONFIG_CODE), client_address=data.get(MessageFields.CLIENT_ADDRESS),
+                  compile_only=bool(data.get(MessageFields.COMPILE_ONLY, False)))
 
 
 @dataclass(frozen=True)
@@ -201,6 +208,8 @@ class PongResponse:
     running_executions: list = None
     workers: list = None
     uptime: float = None
+    compile_status: str = None
+    compile_message: str = None
 
     def to_dict(self):
         result = {MessageFields.TYPE: ResponseType.PONG.value, MessageFields.PORT: self.port,
@@ -215,6 +224,10 @@ class PongResponse:
             result[MessageFields.WORKERS] = self.workers
         if self.uptime is not None:
             result[MessageFields.UPTIME] = self.uptime
+        if self.compile_status is not None:
+            result[MessageFields.COMPILE_STATUS] = self.compile_status
+        if self.compile_message is not None:
+            result[MessageFields.COMPILE_MESSAGE] = self.compile_message
         return result
 
 
@@ -315,5 +328,3 @@ class ShapesMessage:
             shapes=data[MessageFields.SHAPES],
             layer_name=data.get(MessageFields.LAYER_NAME, "ROIs")
         )
-
-
