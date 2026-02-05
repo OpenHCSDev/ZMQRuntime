@@ -1,6 +1,7 @@
 """ZMQ client base class."""
 from __future__ import annotations
 
+import logging
 import pickle
 import platform
 import socket
@@ -53,6 +54,7 @@ class ZMQClient(ABC):
                 return True
             if self._is_port_in_use(self.port):
                 if self._try_connect_to_existing(self.port):
+                    self._setup_client_sockets()  # ← FIX: Set up data socket even when connecting to existing server
                     self._connected = self._connected_to_existing = True
                     return True
                 self._kill_processes_on_port(self.port)
@@ -92,6 +94,7 @@ class ZMQClient(ABC):
     def _setup_client_sockets(self):
         import zmq
 
+        logger = logging.getLogger(__name__)
         self.zmq_context = zmq.Context()
         data_url = get_zmq_transport_url(
             self.port,
@@ -105,6 +108,7 @@ class ZMQClient(ABC):
         self.data_socket.connect(data_url)
         self.data_socket.setsockopt(zmq.SUBSCRIBE, b"")
         time.sleep(0.1)
+        logger.info(f"Set up ZMQ SUB socket connected to {data_url}")
 
     def _cleanup_sockets(self):
         if self.data_socket:
@@ -254,6 +258,27 @@ class ZMQClient(ABC):
         transport_mode = transport_mode or get_default_transport_mode()
         msg_type = "shutdown" if graceful else "force_shutdown"
 
+        def kill_ipc_server_processes(port: int) -> int:
+            """Kill server processes in IPC mode by finding them via command line."""
+            import psutil
+            killed = 0
+            try:
+                for proc in psutil.process_iter(['pid', 'cmdline']):
+                    try:
+                        cmdline = proc.cmdline()
+                        if not cmdline:
+                            continue
+                        cmdline_str = ' '.join(cmdline)
+                        # Look for server process with this port
+                        if f"--port {port}" in cmdline_str or f"--port={port}" in cmdline_str:
+                            proc.kill()
+                            killed += 1
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+            except Exception:
+                pass
+            return killed
+
         def is_port_free(port: int) -> bool:
             if transport_mode == TransportMode.IPC:
                 socket_path = get_ipc_socket_path(port, config)
@@ -300,9 +325,12 @@ class ZMQClient(ABC):
                     pass
 
                 if transport_mode == TransportMode.IPC:
+                    # Kill the actual server processes, not just the socket files
+                    killed = kill_ipc_server_processes(port)
+                    # Also clean up socket files
                     remove_ipc_socket(port, config)
                     remove_ipc_socket(control_port, config)
-                    return True
+                    return killed > 0
 
                 from zmqruntime.server import ZMQServer
 
@@ -312,9 +340,12 @@ class ZMQClient(ABC):
         except Exception:
             if not graceful:
                 if transport_mode == TransportMode.IPC:
+                    # Kill the actual server processes, not just the socket files
+                    killed = kill_ipc_server_processes(port)
+                    # Also clean up socket files
                     remove_ipc_socket(port, config)
                     remove_ipc_socket(control_port, config)
-                    return True
+                    return killed > 0
                 from zmqruntime.server import ZMQServer
 
                 killed = sum(ZMQServer.kill_processes_on_port(p) for p in [port, control_port])

@@ -89,14 +89,24 @@ class ExecutionServer(ZMQServer, ABC):
 
     def process_messages(self):
         super().process_messages()
-        while not self.progress_queue.empty():
+        if not self.data_socket:
+            return
+        logger = logging.getLogger(__name__)
+        count = 0
+        while True:
             try:
-                if self.data_socket:
-                    self.data_socket.send_string(json.dumps(self.progress_queue.get_nowait()))
-            except (queue.Empty, Exception) as e:
-                if not isinstance(e, queue.Empty):
-                    logger.warning("Failed to send progress: %s", e)
+                progress_update = self.progress_queue.get_nowait()
+            except queue.Empty:
+                if count > 0:
+                    logger.info(f"Published {count} progress update(s) to ZMQ")
                 break
+            logger.info(
+                f"Publishing to ZMQ: step={progress_update.get('step')}, "
+                f"axis={progress_update.get('axis_id')}, plate_id={progress_update.get('plate_id')}, "
+                f"percent={progress_update.get('percent')}"
+            )
+            self.data_socket.send_string(json.dumps(progress_update))
+            count += 1
 
     def get_status_info(self):
         status = super().get_status_info()
@@ -197,6 +207,7 @@ class ExecutionServer(ZMQServer, ABC):
             MessageFields.START_TIME: None,
             MessageFields.END_TIME: None,
             MessageFields.ERROR: None,
+            MessageFields.COMPILE_ONLY: getattr(request, 'compile_only', False),
         }
         self.active_executions[execution_id] = record
 
@@ -327,11 +338,15 @@ class ExecutionServer(ZMQServer, ABC):
         return self._shutdown_workers(force=True)
 
     def send_progress_update(self, progress_update: dict) -> None:
+        from zmqruntime.messages import validate_progress_payload
+
+        validate_progress_payload(progress_update)
         self.progress_queue.put(progress_update)
 
     def _get_worker_info(self):
         try:
             import psutil
+            from zmqruntime.messages import WorkerState
 
             workers = []
             for child in psutil.Process(os.getpid()).children(recursive=True):
@@ -346,13 +361,13 @@ class ExecutionServer(ZMQServer, ABC):
                     ) or child.pid == os.getpid():
                         continue
                     workers.append(
-                        {
-                            "pid": child.pid,
-                            "status": child.status(),
-                            "cpu_percent": child.cpu_percent(interval=0),
-                            "memory_mb": child.memory_info().rss / 1024 / 1024,
-                            "create_time": child.create_time(),
-                        }
+                        WorkerState(
+                            pid=child.pid,
+                            status=child.status(),
+                            cpu_percent=child.cpu_percent(interval=0),
+                            memory_mb=child.memory_info().rss / 1024 / 1024,
+                            metadata={"create_time": child.create_time()},
+                        )
                     )
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     pass

@@ -12,7 +12,12 @@ from typing import Any
 import zmq
 
 from zmqruntime.client import ZMQClient
-from zmqruntime.messages import ControlMessageType, ExecutionStatus, MessageFields
+from zmqruntime.messages import (
+    ControlMessageType,
+    ExecutionStatus,
+    MessageFields,
+    validate_progress_payload,
+)
 from zmqruntime.transport import get_zmq_transport_url
 
 logger = logging.getLogger(__name__)
@@ -50,42 +55,36 @@ class ExecutionClient(ZMQClient, ABC):
 
     def _progress_listener_loop(self):
         logger.info("Progress listener loop started")
-        try:
-            while not self._progress_stop_event.is_set():
-                if not self.data_socket:
-                    time.sleep(0.1)
-                    continue
-                try:
-                    message = self.data_socket.recv_string(zmq.NOBLOCK)
-                    data = json.loads(message)
-                    if self.progress_callback and data.get("type") == "progress":
-                        required_fields = [
-                            MessageFields.EXECUTION_ID,
-                            MessageFields.PLATE_ID,
-                            MessageFields.AXIS_ID,
-                            MessageFields.STEP_NAME,
-                            MessageFields.STEP_INDEX,
-                            MessageFields.TOTAL_STEPS,
-                            MessageFields.PHASE,
-                            MessageFields.STATUS,
-                            MessageFields.COMPLETED,
-                            MessageFields.TOTAL,
-                            MessageFields.PERCENT,
-                            MessageFields.TIMESTAMP,
-                        ]
-                        for field in required_fields:
-                            if field not in data:
-                                raise KeyError(f"Missing progress field: {field}")
-                        self.progress_callback(data)
-                except zmq.Again:
-                    time.sleep(0.05)
-                except Exception as e:
-                    logger.warning("Progress listener error: %s", e)
-                    time.sleep(0.1)
-        except Exception as e:
-            logger.error("Progress listener loop crashed: %s", e, exc_info=True)
-        finally:
-            logger.info("Progress listener loop exited")
+        callback = self.progress_callback
+        if callback is None:
+            raise RuntimeError("progress_callback must be set before starting listener")
+        message_count = 0
+        while not self._progress_stop_event.is_set():
+            if not self.data_socket:
+                time.sleep(0.1)
+                continue
+            try:
+                message = self.data_socket.recv_string(zmq.NOBLOCK)
+            except zmq.Again:
+                time.sleep(0.05)
+                continue
+            data = json.loads(message)
+
+            # DEBUG: Log raw parsed message for total_wells messages
+            if 'total_wells' in data:
+                logger.info(f"PROGRESS_CLIENT: Received message with total_wells: total_wells={data.get('total_wells')}, keys={list(data.keys())}")
+
+            validate_progress_payload(data)
+            message_count += 1
+            if message_count <= 5 or message_count % 50 == 0:
+                logger.info(f"Received progress message #{message_count}: phase={data.get('phase')}, step={data.get('step')}, axis={data.get('axis_id')}")
+
+            try:
+                callback(data)
+            except Exception as e:
+                logger.exception(f"Progress callback raised exception: {e}")
+                raise
+        logger.info(f"Progress listener loop exited (received {message_count} messages total)")
 
     def submit_execution(self, task: Any, config: Any = None):
         if not self._connected and not self.connect():
