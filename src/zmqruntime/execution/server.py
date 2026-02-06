@@ -10,7 +10,7 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from concurrent.futures.process import BrokenProcessPool
-from typing import Any
+from typing import Any, Callable
 
 from zmqruntime.messages import (
     CancelRequest,
@@ -35,6 +35,9 @@ from zmqruntime.server import ZMQServer
 logger = logging.getLogger(__name__)
 
 
+ControlHandler = Callable[[dict[str, Any]], dict[str, Any]]
+
+
 class ExecutionServer(ZMQServer, ABC):
     """Queue-based execution server with progress streaming."""
 
@@ -54,6 +57,15 @@ class ExecutionServer(ZMQServer, ABC):
         self.execution_queue: queue.Queue = queue.Queue()
         self.queue_worker_thread: threading.Thread | None = None
         self._progress_subscribers: set[str] = set()
+        self._control_handlers: dict[ControlMessageType, ControlHandler] = {
+            ControlMessageType.EXECUTE: self._handle_execute,
+            ControlMessageType.STATUS: self._handle_status,
+            ControlMessageType.CANCEL: self._handle_cancel,
+            ControlMessageType.SHUTDOWN: self._handle_shutdown,
+            ControlMessageType.FORCE_SHUTDOWN: self._handle_force_shutdown,
+            ControlMessageType.REGISTER_PROGRESS: self._handle_register_progress,
+            ControlMessageType.UNREGISTER_PROGRESS: self._handle_unregister_progress,
+        }
 
     def start(self):
         super().start()
@@ -130,13 +142,15 @@ class ExecutionServer(ZMQServer, ABC):
         return status
 
     def handle_control_message(self, message):
+        message_type_raw = message.get(MessageFields.TYPE)
         try:
-            return ControlMessageType(message.get(MessageFields.TYPE)).dispatch(self, message)
+            message_type = ControlMessageType(message_type_raw)
         except ValueError:
             return ExecuteResponse(
                 ResponseType.ERROR,
-                error=f"Unknown message type: {message.get(MessageFields.TYPE)}",
+                error=f"Unknown message type: {message_type_raw}",
             ).to_dict()
+        return self._control_handlers[message_type](message)
 
     def handle_data_message(self, message):
         pass

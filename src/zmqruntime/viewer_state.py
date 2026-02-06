@@ -15,7 +15,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Protocol, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:
     from zmqruntime.streaming.process_manager import VisualizerProcessManager
@@ -53,18 +53,10 @@ class ViewerInstance:
         """Check if viewer is in a usable state."""
         if self.state in (ViewerState.ERROR, ViewerState.STOPPED):
             return False
-
-        # Check if process is still running
-        if hasattr(self.visualizer, "is_running"):
-            return self.visualizer.is_running
-
-        return True
+        return self.visualizer.is_running
 
 
-class VisualizerFactory(Protocol):
-    """Protocol for factory functions that create visualizers."""
-
-    def __call__(self) -> "VisualizerProcessManager": ...
+VisualizerFactory = Callable[[], "VisualizerProcessManager"]
 
 
 class ViewerStateManager:
@@ -112,7 +104,7 @@ class ViewerStateManager:
 
     def __init__(self) -> None:
         """Initialize the manager (called once via get_instance)."""
-        if getattr(self, "_initialized", False):
+        if self._initialized:
             return
 
         self._viewers: Dict[Tuple[str, int], ViewerInstance] = {}
@@ -228,10 +220,9 @@ class ViewerStateManager:
                 instance.port,
             )
 
-            if wait_for_ready and hasattr(instance.visualizer, "wait_for_ready"):
+            if wait_for_ready:
                 self._wait_for_viewer_ready(instance, timeout)
             else:
-                # Assume ready immediately if no wait_for_ready method
                 instance.state = ViewerState.READY
                 self._notify_state_change(instance)
 
@@ -257,8 +248,8 @@ class ViewerStateManager:
                 )
                 return
 
-            # Check if process died
-            if hasattr(instance.visualizer, "is_running") and not instance.visualizer.is_running:
+            # Process-level liveness check protects against dead child process
+            if not instance.visualizer.is_running:
                 raise RuntimeError(
                     f"{instance.viewer_type} viewer on port {instance.port} "
                     "process terminated unexpectedly during startup"
@@ -276,12 +267,10 @@ class ViewerStateManager:
             instance.state = ViewerState.STOPPED
             self._notify_state_change(instance)
 
-            # Try to stop the process
-            if hasattr(instance.visualizer, "stop"):
-                try:
-                    instance.visualizer.stop()
-                except Exception as e:
-                    logger.warning("Error stopping viewer during removal: %s", e)
+            try:
+                instance.visualizer.stop()
+            except Exception as e:
+                logger.warning("Error stopping viewer during removal: %s", e)
 
     def get_viewer(self, viewer_type: str, port: int) -> Optional["VisualizerProcessManager"]:
         """Get existing viewer if healthy."""
@@ -344,16 +333,15 @@ class ViewerStateManager:
             self._notify_state_change(instance)
 
             if stop:
-                if hasattr(instance.visualizer, "stop"):
-                    try:
-                        instance.visualizer.stop()
-                        logger.info(
-                            "ViewerStateManager: Stopped %s viewer on port %d",
-                            viewer_type,
-                            port,
-                        )
-                    except Exception as e:
-                        logger.warning("Error stopping viewer: %s", e)
+                try:
+                    instance.visualizer.stop()
+                    logger.info(
+                        "ViewerStateManager: Stopped %s viewer on port %d",
+                        viewer_type,
+                        port,
+                    )
+                except Exception as e:
+                    logger.warning("Error stopping viewer: %s", e)
             else:
                 logger.info(
                     "ViewerStateManager: Released %s viewer on port %d (still running)",
@@ -371,8 +359,7 @@ class ViewerStateManager:
 
         for key, instance in viewers_to_stop:
             try:
-                if hasattr(instance.visualizer, "stop"):
-                    instance.visualizer.stop()
+                instance.visualizer.stop()
                 logger.info(
                     "ViewerStateManager: Stopped %s viewer on port %d",
                     instance.viewer_type,

@@ -25,6 +25,11 @@ class VisualizerProcessManager(ABC):
         """Get environment variables for subprocess."""
         raise NotImplementedError
 
+    @abstractmethod
+    def wait_for_ready(self, timeout: float = 10.0) -> bool:
+        """Wait until viewer is ready to receive streamed payloads."""
+        raise NotImplementedError
+
     def start(self, detached: bool = True):
         """Start the visualizer subprocess."""
         with self._lock:

@@ -380,21 +380,6 @@ class ControlMessageType(Enum):
     REGISTER_PROGRESS = "register_progress"
     UNREGISTER_PROGRESS = "unregister_progress"
 
-    def get_handler_method(self):
-        return {
-            ControlMessageType.EXECUTE: "_handle_execute",
-            ControlMessageType.STATUS: "_handle_status",
-            ControlMessageType.CANCEL: "_handle_cancel",
-            ControlMessageType.SHUTDOWN: "_handle_shutdown",
-            ControlMessageType.FORCE_SHUTDOWN: "_handle_force_shutdown",
-            ControlMessageType.REGISTER_PROGRESS: "_handle_register_progress",
-            ControlMessageType.UNREGISTER_PROGRESS: "_handle_unregister_progress",
-        }[self]
-
-    def dispatch(self, server, message):
-        return getattr(server, self.get_handler_method())(message)
-
-
 class ResponseType(Enum):
     PONG = "pong"
     ACCEPTED = "accepted"
@@ -828,26 +813,22 @@ class PongResponse:
         running_executions_data = data.get(MessageFields.RUNNING_EXECUTIONS)
         running_executions = None
         if isinstance(running_executions_data, list):
-            if running_executions_data and isinstance(running_executions_data[0], dict):
-                running_executions = tuple(
-                    RunningExecutionInfo.from_dict(entry)
-                    for entry in running_executions_data
+            if not all(isinstance(entry, dict) for entry in running_executions_data):
+                raise TypeError(
+                    "PongResponse.running_executions must be a list of dict entries"
                 )
-            else:
-                # Legacy payload shape fallback: execution_id list
-                running_executions = tuple(
-                    RunningExecutionInfo(
-                        execution_id=str(execution_id),
-                        plate_id="unknown",
-                        start_time=0.0,
-                        elapsed=0.0,
-                    )
-                    for execution_id in running_executions_data
-                )
+            running_executions = tuple(
+                RunningExecutionInfo.from_dict(entry)
+                for entry in running_executions_data
+            )
 
         queued_executions_data = data.get(MessageFields.QUEUED_EXECUTIONS)
         queued_executions = None
         if isinstance(queued_executions_data, list):
+            if not all(isinstance(entry, dict) for entry in queued_executions_data):
+                raise TypeError(
+                    "PongResponse.queued_executions must be a list of dict entries"
+                )
             queued_executions = tuple(
                 QueuedExecutionInfo.from_dict(entry)
                 for entry in queued_executions_data

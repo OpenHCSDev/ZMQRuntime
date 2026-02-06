@@ -1,3 +1,5 @@
+import pytest
+
 from zmqruntime.messages import (
     CancelRequest,
     ExecuteRequest,
@@ -41,3 +43,16 @@ def test_pong_response_dict():
     assert data[MessageFields.TYPE] == ResponseType.PONG.value
     assert data[MessageFields.PORT] == 5555
     assert data[MessageFields.PROGRESS_SUBSCRIBERS] == 2
+
+
+def test_pong_response_rejects_legacy_running_execution_shape():
+    payload = {
+        MessageFields.TYPE: ResponseType.PONG.value,
+        MessageFields.PORT: 5555,
+        MessageFields.CONTROL_PORT: 6555,
+        MessageFields.READY: True,
+        MessageFields.SERVER: "ExecutionServer",
+        MessageFields.RUNNING_EXECUTIONS: ["legacy-exec-id"],
+    }
+    with pytest.raises(TypeError):
+        PongResponse.from_dict(payload)
