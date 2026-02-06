@@ -134,6 +134,7 @@ class TaskProgress:
         result = {
             "type": "progress",
             "task_id": self.task_id,
+            "execution_id": self.task_id,
             "phase": phase_value,
             "status": status_value,
             "percent": self.percent,
@@ -158,30 +159,24 @@ class TaskProgress:
         The application layer is responsible for converting them to appropriate Enum types.
         """
 
-        # DEBUG: Log early if total_wells is present
-        if 'total_wells' in data:
-            logger.info(f"TaskProgress.from_dict ENTRY: total_wells={data.get('total_wells')}, data.keys()={list(data.keys())}")
-
         # Separate generic fields from app-specific context
         generic_fields = {
-            "type", "task_id", "phase", "status", "percent",
+            "type", "task_id", "execution_id", "phase", "status", "percent",
             "timestamp", "completed", "total", "plate_id", "axis_id",
-            "error", "traceback"
+            "error", "traceback", "step_name", "pid"
         }
-
-        # DEBUG: Log all keys in data before separation
-        if 'total_wells' in data or any(k not in generic_fields for k in data.keys()):
-            logger.info(f"TaskProgress.from_dict BEFORE: data.keys()={list(data.keys())}, total_wells in data={'total_wells' in data}")
 
         context = {k: v for k, v in data.items() if k not in generic_fields}
 
-        # DEBUG: Log what ended up in context
-        if 'total_wells' in data or context:
-            logger.info(f"TaskProgress.from_dict AFTER: context.keys()={list(context.keys())}, total_wells in context={'total_wells' in context}, total_wells value={context.get('total_wells')}")
+        task_id = data.get("execution_id")
+        if task_id is None:
+            task_id = data.get("task_id")
+        if task_id is None:
+            raise KeyError("Missing required field: execution_id")
 
         # Create TaskProgress with string phase/status (no enum conversion)
         return cls(
-            task_id=data["task_id"],
+            task_id=task_id,
             phase=data["phase"],  # Pass through as string
             status=data["status"],  # Pass through as string
             percent=data["percent"],
@@ -316,6 +311,7 @@ class MessageFields:
     PIPELINE_CONFIG_CODE = "pipeline_config_code"
     CLIENT_ADDRESS = "client_address"
     COMPILE_ONLY = "compile_only"
+    COMPILE_ARTIFACT_ID = "compile_artifact_id"
     COMPILE_STATUS = "compile_status"
     COMPILE_MESSAGE = "compile_message"
     EXECUTION_ID = "execution_id"
@@ -336,6 +332,9 @@ class MessageFields:
     WORKERS_KILLED = "workers_killed"
     UPTIME = "uptime"
     EXECUTIONS = "executions"
+    EXECUTION = "execution"
+    QUEUED_EXECUTIONS = "queued_executions"
+    QUEUE_POSITION = "queue_position"
     WELL_COUNT = "well_count"
     WELLS = "wells"
     RESULTS_SUMMARY = "results_summary"
@@ -363,6 +362,8 @@ class MessageFields:
     SHAPES = "shapes"
     COORDINATES = "coordinates"
     METADATA = "metadata"
+    CLIENT_ID = "client_id"
+    PROGRESS_SUBSCRIBERS = "progress_subscribers"
 
 
 # =============================================================================
@@ -376,6 +377,8 @@ class ControlMessageType(Enum):
     CANCEL = "cancel"
     SHUTDOWN = "shutdown"
     FORCE_SHUTDOWN = "force_shutdown"
+    REGISTER_PROGRESS = "register_progress"
+    UNREGISTER_PROGRESS = "unregister_progress"
 
     def get_handler_method(self):
         return {
@@ -384,6 +387,8 @@ class ControlMessageType(Enum):
             ControlMessageType.CANCEL: "_handle_cancel",
             ControlMessageType.SHUTDOWN: "_handle_shutdown",
             ControlMessageType.FORCE_SHUTDOWN: "_handle_force_shutdown",
+            ControlMessageType.REGISTER_PROGRESS: "_handle_register_progress",
+            ControlMessageType.UNREGISTER_PROGRESS: "_handle_unregister_progress",
         }[self]
 
     def dispatch(self, server, message):
@@ -432,12 +437,15 @@ class ExecuteRequest:
     pipeline_config_code: Optional[str] = None
     client_address: Optional[str] = None
     compile_only: bool = False
+    compile_artifact_id: Optional[str] = None
 
     def validate(self):
         if not self.plate_id:
             return "Missing required field: plate_id"
         if not self.pipeline_code:
             return "Missing required field: pipeline_code"
+        if self.compile_only and self.compile_artifact_id:
+            return "compile_only and compile_artifact_id cannot both be set"
         if self.config_params is None and self.config_code is None:
             return "Missing config: provide either config_params or config_code"
         return None
@@ -457,6 +465,8 @@ class ExecuteRequest:
             result[MessageFields.CLIENT_ADDRESS] = self.client_address
         if self.compile_only:
             result[MessageFields.COMPILE_ONLY] = True
+        if self.compile_artifact_id is not None:
+            result[MessageFields.COMPILE_ARTIFACT_ID] = self.compile_artifact_id
         return result
 
     @classmethod
@@ -468,7 +478,8 @@ class ExecuteRequest:
             config_code=data.get(MessageFields.CONFIG_CODE),
             pipeline_config_code=data.get(MessageFields.PIPELINE_CONFIG_CODE),
             client_address=data.get(MessageFields.CLIENT_ADDRESS),
-            compile_only=bool(data.get(MessageFields.COMPILE_ONLY, False))
+            compile_only=bool(data.get(MessageFields.COMPILE_ONLY, False)),
+            compile_artifact_id=data.get(MessageFields.COMPILE_ARTIFACT_ID),
         )
 
 
@@ -488,6 +499,212 @@ class ExecuteResponse:
         if self.error is not None:
             result[MessageFields.ERROR] = self.error
         return result
+
+
+@dataclass
+class ExecutionRecord:
+    execution_id: str
+    plate_id: str
+    client_address: Optional[str]
+    status: str
+    start_time: Optional[float] = None
+    end_time: Optional[float] = None
+    error: Optional[str] = None
+    traceback: Optional[str] = None
+    results_summary: Optional[Dict[str, Any]] = None
+    compile_only: bool = False
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def set_extra(self, key: str, value: Any) -> None:
+        self.metadata[key] = value
+
+    def get_extra(self, key: str, default: Any = None) -> Any:
+        if key in self.metadata:
+            return self.metadata[key]
+        return default
+
+    def pop_extra(self, key: str, default: Any = None) -> Any:
+        if key in self.metadata:
+            value = self.metadata[key]
+            del self.metadata[key]
+            return value
+        return default
+
+    def to_dict(self) -> Dict[str, Any]:
+        def _to_transport_value(value: Any) -> Any:
+            if value is None or isinstance(value, (str, int, float, bool)):
+                return value
+            if isinstance(value, Enum):
+                return value.value
+            if isinstance(value, dict):
+                return {
+                    str(_to_transport_value(k)): _to_transport_value(v)
+                    for k, v in value.items()
+                }
+            if isinstance(value, (list, tuple, set)):
+                return [_to_transport_value(v) for v in value]
+            return str(value)
+
+        result: Dict[str, Any] = {
+            MessageFields.EXECUTION_ID: self.execution_id,
+            MessageFields.PLATE_ID: _to_transport_value(self.plate_id),
+            MessageFields.CLIENT_ADDRESS: _to_transport_value(self.client_address),
+            MessageFields.STATUS: _to_transport_value(self.status),
+            MessageFields.START_TIME: _to_transport_value(self.start_time),
+            MessageFields.END_TIME: _to_transport_value(self.end_time),
+            MessageFields.ERROR: _to_transport_value(self.error),
+            MessageFields.COMPILE_ONLY: self.compile_only,
+        }
+        if self.traceback is not None:
+            result[MessageFields.TRACEBACK] = _to_transport_value(self.traceback)
+        if self.results_summary is not None:
+            result[MessageFields.RESULTS_SUMMARY] = _to_transport_value(
+                self.results_summary
+            )
+        return result
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ExecutionRecord":
+        known = {
+            MessageFields.EXECUTION_ID,
+            MessageFields.PLATE_ID,
+            MessageFields.CLIENT_ADDRESS,
+            MessageFields.STATUS,
+            MessageFields.START_TIME,
+            MessageFields.END_TIME,
+            MessageFields.ERROR,
+            MessageFields.TRACEBACK,
+            MessageFields.RESULTS_SUMMARY,
+            MessageFields.COMPILE_ONLY,
+        }
+        metadata = {k: v for k, v in data.items() if k not in known}
+        return cls(
+            execution_id=data[MessageFields.EXECUTION_ID],
+            plate_id=data[MessageFields.PLATE_ID],
+            client_address=data.get(MessageFields.CLIENT_ADDRESS),
+            status=data[MessageFields.STATUS],
+            start_time=data.get(MessageFields.START_TIME),
+            end_time=data.get(MessageFields.END_TIME),
+            error=data.get(MessageFields.ERROR),
+            traceback=data.get(MessageFields.TRACEBACK),
+            results_summary=data.get(MessageFields.RESULTS_SUMMARY),
+            compile_only=bool(data.get(MessageFields.COMPILE_ONLY, False)),
+            metadata=metadata,
+        )
+
+
+@dataclass(frozen=True)
+class RunningExecutionInfo:
+    execution_id: str
+    plate_id: str
+    start_time: float
+    elapsed: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            MessageFields.EXECUTION_ID: self.execution_id,
+            MessageFields.PLATE_ID: self.plate_id,
+            MessageFields.START_TIME: self.start_time,
+            MessageFields.ELAPSED: self.elapsed,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "RunningExecutionInfo":
+        return cls(
+            execution_id=data[MessageFields.EXECUTION_ID],
+            plate_id=data.get(MessageFields.PLATE_ID, "unknown"),
+            start_time=float(data.get(MessageFields.START_TIME) or 0.0),
+            elapsed=float(data.get(MessageFields.ELAPSED) or 0.0),
+        )
+
+
+@dataclass(frozen=True)
+class QueuedExecutionInfo:
+    execution_id: str
+    plate_id: str
+    queue_position: int
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            MessageFields.EXECUTION_ID: self.execution_id,
+            MessageFields.PLATE_ID: self.plate_id,
+            MessageFields.QUEUE_POSITION: self.queue_position,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "QueuedExecutionInfo":
+        return cls(
+            execution_id=data[MessageFields.EXECUTION_ID],
+            plate_id=data.get(MessageFields.PLATE_ID, "unknown"),
+            queue_position=int(data.get(MessageFields.QUEUE_POSITION) or 0),
+        )
+
+
+@dataclass(frozen=True)
+class ExecutionStatusSnapshot:
+    status: ResponseType
+    execution: Optional[ExecutionRecord] = None
+    active_executions: Optional[int] = None
+    uptime: Optional[float] = None
+    executions: Optional[Tuple[str, ...]] = None
+    running_executions: Optional[Tuple[RunningExecutionInfo, ...]] = None
+    queued_executions: Optional[Tuple[QueuedExecutionInfo, ...]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        result: Dict[str, Any] = {MessageFields.STATUS: self.status.value}
+        if self.execution is not None:
+            result[MessageFields.EXECUTION] = self.execution.to_dict()
+        if self.active_executions is not None:
+            result[MessageFields.ACTIVE_EXECUTIONS] = self.active_executions
+        if self.uptime is not None:
+            result[MessageFields.UPTIME] = self.uptime
+        if self.executions is not None:
+            result[MessageFields.EXECUTIONS] = list(self.executions)
+        if self.running_executions is not None:
+            result[MessageFields.RUNNING_EXECUTIONS] = [
+                info.to_dict() for info in self.running_executions
+            ]
+        if self.queued_executions is not None:
+            result[MessageFields.QUEUED_EXECUTIONS] = [
+                info.to_dict() for info in self.queued_executions
+            ]
+        return result
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ExecutionStatusSnapshot":
+        execution = None
+        execution_data = data.get(MessageFields.EXECUTION)
+        if isinstance(execution_data, dict):
+            execution = ExecutionRecord.from_dict(execution_data)
+
+        running_executions = None
+        running_data = data.get(MessageFields.RUNNING_EXECUTIONS)
+        if isinstance(running_data, list):
+            running_executions = tuple(
+                RunningExecutionInfo.from_dict(entry) for entry in running_data
+            )
+
+        queued_executions = None
+        queued_data = data.get(MessageFields.QUEUED_EXECUTIONS)
+        if isinstance(queued_data, list):
+            queued_executions = tuple(
+                QueuedExecutionInfo.from_dict(entry) for entry in queued_data
+            )
+
+        executions = None
+        execution_ids = data.get(MessageFields.EXECUTIONS)
+        if isinstance(execution_ids, list):
+            executions = tuple(str(eid) for eid in execution_ids)
+
+        return cls(
+            status=ResponseType(data[MessageFields.STATUS]),
+            execution=execution,
+            active_executions=data.get(MessageFields.ACTIVE_EXECUTIONS),
+            uptime=data.get(MessageFields.UPTIME),
+            executions=executions,
+            running_executions=running_executions,
+            queued_executions=queued_executions,
+        )
 
 
 @dataclass(frozen=True)
@@ -521,6 +738,42 @@ class CancelRequest:
 
 
 @dataclass(frozen=True)
+class ProgressRegistrationRequest:
+    client_id: str
+
+    def validate(self):
+        return "Missing client_id" if not self.client_id else None
+
+    def to_dict(self):
+        return {
+            MessageFields.TYPE: ControlMessageType.REGISTER_PROGRESS.value,
+            MessageFields.CLIENT_ID: self.client_id,
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(client_id=data[MessageFields.CLIENT_ID])
+
+
+@dataclass(frozen=True)
+class ProgressUnregistrationRequest:
+    client_id: str
+
+    def validate(self):
+        return "Missing client_id" if not self.client_id else None
+
+    def to_dict(self):
+        return {
+            MessageFields.TYPE: ControlMessageType.UNREGISTER_PROGRESS.value,
+            MessageFields.CLIENT_ID: self.client_id,
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(client_id=data[MessageFields.CLIENT_ID])
+
+
+@dataclass(frozen=True)
 class PongResponse:
     """Pong response with typed worker info."""
     port: int
@@ -529,9 +782,11 @@ class PongResponse:
     server: str
     log_file_path: Optional[str] = None
     active_executions: Optional[int] = None
-    running_executions: Optional[Tuple[str, ...]] = None
+    running_executions: Optional[Tuple[RunningExecutionInfo, ...]] = None
+    queued_executions: Optional[Tuple[QueuedExecutionInfo, ...]] = None
     workers: Optional[Tuple[WorkerState, ...]] = None
     uptime: Optional[float] = None
+    progress_subscribers: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for transport."""
@@ -547,11 +802,19 @@ class PongResponse:
         if self.active_executions is not None:
             result[MessageFields.ACTIVE_EXECUTIONS] = self.active_executions
         if self.running_executions is not None:
-            result[MessageFields.RUNNING_EXECUTIONS] = list(self.running_executions)
+            result[MessageFields.RUNNING_EXECUTIONS] = [
+                info.to_dict() for info in self.running_executions
+            ]
+        if self.queued_executions is not None:
+            result[MessageFields.QUEUED_EXECUTIONS] = [
+                info.to_dict() for info in self.queued_executions
+            ]
         if self.workers is not None:
             result[MessageFields.WORKERS] = [w.to_dict() for w in self.workers]
         if self.uptime is not None:
             result[MessageFields.UPTIME] = self.uptime
+        if self.progress_subscribers is not None:
+            result[MessageFields.PROGRESS_SUBSCRIBERS] = self.progress_subscribers
         return result
 
     @classmethod
@@ -564,8 +827,31 @@ class PongResponse:
 
         running_executions_data = data.get(MessageFields.RUNNING_EXECUTIONS)
         running_executions = None
-        if running_executions_data is not None:
-            running_executions = tuple(running_executions_data)
+        if isinstance(running_executions_data, list):
+            if running_executions_data and isinstance(running_executions_data[0], dict):
+                running_executions = tuple(
+                    RunningExecutionInfo.from_dict(entry)
+                    for entry in running_executions_data
+                )
+            else:
+                # Legacy payload shape fallback: execution_id list
+                running_executions = tuple(
+                    RunningExecutionInfo(
+                        execution_id=str(execution_id),
+                        plate_id="unknown",
+                        start_time=0.0,
+                        elapsed=0.0,
+                    )
+                    for execution_id in running_executions_data
+                )
+
+        queued_executions_data = data.get(MessageFields.QUEUED_EXECUTIONS)
+        queued_executions = None
+        if isinstance(queued_executions_data, list):
+            queued_executions = tuple(
+                QueuedExecutionInfo.from_dict(entry)
+                for entry in queued_executions_data
+            )
 
         return cls(
             port=data[MessageFields.PORT],
@@ -575,8 +861,10 @@ class PongResponse:
             log_file_path=data.get(MessageFields.LOG_FILE_PATH),
             active_executions=data.get(MessageFields.ACTIVE_EXECUTIONS),
             running_executions=running_executions,
+            queued_executions=queued_executions,
             workers=workers,
             uptime=data.get(MessageFields.UPTIME),
+            progress_subscribers=data.get(MessageFields.PROGRESS_SUBSCRIBERS),
         )
 
 

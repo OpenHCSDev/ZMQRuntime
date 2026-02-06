@@ -4,66 +4,106 @@ ZMQ Execution System
 Overview
 --------
 
-zmqruntime provides a dual-channel execution pattern built on
-``ExecutionServer`` and ``ExecutionClient``. The control channel handles
-commands (execute, status, cancel, ping), while the data channel streams
-progress updates to clients.
+``zmqruntime`` provides a dual-channel execution architecture:
 
-Dual-Channel Pattern
-~~~~~~~~~~~~~~~~~~~~
+- control channel (REQ/REP): submit, status, cancel, ping
+- data channel (PUB/SUB): progress stream
 
-**Data Port** (e.g., 7777)
-  PUB/SUB socket for progress updates from server to client
-
-**Control Port** (data_port + ``control_port_offset``)
-  REQ/REP socket for commands and responses
-
-This separation ensures progress updates never block command processing.
+This keeps command handling and progress streaming decoupled.
 
 Core Components
-~~~~~~~~~~~~~~~
+---------------
 
-- **ZMQServer** (``zmqruntime/server.py``)
-  Base server that owns data/control sockets and ping/pong handshake.
+- ``ZMQServer`` / ``ZMQClient`` transport base
+- ``ExecutionServer`` (queue + lifecycle ownership)
+- ``ExecutionClient`` (submit/poll/wait + progress callback)
+- ``ProgressStreamSubscriber`` (client-side background progress loop)
+- typed messages in ``zmqruntime.messages``
 
-- **ZMQClient** (``zmqruntime/client.py``)
-  Base client with auto-spawn and connection management.
+Progress Registration
+---------------------
 
-- **ExecutionServer** (``zmqruntime/execution/server.py``)
-  Queue-based sequential executor with progress streaming.
+Progress streaming now uses an explicit control-plane registration handshake:
 
-- **ExecutionClient** (``zmqruntime/execution/client.py``)
-  Submit/poll/wait flow with optional progress callback.
+- client sends ``register_progress`` with a stable ``client_id``
+- server acknowledges registration on REQ/REP
+- client then submits ``execute`` requests
+- client sends ``unregister_progress`` on disconnect
+
+This makes progress subscription intent explicit and avoids hidden lifecycle coupling.
+
+Boundary
+--------
+
+``zmqruntime`` owns transport, execution lifecycle, status polling, and typed
+message contracts. Application-specific task payload semantics, domain progress
+phases, and UI topology are intentionally out of scope.
+
+Receiver-side streaming projection semantics (component grouping, window/layer
+assembly, viewer-specific batch processing) belong to higher-level libraries
+such as ``polystore``, not ``zmqruntime``.
+
+ExecutionServer Responsibilities
+--------------------------------
+
+- enqueue typed ``ExecutionRecord`` instances
+- maintain queue/running/completion state via lifecycle engine
+- execute one queued record at a time
+- emit typed status snapshots and ping payloads
+- expose running and queued execution metadata in ping responses
+
+ExecutionClient Responsibilities
+--------------------------------
+
+- serialize app task payloads into ``ExecuteRequest``
+- register progress subscription before first execution submit when progress callback is enabled
+- submit and retrieve ``execution_id``
+- wait for completion using polling waiter/policy
+- provide optional progress callback lifecycle
+
+Typed Status Model
+------------------
+
+``zmqruntime.messages`` now includes:
+
+- ``ExecutionRecord``
+- ``RunningExecutionInfo``
+- ``QueuedExecutionInfo``
+- ``ExecutionStatusSnapshot``
+
+These types normalize server status/ping payloads and reduce ad-hoc dict logic.
+Ping responses also include ``progress_subscribers`` for observability.
 
 Execution Flow
-~~~~~~~~~~~~~~
+--------------
 
 .. code-block:: text
 
    Client                          Server
      |                               |
      |-- PING (control) ------------>|
-     |<-- PONG (control) ------------|
+     |<-- PONG + queue/running ------|
+     |                               |
+     |-- REGISTER_PROGRESS ---------->|
+     |<-- OK ------------------------|
      |                               |
      |-- EXECUTE (control) --------->|
+     |<-- ACCEPTED + execution_id ---|
      |                               |
-     |<-- PROGRESS (data) -----------|
-     |<-- PROGRESS (data) -----------|
+     |<-- PROGRESS (data/pubsub) ----|
+     |<-- PROGRESS (data/pubsub) ----|
      |                               |
-     |<-- RESULTS (control) ---------|
+     |-- STATUS (control) ---------->|
+     |<-- SNAPSHOT ------------------|
+     |                               |
+     |-- UNREGISTER_PROGRESS ------->|
+     |<-- OK ------------------------|
 
-Task Serialization
-~~~~~~~~~~~~~~~~~~
+See Also
+--------
 
-Applications define serialization and execution logic:
-
-- ``ExecutionClient.serialize_task`` returns a JSON-friendly dict that
-  matches ``ExecuteRequest``.
-- ``ExecutionServer.execute_task`` performs the work and returns results.
-
-Server Lifecycle
-~~~~~~~~~~~~~~~~
-
-Clients can connect to existing servers or spawn new ones. Subclasses
-control the spawn behavior (for example, detached/persistent vs
-non-persistent child processes).
+- :doc:`execution_lifecycle_engine`
+- :doc:`execution_batch_submit_wait`
+- :doc:`execution_status_poller`
+- :doc:`execution_progress_stream`
+- :doc:`execution_wait_policy`

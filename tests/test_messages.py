@@ -30,7 +30,14 @@ def test_cancel_request_roundtrip():
 
 
 def test_pong_response_dict():
-    pong = PongResponse(port=5555, control_port=6555, ready=True, server="Test")
+    pong = PongResponse(
+        port=5555,
+        control_port=6555,
+        ready=True,
+        server="Test",
+        progress_subscribers=2,
+    )
     data = pong.to_dict()
     assert data[MessageFields.TYPE] == ResponseType.PONG.value
     assert data[MessageFields.PORT] == 5555
+    assert data[MessageFields.PROGRESS_SUBSCRIBERS] == 2

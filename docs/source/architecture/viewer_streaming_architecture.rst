@@ -8,6 +8,14 @@ zmqruntime provides a reusable streaming server pattern for real-time
 visualization. Viewer implementations receive image payloads over ZMQ and
 optionally emit acknowledgments back to the shared ack port.
 
+Boundary
+--------
+
+``zmqruntime`` owns transport and server/process lifecycle mechanics for
+streaming viewers. Application-level payload semantics (component projection,
+window/layer grouping, viewer-specific batch assembly) are intentionally out of
+scope and belong in higher-level libraries such as ``polystore``.
+
 Core Components
 ~~~~~~~~~~~~~~~
 

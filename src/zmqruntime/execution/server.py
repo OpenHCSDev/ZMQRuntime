@@ -17,13 +17,19 @@ from zmqruntime.messages import (
     ControlMessageType,
     ExecuteRequest,
     ExecuteResponse,
+    ExecutionRecord,
     ExecutionStatus,
     MessageFields,
     PongResponse,
+    QueuedExecutionInfo,
     ResponseType,
+    RunningExecutionInfo,
     StatusRequest,
+    ProgressRegistrationRequest,
+    ProgressUnregistrationRequest,
 )
 from zmqruntime.config import ZMQConfig
+from zmqruntime.execution.lifecycle import InMemoryExecutionLifecycleEngine
 from zmqruntime.server import ZMQServer
 
 logger = logging.getLogger(__name__)
@@ -40,12 +46,14 @@ class ExecutionServer(ZMQServer, ABC):
         if port is None:
             port = config.default_port
         super().__init__(port, host, log_file_path, transport_mode=transport_mode, config=config)
-        self.active_executions: dict[str, dict] = {}
+        self._lifecycle = InMemoryExecutionLifecycleEngine()
+        self.active_executions: dict[str, ExecutionRecord] = self._lifecycle.records()
         self.start_time = None
         self.progress_queue: queue.Queue = queue.Queue()
 
         self.execution_queue: queue.Queue = queue.Queue()
         self.queue_worker_thread: threading.Thread | None = None
+        self._progress_subscribers: set[str] = set()
 
     def start(self):
         super().start()
@@ -53,16 +61,11 @@ class ExecutionServer(ZMQServer, ABC):
         self._start_queue_worker()
 
     def _create_pong_response(self):
-        running = [
-            (eid, r)
-            for eid, r in self.active_executions.items()
-            if r.get(MessageFields.STATUS) == ExecutionStatus.RUNNING.value
-        ]
-        queued = [
-            (eid, r)
-            for eid, r in self.active_executions.items()
-            if r.get(MessageFields.STATUS) == ExecutionStatus.QUEUED.value
-        ]
+        snapshot = self._lifecycle.snapshot(
+            uptime=time.time() - self.start_time if self.start_time else 0.0
+        )
+        running = snapshot.running_executions or tuple()
+        queued = snapshot.queued_executions or tuple()
         return (
             PongResponse(
                 port=self.port,
@@ -70,20 +73,27 @@ class ExecutionServer(ZMQServer, ABC):
                 ready=self._ready,
                 server=self.__class__.__name__,
                 log_file_path=self.log_file_path,
-                active_executions=len(running) + len(queued),
-                running_executions=[
-                    {
-                        MessageFields.EXECUTION_ID: eid,
-                        MessageFields.PLATE_ID: r.get(MessageFields.PLATE_ID, "unknown"),
-                        MessageFields.START_TIME: r.get(MessageFields.START_TIME, 0),
-                        MessageFields.ELAPSED: time.time() - r.get(MessageFields.START_TIME, 0)
-                        if r.get(MessageFields.START_TIME)
-                        else 0,
-                    }
-                    for eid, r in running
-                ],
+                active_executions=snapshot.active_executions,
+                running_executions=tuple(
+                    RunningExecutionInfo(
+                        execution_id=info.execution_id,
+                        plate_id=info.plate_id,
+                        start_time=info.start_time,
+                        elapsed=info.elapsed,
+                    )
+                    for info in running
+                ),
+                queued_executions=tuple(
+                    QueuedExecutionInfo(
+                        execution_id=info.execution_id,
+                        plate_id=info.plate_id,
+                        queue_position=info.queue_position,
+                    )
+                    for info in queued
+                ),
                 workers=self._get_worker_info(),
                 uptime=time.time() - self.start_time if self.start_time else 0,
+                progress_subscribers=len(self._progress_subscribers),
             ).to_dict()
         )
 
@@ -114,7 +124,7 @@ class ExecutionServer(ZMQServer, ABC):
             {
                 "active_executions": len(self.active_executions),
                 "uptime": time.time() - self.start_time if self.start_time else 0,
-                "executions": list(self.active_executions.values()),
+                "executions": [record.to_dict() for record in self.active_executions.values()],
             }
         )
         return status
@@ -134,7 +144,8 @@ class ExecutionServer(ZMQServer, ABC):
     def _validate_and_parse(self, msg, request_class):
         try:
             request = request_class.from_dict(msg)
-            if hasattr(request, "validate") and (error := request.validate()):
+            error = request.validate()
+            if error:
                 return None, ExecuteResponse(ResponseType.ERROR, error=error).to_dict()
             return request, None
         except KeyError as e:
@@ -152,7 +163,7 @@ class ExecutionServer(ZMQServer, ABC):
             while self._running:
                 try:
                     try:
-                        execution_id, request, record = self.execution_queue.get(timeout=1.0)
+                        execution_id, request = self.execution_queue.get(timeout=1.0)
                     except queue.Empty:
                         continue
 
@@ -164,11 +175,12 @@ class ExecutionServer(ZMQServer, ABC):
 
                     if not self._running:
                         logger.info("[%s] Server shutting down, skipping execution", execution_id)
-                        record[MessageFields.STATUS] = ExecutionStatus.CANCELLED.value
+                        self._lifecycle.mark_cancelled(execution_id)
                         self.execution_queue.task_done()
                         break
 
-                    if record[MessageFields.STATUS] == ExecutionStatus.CANCELLED.value:
+                    record = self.active_executions[execution_id]
+                    if record.status == ExecutionStatus.CANCELLED.value:
                         logger.info("[%s] Execution was cancelled while queued, skipping", execution_id)
                         self.execution_queue.task_done()
                         continue
@@ -181,9 +193,8 @@ class ExecutionServer(ZMQServer, ABC):
             remaining = 0
             while not self.execution_queue.empty():
                 try:
-                    execution_id, request, record = self.execution_queue.get_nowait()
-                    record[MessageFields.STATUS] = ExecutionStatus.CANCELLED.value
-                    record[MessageFields.END_TIME] = time.time()
+                    execution_id, request = self.execution_queue.get_nowait()
+                    self._lifecycle.mark_cancelled(execution_id)
                     logger.info("[%s] Cancelled (was queued when server shut down)", execution_id)
                     self.execution_queue.task_done()
                     remaining += 1
@@ -199,20 +210,15 @@ class ExecutionServer(ZMQServer, ABC):
         if error:
             return error
         execution_id = str(uuid.uuid4())
-        record = {
-            MessageFields.EXECUTION_ID: execution_id,
-            MessageFields.PLATE_ID: request.plate_id,
-            MessageFields.CLIENT_ADDRESS: request.client_address,
-            MessageFields.STATUS: ExecutionStatus.QUEUED.value,
-            MessageFields.START_TIME: None,
-            MessageFields.END_TIME: None,
-            MessageFields.ERROR: None,
-            MessageFields.COMPILE_ONLY: getattr(request, 'compile_only', False),
-        }
-        self.active_executions[execution_id] = record
-
-        self.execution_queue.put((execution_id, request, record))
-        queue_position = self.execution_queue.qsize()
+        record = ExecutionRecord(
+            execution_id=execution_id,
+            plate_id=request.plate_id,
+            client_address=request.client_address,
+            status=ExecutionStatus.QUEUED.value,
+            compile_only=request.compile_only,
+        )
+        queue_position = self._lifecycle.enqueue(record)
+        self.execution_queue.put((execution_id, request))
         logger.info("[%s] Queued for execution (position: %s)", execution_id, queue_position)
 
         return ExecuteResponse(
@@ -223,36 +229,34 @@ class ExecutionServer(ZMQServer, ABC):
 
     def _run_execution(self, execution_id, request, record):
         try:
-            record[MessageFields.STATUS] = ExecutionStatus.RUNNING.value
-            record[MessageFields.START_TIME] = time.time()
+            self._lifecycle.mark_running(execution_id)
             logger.info("[%s] Starting execution (was queued)", execution_id)
 
             results = self.execute_task(execution_id, request)
             logger.info("[%s] Execution returned, updating status to COMPLETE", execution_id)
-            record[MessageFields.STATUS] = ExecutionStatus.COMPLETE.value
-            record[MessageFields.END_TIME] = time.time()
-            record[MessageFields.RESULTS_SUMMARY] = {
+            self._lifecycle.mark_complete(execution_id)
+            record = self.active_executions[execution_id]
+            record.results_summary = {
                 MessageFields.WELL_COUNT: len(results) if isinstance(results, dict) else 0,
                 MessageFields.WELLS: list(results.keys()) if isinstance(results, dict) else [],
             }
             logger.info(
                 "[%s] ✓ Completed in %.1fs",
                 execution_id,
-                record[MessageFields.END_TIME] - record[MessageFields.START_TIME],
+                (record.end_time or 0.0) - (record.start_time or 0.0),
             )
         except Exception as e:
-            if isinstance(e, BrokenProcessPool) and record[MessageFields.STATUS] == ExecutionStatus.CANCELLED.value:
+            if isinstance(e, BrokenProcessPool) and record.status == ExecutionStatus.CANCELLED.value:
                 logger.info("[%s] Cancelled", execution_id)
             else:
                 import traceback
                 full_traceback = traceback.format_exc()
-                record[MessageFields.STATUS] = ExecutionStatus.FAILED.value
-                record[MessageFields.END_TIME] = time.time()
-                record[MessageFields.ERROR] = str(e)
-                record['traceback'] = full_traceback  # Add full traceback to record
+                self._lifecycle.mark_failed(execution_id, str(e))
+                record = self.active_executions[execution_id]
+                record.traceback = full_traceback
                 logger.error("[%s] ✗ Failed: %s", execution_id, e, exc_info=True)
         finally:
-            record.pop("orchestrator", None)
+            record.pop_extra("orchestrator", None)
             killed = self._kill_worker_processes()
             if killed > 0:
                 logger.info("[%s] Killed %s worker processes during cleanup", execution_id, killed)
@@ -266,28 +270,15 @@ class ExecutionServer(ZMQServer, ABC):
                     ResponseType.ERROR,
                     error=f"Execution {execution_id} not found",
                 ).to_dict()
-            r = self.active_executions[execution_id]
-            return {
-                MessageFields.STATUS: ResponseType.OK.value,
-                "execution": {
-                    k: r.get(k)
-                    for k in [
-                        MessageFields.EXECUTION_ID,
-                        MessageFields.PLATE_ID,
-                        MessageFields.STATUS,
-                        MessageFields.START_TIME,
-                        MessageFields.END_TIME,
-                        MessageFields.ERROR,
-                        MessageFields.RESULTS_SUMMARY,
-                    ]
-                },
-            }
-        return {
-            MessageFields.STATUS: ResponseType.OK.value,
-            MessageFields.ACTIVE_EXECUTIONS: len(self.active_executions),
-            MessageFields.UPTIME: time.time() - self.start_time if self.start_time else 0,
-            MessageFields.EXECUTIONS: list(self.active_executions.keys()),
-        }
+            snapshot = self._lifecycle.snapshot(
+                uptime=time.time() - self.start_time if self.start_time else 0.0,
+                execution_id=execution_id,
+            )
+            return snapshot.to_dict()
+        snapshot = self._lifecycle.snapshot(
+            uptime=time.time() - self.start_time if self.start_time else 0.0
+        )
+        return snapshot.to_dict()
 
     def _handle_cancel(self, msg):
         request, error = self._validate_and_parse(msg, CancelRequest)
@@ -309,14 +300,10 @@ class ExecutionServer(ZMQServer, ABC):
         }
 
     def _cancel_all_executions(self):
-        for eid, r in self.active_executions.items():
-            if r[MessageFields.STATUS] in (
-                ExecutionStatus.RUNNING.value,
-                ExecutionStatus.QUEUED.value,
-            ):
-                r[MessageFields.STATUS] = ExecutionStatus.CANCELLED.value
-                r[MessageFields.END_TIME] = time.time()
-                logger.info("[%s] Cancelled", eid)
+        self._lifecycle.cancel_all_active(end_time=time.time())
+        for execution_id, record in self.active_executions.items():
+            if record.status == ExecutionStatus.CANCELLED.value:
+                logger.info("[%s] Cancelled", execution_id)
 
     def _shutdown_workers(self, force=False):
         self._cancel_all_executions()
@@ -336,6 +323,30 @@ class ExecutionServer(ZMQServer, ABC):
 
     def _handle_force_shutdown(self, msg):
         return self._shutdown_workers(force=True)
+
+    def _handle_register_progress(self, msg):
+        request, error = self._validate_and_parse(msg, ProgressRegistrationRequest)
+        if error:
+            return error
+        self._progress_subscribers.add(request.client_id)
+        return {
+            MessageFields.STATUS: ResponseType.OK.value,
+            MessageFields.MESSAGE: "Progress subscriber registered",
+            MessageFields.CLIENT_ID: request.client_id,
+            MessageFields.PROGRESS_SUBSCRIBERS: len(self._progress_subscribers),
+        }
+
+    def _handle_unregister_progress(self, msg):
+        request, error = self._validate_and_parse(msg, ProgressUnregistrationRequest)
+        if error:
+            return error
+        self._progress_subscribers.discard(request.client_id)
+        return {
+            MessageFields.STATUS: ResponseType.OK.value,
+            MessageFields.MESSAGE: "Progress subscriber unregistered",
+            MessageFields.CLIENT_ID: request.client_id,
+            MessageFields.PROGRESS_SUBSCRIBERS: len(self._progress_subscribers),
+        }
 
     def send_progress_update(self, progress_update: dict) -> None:
         from zmqruntime.messages import validate_progress_payload

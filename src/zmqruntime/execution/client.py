@@ -2,21 +2,21 @@
 from __future__ import annotations
 
 import pickle
-import json
 import logging
-import threading
-import time
+import uuid
 from abc import ABC, abstractmethod
 from typing import Any
 
 import zmq
 
 from zmqruntime.client import ZMQClient
+from zmqruntime.execution.progress_stream import ProgressStreamSubscriber
+from zmqruntime.execution.wait_policy import ExecutionWaiter, WaitPolicy
 from zmqruntime.messages import (
     ControlMessageType,
-    ExecutionStatus,
     MessageFields,
-    validate_progress_payload,
+    PongResponse,
+    ResponseType,
 )
 from zmqruntime.transport import get_zmq_transport_url
 
@@ -30,67 +30,32 @@ class ExecutionClient(ZMQClient, ABC):
                  progress_callback=None, transport_mode=None, config=None):
         super().__init__(port, host, persistent, transport_mode=transport_mode, config=config)
         self.progress_callback = progress_callback
-        self._progress_thread: threading.Thread | None = None
-        self._progress_stop_event = threading.Event()
+        self._progress_stream: ProgressStreamSubscriber | None = None
+        self._execution_waiter = ExecutionWaiter(self.poll_status)
+        self._progress_client_id = str(uuid.uuid4())
+        self._progress_registered = False
 
     def _start_progress_listener(self):
-        if self._progress_thread and self._progress_thread.is_alive():
-            logger.info("Progress listener already running")
-            return
         if not self.progress_callback:
             logger.info("No progress callback, skipping listener")
             return
+        if self._progress_stream is None:
+            self._progress_stream = ProgressStreamSubscriber(
+                socket_provider=lambda: self.data_socket,
+                callback=self.progress_callback,
+            )
         logger.info("Starting progress listener thread")
-        self._progress_stop_event.clear()
-        self._progress_thread = threading.Thread(target=self._progress_listener_loop, daemon=True)
-        self._progress_thread.start()
+        self._progress_stream.start()
 
     def _stop_progress_listener(self):
-        if not self._progress_thread:
+        if self._progress_stream is None:
             return
-        self._progress_stop_event.set()
-        if self._progress_thread.is_alive():
-            self._progress_thread.join(timeout=2)
-        self._progress_thread = None
-
-    def _progress_listener_loop(self):
-        logger.info("Progress listener loop started")
-        callback = self.progress_callback
-        if callback is None:
-            raise RuntimeError("progress_callback must be set before starting listener")
-        message_count = 0
-        while not self._progress_stop_event.is_set():
-            if not self.data_socket:
-                time.sleep(0.1)
-                continue
-            try:
-                message = self.data_socket.recv_string(zmq.NOBLOCK)
-            except zmq.Again:
-                time.sleep(0.05)
-                continue
-            data = json.loads(message)
-
-            # DEBUG: Log raw parsed message for total_wells messages
-            if 'total_wells' in data:
-                logger.info(f"PROGRESS_CLIENT: Received message with total_wells: total_wells={data.get('total_wells')}, keys={list(data.keys())}")
-
-            validate_progress_payload(data)
-            message_count += 1
-            if message_count <= 5 or message_count % 50 == 0:
-                logger.info(f"Received progress message #{message_count}: phase={data.get('phase')}, step={data.get('step')}, axis={data.get('axis_id')}")
-
-            try:
-                callback(data)
-            except Exception as e:
-                logger.exception(f"Progress callback raised exception: {e}")
-                raise
-        logger.info(f"Progress listener loop exited (received {message_count} messages total)")
+        self._progress_stream.stop()
 
     def submit_execution(self, task: Any, config: Any = None):
         if not self._connected and not self.connect():
             raise RuntimeError("Failed to connect to execution server")
-        if self.progress_callback:
-            self._start_progress_listener()
+        self._ensure_progress_subscription()
         request = self.serialize_task(task, config)
         if MessageFields.TYPE not in request:
             request[MessageFields.TYPE] = ControlMessageType.EXECUTE.value
@@ -105,62 +70,11 @@ class ExecutionClient(ZMQClient, ABC):
 
     def wait_for_completion(self, execution_id, poll_interval=0.5, max_consecutive_errors=5):
         logger.info("Waiting for execution %s to complete", execution_id)
-        consecutive_errors = 0
-        poll_count = 0
-
-        while True:
-            time.sleep(poll_interval)
-            poll_count += 1
-            try:
-                status_response = self.poll_status(execution_id)
-                consecutive_errors = 0
-
-                if status_response.get(MessageFields.STATUS) == "ok":
-                    execution = status_response.get("execution", {})
-                    exec_status = execution.get(MessageFields.STATUS)
-                    if exec_status == ExecutionStatus.COMPLETE.value:
-                        return {
-                            MessageFields.STATUS: ExecutionStatus.COMPLETE.value,
-                            MessageFields.EXECUTION_ID: execution_id,
-                            "results": execution.get(MessageFields.RESULTS_SUMMARY, {}),
-                        }
-                    if exec_status == ExecutionStatus.FAILED.value:
-                        return {
-                            MessageFields.STATUS: ExecutionStatus.FAILED.value,
-                            MessageFields.EXECUTION_ID: execution_id,
-                            MessageFields.MESSAGE: execution.get(MessageFields.ERROR),
-                        }
-                    if exec_status == ExecutionStatus.CANCELLED.value:
-                        return {
-                            MessageFields.STATUS: ExecutionStatus.CANCELLED.value,
-                            MessageFields.EXECUTION_ID: execution_id,
-                            MessageFields.MESSAGE: "Execution was cancelled",
-                        }
-                elif status_response.get(MessageFields.STATUS) == "error":
-                    error_msg = status_response.get(MessageFields.MESSAGE, "Unknown error")
-                    return {
-                        MessageFields.STATUS: "error",
-                        MessageFields.EXECUTION_ID: execution_id,
-                        MessageFields.MESSAGE: error_msg,
-                    }
-
-            except Exception as e:
-                consecutive_errors += 1
-                logger.warning(
-                    "Error checking execution status (attempt %s/%s): %s",
-                    consecutive_errors,
-                    max_consecutive_errors,
-                    e,
-                )
-
-                if consecutive_errors >= max_consecutive_errors:
-                    return {
-                        MessageFields.STATUS: ExecutionStatus.CANCELLED.value,
-                        MessageFields.EXECUTION_ID: execution_id,
-                        MessageFields.MESSAGE: "Lost connection to server",
-                    }
-
-                time.sleep(1.0)
+        policy = WaitPolicy(
+            poll_interval=poll_interval,
+            max_consecutive_errors=max_consecutive_errors,
+        )
+        return self._execution_waiter.wait(execution_id, policy)
 
     def execute(self, task: Any, config: Any = None):
         response = self.submit_execution(task, config)
@@ -176,33 +90,42 @@ class ExecutionClient(ZMQClient, ABC):
 
     def ping(self):
         try:
-            pong = self.get_server_info()
-            return pong.get(MessageFields.TYPE) == "pong" and pong.get(MessageFields.READY)
+            pong = self.get_server_info_snapshot()
+            return bool(pong.ready)
         except Exception:
             return False
 
-    def get_server_info(self):
-        try:
-            if not self._connected and not self.connect():
-                return {MessageFields.STATUS: "error", MessageFields.MESSAGE: "Not connected"}
-            ctx = zmq.Context()
-            sock = ctx.socket(zmq.REQ)
-            sock.setsockopt(zmq.LINGER, 0)
-            sock.setsockopt(zmq.RCVTIMEO, 1000)
-            control_url = get_zmq_transport_url(
-                self.control_port,
-                host=self.host,
-                mode=self.transport_mode,
-                config=self.config,
+    def get_server_info_snapshot(self) -> PongResponse:
+        """Request and validate typed server ping response.
+
+        Returns:
+            PongResponse: typed ping snapshot.
+
+        Raises:
+            RuntimeError: if client cannot connect or server returns non-pong response.
+            TypeError: if payload type is invalid.
+            KeyError/ValueError: if pong payload is malformed.
+        """
+        if not self._connected and not self.connect():
+            raise RuntimeError("Not connected")
+        response = self._send_control_request(
+            {MessageFields.TYPE: ControlMessageType.PING.value},
+            timeout_ms=1000,
+        )
+        if not isinstance(response, dict):
+            raise TypeError(
+                f"Expected ping response dict, got {type(response).__name__}"
             )
-            sock.connect(control_url)
-            sock.send(pickle.dumps({MessageFields.TYPE: ControlMessageType.PING.value}))
-            response = pickle.loads(sock.recv())
-            sock.close()
-            ctx.term()
-            return response
-        except Exception:
-            return {MessageFields.STATUS: "error", MessageFields.MESSAGE: "Failed"}
+        response_type = response.get(MessageFields.TYPE)
+        if response_type != ResponseType.PONG.value:
+            raise RuntimeError(
+                f"Expected pong response, got type={response_type!r} payload={response}"
+            )
+        return PongResponse.from_dict(response)
+
+    def get_server_info(self):
+        """Backward-compatible dict view of typed ping snapshot."""
+        return self.get_server_info_snapshot().to_dict()
 
     def _send_control_request(self, request, timeout_ms=5000):
         ctx = zmq.Context()
@@ -229,8 +152,35 @@ class ExecutionClient(ZMQClient, ABC):
             ctx.term()
 
     def disconnect(self):
+        if self._connected and self._progress_registered:
+            try:
+                self._send_control_request(
+                    {
+                        MessageFields.TYPE: ControlMessageType.UNREGISTER_PROGRESS.value,
+                        MessageFields.CLIENT_ID: self._progress_client_id,
+                    }
+                )
+            except Exception as error:
+                logger.debug("Progress unregistration failed during disconnect: %s", error)
+            self._progress_registered = False
         self._stop_progress_listener()
         super().disconnect()
+
+    def _ensure_progress_subscription(self) -> None:
+        if not self.progress_callback:
+            return
+        self._start_progress_listener()
+        if self._progress_registered:
+            return
+        response = self._send_control_request(
+            {
+                MessageFields.TYPE: ControlMessageType.REGISTER_PROGRESS.value,
+                MessageFields.CLIENT_ID: self._progress_client_id,
+            }
+        )
+        if response.get(MessageFields.STATUS) != ResponseType.OK.value:
+            raise RuntimeError(f"Progress registration failed: {response}")
+        self._progress_registered = True
 
     @abstractmethod
     def serialize_task(self, task: Any, config: Any) -> dict:

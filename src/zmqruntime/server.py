@@ -183,7 +183,24 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
             response = {"status": "error", "message": str(e), "type": "error"}
 
         try:
-            self.control_socket.send(pickle.dumps(response))
+            payload = pickle.dumps(response)
+        except Exception as e:
+            logger.error(
+                "Failed to serialize control response: %s (response_type=%s)",
+                e,
+                type(response).__name__,
+                exc_info=True,
+            )
+            payload = pickle.dumps(
+                {
+                    MessageFields.STATUS: ResponseType.ERROR.value,
+                    MessageFields.TYPE: ResponseType.ERROR.value,
+                    MessageFields.MESSAGE: "Internal server serialization error",
+                }
+            )
+
+        try:
+            self.control_socket.send(payload)
         except Exception as e:
             logger.error("Failed to send response on control socket: %s", e, exc_info=True)
 

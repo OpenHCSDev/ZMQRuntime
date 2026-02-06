@@ -17,7 +17,19 @@ Core Types
 
 .. code-block:: python
 
-    from zmqruntime.execution import ExecutionClient, ExecutionServer
+    from zmqruntime.execution import (
+        ExecutionClient,
+        ExecutionServer,
+        ExecutionLifecycleEngineABC,
+        InMemoryExecutionLifecycleEngine,
+        BatchSubmitWaitEngine,
+        CallbackBatchSubmitWaitPolicy,
+        ExecutionStatusPoller,
+        CallbackExecutionStatusPollPolicy,
+        ProgressStreamSubscriber,
+        ExecutionWaiter,
+        WaitPolicy,
+    )
 
 **Streaming**
 
@@ -41,5 +53,26 @@ Core Types
 .. code-block:: python
 
     from zmqruntime import ZMQClient, ZMQServer
+
+**Generic progress primitives**
+
+.. code-block:: python
+
+    from zmqruntime.progress import (
+        LatestEventRegistry,
+        ProgressProjectionAdapterABC,
+        build_execution_projection,
+    )
+
+**Typed execution status/messages**
+
+.. code-block:: python
+
+    from zmqruntime.messages import (
+        ExecutionRecord,
+        ExecutionStatusSnapshot,
+        RunningExecutionInfo,
+        QueuedExecutionInfo,
+    )
 
 Refer to the architecture docs for usage patterns and lifecycle details.

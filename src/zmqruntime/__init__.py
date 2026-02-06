@@ -12,10 +12,16 @@ from zmqruntime.messages import (
     ControlMessageType,
     ExecuteRequest,
     ExecuteResponse,
+    ExecutionRecord,
+    ExecutionStatusSnapshot,
+    RunningExecutionInfo,
+    QueuedExecutionInfo,
     ExecutionStatus,
     ImageAck,
     MessageFields,
     PongResponse,
+    ProgressRegistrationRequest,
+    ProgressUnregistrationRequest,
     # Generic types
     TaskProgress,
     TaskPhase,
@@ -29,6 +35,22 @@ from zmqruntime.messages import (
     SocketType,
     StatusRequest,
     validate_progress_payload,
+)
+from zmqruntime.execution import (
+    ExecutionLifecycleEngineABC,
+    InMemoryExecutionLifecycleEngine,
+    ProgressStreamSubscriber,
+    ExecutionWaiter,
+    WaitPolicy,
+)
+from zmqruntime.progress import (
+    EventRegistryABC,
+    LatestEventRegistry,
+    GenericAxisProjection,
+    GenericPlateProjection,
+    GenericExecutionProjection,
+    ProgressProjectionAdapterABC,
+    build_execution_projection,
 )
 from zmqruntime.queue_tracker import QueueTracker, GlobalQueueTrackerRegistry
 from zmqruntime.runner import serve_forever
@@ -51,7 +73,6 @@ from zmqruntime.viewer_state import (
     ViewerInstance,
     get_or_create_viewer,
 )
-from zmqruntime.streaming_types import StreamingDataType, NapariShapeType
 # from zmqruntime.streaming_config import (
 #     DisplayConfig,
 #     DictDisplayConfig,
@@ -70,10 +91,16 @@ __all__ = [
     "ControlMessageType",
     "ExecuteRequest",
     "ExecuteResponse",
+    "ExecutionRecord",
+    "ExecutionStatusSnapshot",
+    "RunningExecutionInfo",
+    "QueuedExecutionInfo",
     "ExecutionStatus",
     "ImageAck",
     "MessageFields",
     "PongResponse",
+    "ProgressRegistrationRequest",
+    "ProgressUnregistrationRequest",
     # Generic types
     "TaskProgress",
     "TaskPhase",
@@ -105,6 +132,16 @@ __all__ = [
     "ViewerStateManager",
     "ViewerInstance",
     "get_or_create_viewer",
-    "StreamingDataType",
-    "NapariShapeType",
+    "ExecutionLifecycleEngineABC",
+    "InMemoryExecutionLifecycleEngine",
+    "ProgressStreamSubscriber",
+    "ExecutionWaiter",
+    "WaitPolicy",
+    "EventRegistryABC",
+    "LatestEventRegistry",
+    "GenericAxisProjection",
+    "GenericPlateProjection",
+    "GenericExecutionProjection",
+    "ProgressProjectionAdapterABC",
+    "build_execution_projection",
 ]
