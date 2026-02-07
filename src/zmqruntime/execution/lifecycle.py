@@ -156,6 +156,7 @@ class InMemoryExecutionLifecycleEngine(ExecutionLifecycleEngineABC):
                     plate_id=str(record.plate_id),
                     start_time=start_time,
                     elapsed=(now - start_time) if start_time > 0 else 0.0,
+                    compile_only=bool(record.compile_only),
                 )
             )
         return tuple(running)

@@ -584,6 +584,7 @@ class RunningExecutionInfo:
     plate_id: str
     start_time: float
     elapsed: float
+    compile_only: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -591,6 +592,7 @@ class RunningExecutionInfo:
             MessageFields.PLATE_ID: self.plate_id,
             MessageFields.START_TIME: self.start_time,
             MessageFields.ELAPSED: self.elapsed,
+            MessageFields.COMPILE_ONLY: self.compile_only,
         }
 
     @classmethod
@@ -600,6 +602,7 @@ class RunningExecutionInfo:
             plate_id=data.get(MessageFields.PLATE_ID, "unknown"),
             start_time=float(data.get(MessageFields.START_TIME) or 0.0),
             elapsed=float(data.get(MessageFields.ELAPSED) or 0.0),
+            compile_only=bool(data.get(MessageFields.COMPILE_ONLY, False)),
         )
 
 

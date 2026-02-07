@@ -92,6 +92,7 @@ class ExecutionServer(ZMQServer, ABC):
                         plate_id=info.plate_id,
                         start_time=info.start_time,
                         elapsed=info.elapsed,
+                        compile_only=info.compile_only,
                     )
                     for info in running
                 ),
