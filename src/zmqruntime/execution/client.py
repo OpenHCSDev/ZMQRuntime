@@ -182,6 +182,12 @@ class ExecutionClient(ZMQClient, ABC):
             raise RuntimeError(f"Progress registration failed: {response}")
         self._progress_registered = True
 
+    def enable_progress_stream(self) -> None:
+        """Explicitly register and start progress streaming for this client."""
+        if not self._connected and not self.connect():
+            raise RuntimeError("Failed to connect to execution server")
+        self._ensure_progress_subscription()
+
     @abstractmethod
     def serialize_task(self, task: Any, config: Any) -> dict:
         """Serialize task for transmission. Subclass provides serialization logic."""
