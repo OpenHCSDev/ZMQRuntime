@@ -59,7 +59,7 @@ class ExecutionServer(ZMQServer, ABC):
         self._progress_subscribers: set[str] = set()
         self._control_handlers: dict[ControlMessageType, ControlHandler] = {
             ControlMessageType.EXECUTE: self._handle_execute,
-            ControlMessageType.STATUS: self._handle_status,
+            ControlMessageType.STATUS: self.handle_status,
             ControlMessageType.CANCEL: self._handle_cancel,
             ControlMessageType.SHUTDOWN: self._handle_shutdown,
             ControlMessageType.FORCE_SHUTDOWN: self._handle_force_shutdown,
@@ -200,7 +200,7 @@ class ExecutionServer(ZMQServer, ABC):
                         self.execution_queue.task_done()
                         continue
 
-                    self._run_execution(execution_id, request, record)
+                    self.run_execution(execution_id, request, record)
                     self.execution_queue.task_done()
                 except Exception as e:
                     logger.error("Queue worker error: %s", e, exc_info=True)
@@ -242,7 +242,7 @@ class ExecutionServer(ZMQServer, ABC):
             message=f"Execution queued (position: {queue_position})",
         ).to_dict()
 
-    def _run_execution(self, execution_id, request, record):
+    def run_execution(self, execution_id, request, record):
         try:
             self._lifecycle.mark_running(execution_id)
             logger.info("[%s] Starting execution (was queued)", execution_id)
@@ -277,7 +277,11 @@ class ExecutionServer(ZMQServer, ABC):
                 logger.info("[%s] Killed %s worker processes during cleanup", execution_id, killed)
             logger.info("[%s] Execution cleanup complete", execution_id)
 
-    def _handle_status(self, msg):
+    def _run_execution(self, execution_id, request, record):
+        """Compatibility shim for callers still bound to the old private hook."""
+        self.run_execution(execution_id, request, record)
+
+    def handle_status(self, msg):
         execution_id = StatusRequest.from_dict(msg).execution_id
         if execution_id:
             if execution_id not in self.active_executions:
@@ -294,6 +298,10 @@ class ExecutionServer(ZMQServer, ABC):
             uptime=time.time() - self.start_time if self.start_time else 0.0
         )
         return snapshot.to_dict()
+
+    def _handle_status(self, msg):
+        """Compatibility shim for callers still bound to the old private hook."""
+        return self.handle_status(msg)
 
     def _handle_cancel(self, msg):
         request, error = self._validate_and_parse(msg, CancelRequest)
