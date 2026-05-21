@@ -63,7 +63,8 @@ class ExecutionWaiter:
                         MessageFields.STATUS: "error",
                         MessageFields.EXECUTION_ID: execution_id,
                         MessageFields.MESSAGE: status_response.get(
-                            MessageFields.MESSAGE, "Unknown error"
+                            MessageFields.MESSAGE,
+                            status_response.get(MessageFields.ERROR, "Unknown error"),
                         ),
                     }
 

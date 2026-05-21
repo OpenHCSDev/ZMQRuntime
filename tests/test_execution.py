@@ -2,6 +2,8 @@ import pickle
 
 from zmqruntime.execution.client import ExecutionClient
 from zmqruntime.execution.server import ExecutionServer
+from zmqruntime.execution.wait_policy import ExecutionWaiter, WaitPolicy
+from zmqruntime.config import TransportMode
 from zmqruntime.messages import (
     ControlMessageType,
     ExecuteRequest,
@@ -214,3 +216,93 @@ def test_execution_client_registers_progress_before_execute():
 
     client.disconnect()
     assert client.sent_requests[2][MessageFields.TYPE] == ControlMessageType.UNREGISTER_PROGRESS.value
+
+
+class EndpointPolicyExecutionClient(ExecutionClient):
+    def __init__(self, *, transport_mode=TransportMode.IPC, process_exists=False):
+        super().__init__(
+            port=5555,
+            transport_mode=transport_mode,
+        )
+        self.process_exists = process_exists
+        self.killed_ports = []
+        self.spawned = False
+        self.setup_called = False
+
+    def _is_port_in_use(self, port: int):
+        return True
+
+    def _try_connect_to_existing(self, port: int, timeout_ms: int = 500):
+        return False
+
+    def _ipc_server_process_exists(self, port: int):
+        return self.process_exists
+
+    def _kill_processes_on_port(self, port: int):
+        self.killed_ports.append(port)
+
+    def _spawn_server_process(self):
+        self.spawned = True
+        return object()
+
+    def _wait_for_server_ready(self, timeout: float = 10.0):
+        return True
+
+    def _setup_client_sockets(self):
+        self.setup_called = True
+
+    def send_data(self, data):
+        return None
+
+    def serialize_task(self, task, config):
+        return {"task": task}
+
+
+def test_ipc_connect_preserves_unresponsive_live_server_endpoint():
+    client = EndpointPolicyExecutionClient(process_exists=True)
+
+    connected = client.connect(timeout=1)
+
+    assert connected is False
+    assert client.killed_ports == []
+    assert client.spawned is False
+    assert client.setup_called is False
+
+
+def test_ipc_connect_removes_stale_endpoint_before_spawning():
+    client = EndpointPolicyExecutionClient(process_exists=False)
+
+    connected = client.connect(timeout=1)
+
+    assert connected is True
+    assert client.killed_ports == [client.port, client.control_port]
+    assert client.spawned is True
+    assert client.setup_called is True
+
+
+def test_tcp_connect_keeps_existing_spawn_cleanup_policy():
+    client = EndpointPolicyExecutionClient(
+        transport_mode=TransportMode.TCP,
+        process_exists=True,
+    )
+
+    connected = client.connect(timeout=1)
+
+    assert connected is True
+    assert client.killed_ports == [client.port, client.control_port]
+    assert client.spawned is True
+    assert client.setup_called is True
+
+
+def test_execution_waiter_surfaces_error_field_when_message_absent():
+    waiter = ExecutionWaiter(
+        lambda _execution_id: {
+            MessageFields.STATUS: ResponseType.ERROR.value,
+            MessageFields.ERROR: "Execution missing from restarted server",
+        }
+    )
+
+    result = waiter.wait("compile-1", WaitPolicy(poll_interval=0))
+
+    assert result[MessageFields.STATUS] == ResponseType.ERROR.value
+    assert result[MessageFields.MESSAGE] == "Execution missing from restarted server"

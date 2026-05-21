@@ -53,10 +53,15 @@ class ZMQClient(ABC):
             if self._connected:
                 return True
             if self._is_port_in_use(self.port):
-                if self._try_connect_to_existing(self.port):
+                if self._try_connect_to_existing(
+                    self.port,
+                    timeout_ms=self._existing_endpoint_probe_timeout_ms(timeout),
+                ):
                     self._setup_client_sockets()  # ← FIX: Set up data socket even when connecting to existing server
                     self._connected = self._connected_to_existing = True
                     return True
+                if self._should_preserve_unresponsive_endpoint(self.port):
+                    return False
                 self._kill_processes_on_port(self.port)
                 self._kill_processes_on_port(self.control_port)
                 time.sleep(0.5)
@@ -122,7 +127,7 @@ class ZMQClient(ABC):
             self.zmq_context.term()
             self.zmq_context = None
 
-    def _try_connect_to_existing(self, port: int) -> bool:
+    def _try_connect_to_existing(self, port: int, timeout_ms: int = 500) -> bool:
         try:
             control_url = get_zmq_transport_url(
                 port + self.config.control_port_offset,
@@ -134,7 +139,7 @@ class ZMQClient(ABC):
             ctx = zmq.Context()
             sock = ctx.socket(zmq.REQ)
             sock.setsockopt(zmq.LINGER, 0)
-            sock.setsockopt(zmq.RCVTIMEO, 500)
+            sock.setsockopt(zmq.RCVTIMEO, timeout_ms)
             sock.connect(control_url)
             sock.send(pickle.dumps({"type": "ping"}))
             response = pickle.loads(sock.recv())
@@ -147,6 +152,33 @@ class ZMQClient(ABC):
                 ctx.term()
             except Exception:
                 pass
+
+    @staticmethod
+    def _existing_endpoint_probe_timeout_ms(timeout: float) -> int:
+        return max(500, min(int(timeout * 1000), 5000))
+
+    def _should_preserve_unresponsive_endpoint(self, port: int) -> bool:
+        if self.transport_mode != TransportMode.IPC:
+            return False
+        return self._ipc_server_process_exists(port)
+
+    @staticmethod
+    def _ipc_server_process_exists(port: int) -> bool:
+        try:
+            import psutil
+        except Exception:
+            return False
+
+        port_flags = (f"--port {port}", f"--port={port}")
+        for proc in psutil.process_iter(["cmdline"]):
+            try:
+                cmdline = proc.info.get("cmdline") or []
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            cmdline_str = " ".join(cmdline)
+            if any(flag in cmdline_str for flag in port_flags):
+                return True
+        return False
 
     def _wait_for_server_ready(self, timeout: float = 10.0) -> bool:
         return wait_for_server_ready(
