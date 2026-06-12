@@ -305,6 +305,8 @@ class ServerInfo:
 class MessageFields:
     TYPE = "type"
     PLATE_ID = "plate_id"
+    EXECUTION_PLATE_ID = "execution_plate_id"
+    SELECTED_PIPELINE_PATH = "selected_pipeline_path"
     PIPELINE_CODE = "pipeline_code"
     CONFIG_PARAMS = "config_params"
     CONFIG_CODE = "config_code"
@@ -417,6 +419,8 @@ class SocketType(Enum):
 class ExecuteRequest:
     plate_id: str
     pipeline_code: str
+    execution_plate_id: Optional[str] = None
+    selected_pipeline_path: Optional[str] = None
     config_params: Optional[dict] = None
     config_code: Optional[str] = None
     pipeline_config_code: Optional[str] = None
@@ -439,6 +443,10 @@ class ExecuteRequest:
         result: Dict[str, Any] = {}
         result[MessageFields.TYPE] = ControlMessageType.EXECUTE.value
         result[MessageFields.PLATE_ID] = self.plate_id
+        if self.execution_plate_id is not None:
+            result[MessageFields.EXECUTION_PLATE_ID] = self.execution_plate_id
+        if self.selected_pipeline_path is not None:
+            result[MessageFields.SELECTED_PIPELINE_PATH] = self.selected_pipeline_path
         result[MessageFields.PIPELINE_CODE] = self.pipeline_code
         if self.config_params is not None:
             result[MessageFields.CONFIG_PARAMS] = self.config_params
@@ -459,6 +467,8 @@ class ExecuteRequest:
         return cls(
             plate_id=data[MessageFields.PLATE_ID],
             pipeline_code=data[MessageFields.PIPELINE_CODE],
+            execution_plate_id=data.get(MessageFields.EXECUTION_PLATE_ID),
+            selected_pipeline_path=data.get(MessageFields.SELECTED_PIPELINE_PATH),
             config_params=data.get(MessageFields.CONFIG_PARAMS),
             config_code=data.get(MessageFields.CONFIG_CODE),
             pipeline_config_code=data.get(MessageFields.PIPELINE_CONFIG_CODE),
