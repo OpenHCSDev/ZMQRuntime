@@ -1,6 +1,8 @@
 import pickle
+import pytest
 
 from zmqruntime.execution.client import ExecutionClient
+from zmqruntime.execution.responses import ExecutionSubmissionResponse
 from zmqruntime.execution.server import ExecutionServer
 from zmqruntime.execution.wait_policy import ExecutionWaiter, WaitPolicy
 from zmqruntime.config import TransportMode
@@ -306,3 +308,28 @@ def test_execution_waiter_surfaces_error_field_when_message_absent():
 
     assert result[MessageFields.STATUS] == ResponseType.ERROR.value
     assert result[MessageFields.MESSAGE] == "Execution missing from restarted server"
+
+
+def test_submission_response_requires_explicit_tracking_and_diagnostics():
+    accepted_without_id = ExecutionSubmissionResponse.from_wire(
+        {MessageFields.STATUS: ResponseType.ACCEPTED.value}
+    )
+    with pytest.raises(RuntimeError, match="without execution_id"):
+        accepted_without_id.require_execution_id("submission")
+
+    failed_without_diagnostic = ExecutionSubmissionResponse.from_wire(
+        {MessageFields.STATUS: ResponseType.ERROR.value}
+    )
+    with pytest.raises(RuntimeError, match="message or error"):
+        failed_without_diagnostic.require_failure_text("submission")
+
+    failed_with_both = ExecutionSubmissionResponse.from_wire(
+        {
+            MessageFields.STATUS: ResponseType.ERROR.value,
+            MessageFields.MESSAGE: "bad request",
+            MessageFields.ERROR: "missing plate",
+        }
+    )
+    assert failed_with_both.require_failure_text("submission") == (
+        "bad request (missing plate)"
+    )

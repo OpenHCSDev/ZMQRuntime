@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import multiprocessing
 import pickle
 import platform
 import socket
@@ -13,6 +14,7 @@ from abc import ABC, abstractmethod
 import zmq
 
 from zmqruntime.config import TransportMode, ZMQConfig
+from zmqruntime.messages import ControlMessageType, MessageFields, ResponseType
 from zmqruntime.transport import (
     get_default_transport_mode,
     get_ipc_socket_path,
@@ -78,23 +80,34 @@ class ZMQClient(ABC):
                 return
             self._cleanup_sockets()
             if not self._connected_to_existing and self.server_process and not self.persistent:
-                if hasattr(self.server_process, "is_alive"):
-                    if self.server_process.is_alive():
-                        self.server_process.terminate()
-                        self.server_process.join(timeout=5)
-                        if self.server_process.is_alive():
-                            self.server_process.kill()
-                else:
-                    if self.server_process.poll() is None:
-                        self.server_process.terminate()
-                        try:
-                            self.server_process.wait(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            self.server_process.kill()
+                self._stop_owned_server_process(self.server_process)
             self._connected = False
 
     def is_connected(self):
         return self._connected
+
+    @staticmethod
+    def _stop_owned_server_process(server_process):
+        if isinstance(server_process, multiprocessing.Process):
+            if server_process.is_alive():
+                server_process.terminate()
+                server_process.join(timeout=5)
+                if server_process.is_alive():
+                    server_process.kill()
+            return
+
+        if isinstance(server_process, subprocess.Popen):
+            if server_process.poll() is None:
+                server_process.terminate()
+                try:
+                    server_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    server_process.kill()
+            return
+
+        raise TypeError(
+            f"Unsupported ZMQ server process handle: {type(server_process).__name__}"
+        )
 
     def _setup_client_sockets(self):
         import zmq
@@ -136,20 +149,22 @@ class ZMQClient(ABC):
                 config=self.config,
             )
 
-            ctx = zmq.Context()
+            ctx = zmq.Context.instance()
             sock = ctx.socket(zmq.REQ)
             sock.setsockopt(zmq.LINGER, 0)
             sock.setsockopt(zmq.RCVTIMEO, timeout_ms)
             sock.connect(control_url)
-            sock.send(pickle.dumps({"type": "ping"}))
+            sock.send(pickle.dumps({MessageFields.TYPE: ControlMessageType.PING.value}))
             response = pickle.loads(sock.recv())
-            return response.get("type") == "pong" and response.get("ready")
+            return (
+                response[MessageFields.TYPE] == ResponseType.PONG.value
+                and bool(response[MessageFields.READY])
+            )
         except Exception:
             return False
         finally:
             try:
-                sock.close()
-                ctx.term()
+                sock.close(linger=0)
             except Exception:
                 pass
 
@@ -256,14 +271,14 @@ class ZMQClient(ABC):
                     config=config,
                 )
 
-                ctx = zmq.Context()
+                ctx = zmq.Context.instance()
                 sock = ctx.socket(zmq.REQ)
                 sock.setsockopt(zmq.LINGER, 0)
                 sock.setsockopt(zmq.RCVTIMEO, timeout_ms)
                 sock.connect(control_url)
-                sock.send(pickle.dumps({"type": "ping"}))
+                sock.send(pickle.dumps({MessageFields.TYPE: ControlMessageType.PING.value}))
                 pong = pickle.loads(sock.recv())
-                if pong.get("type") == "pong":
+                if pong[MessageFields.TYPE] == ResponseType.PONG.value:
                     pong["port"] = port
                     pong["control_port"] = control_port
                     servers.append(pong)
@@ -271,8 +286,7 @@ class ZMQClient(ABC):
                 pass
             finally:
                 try:
-                    sock.close()
-                    ctx.term()
+                    sock.close(linger=0)
                 except Exception:
                     pass
         return servers
@@ -338,21 +352,21 @@ class ZMQClient(ABC):
                 config=config,
             )
 
-            ctx = zmq.Context()
+            ctx = zmq.Context.instance()
             sock = ctx.socket(zmq.REQ)
             sock.setsockopt(zmq.LINGER, 0)
             sock.connect(control_url)
 
             if graceful:
                 sock.setsockopt(zmq.RCVTIMEO, int(timeout * 1000))
-                sock.send(pickle.dumps({"type": msg_type}))
+                sock.send(pickle.dumps({MessageFields.TYPE: msg_type}))
                 ack = pickle.loads(sock.recv())
-                if ack.get("type") == "shutdown_ack":
+                if ack[MessageFields.TYPE] == ResponseType.SHUTDOWN_ACK.value:
                     return True
             else:
                 sock.setsockopt(zmq.SNDTIMEO, 1000)
                 try:
-                    sock.send(pickle.dumps({"type": msg_type}))
+                    sock.send(pickle.dumps({MessageFields.TYPE: msg_type}))
                 except Exception:
                     pass
 
@@ -385,8 +399,7 @@ class ZMQClient(ABC):
             return False
         finally:
             try:
-                sock.close()
-                ctx.term()
+                sock.close(linger=0)
             except Exception:
                 pass
 

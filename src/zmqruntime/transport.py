@@ -149,7 +149,7 @@ def ping_control_port(
     ctx = None
     sock = None
     try:
-        ctx = zmq.Context()
+        ctx = zmq.Context.instance()
         sock = ctx.socket(zmq.REQ)
         sock.setsockopt(zmq.LINGER, 0)
         sock.setsockopt(zmq.RCVTIMEO, timeout_ms)
@@ -166,12 +166,7 @@ def ping_control_port(
     finally:
         if sock is not None:
             try:
-                sock.close()
-            except Exception:
-                pass
-        if ctx is not None:
-            try:
-                ctx.term()
+                sock.close(linger=0)
             except Exception:
                 pass
 

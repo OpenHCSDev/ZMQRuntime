@@ -5,13 +5,18 @@ import pickle
 import logging
 import uuid
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Generic, TypeVar
 
 import zmq
 
 from zmqruntime.client import ZMQClient
 from zmqruntime.execution.progress_stream import ProgressStreamSubscriber
 from zmqruntime.execution.wait_policy import ExecutionWaiter, WaitPolicy
+from zmqruntime.execution.responses import (
+    ExecutionSubmissionResponse,
+    WireRequest,
+    WireResponse,
+)
 from zmqruntime.messages import (
     ControlMessageType,
     MessageFields,
@@ -21,9 +26,11 @@ from zmqruntime.messages import (
 from zmqruntime.transport import get_zmq_transport_url
 
 logger = logging.getLogger(__name__)
+TaskT = TypeVar("TaskT")
+ConfigT = TypeVar("ConfigT")
 
 
-class ExecutionClient(ZMQClient, ABC):
+class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
     """Execution client with progress streaming."""
 
     def __init__(self, port: int, host: str = "localhost", persistent: bool = True,
@@ -52,7 +59,11 @@ class ExecutionClient(ZMQClient, ABC):
             return
         self._progress_stream.stop()
 
-    def submit_execution(self, task: Any, config: Any = None):
+    def submit_execution(
+        self,
+        task: TaskT,
+        config: ConfigT | None = None,
+    ) -> WireResponse:
         if not self._connected and not self.connect():
             raise RuntimeError("Failed to connect to execution server")
         self._ensure_progress_subscription()
@@ -76,10 +87,15 @@ class ExecutionClient(ZMQClient, ABC):
         )
         return self._execution_waiter.wait(execution_id, policy)
 
-    def execute(self, task: Any, config: Any = None):
+    def execute(
+        self,
+        task: TaskT,
+        config: ConfigT | None = None,
+    ) -> WireResponse:
         response = self.submit_execution(task, config)
-        if response.get(MessageFields.STATUS) == "accepted":
-            execution_id = response.get(MessageFields.EXECUTION_ID)
+        submission = ExecutionSubmissionResponse.from_wire(response)
+        if submission.accepted:
+            execution_id = submission.require_execution_id("Execution submission")
             return self.wait_for_completion(execution_id)
         return response
 
@@ -116,7 +132,9 @@ class ExecutionClient(ZMQClient, ABC):
             raise TypeError(
                 f"Expected ping response dict, got {type(response).__name__}"
             )
-        response_type = response.get(MessageFields.TYPE)
+        if MessageFields.TYPE not in response:
+            raise RuntimeError(f"Ping response missing type field: {response}")
+        response_type = response[MessageFields.TYPE]
         if response_type != ResponseType.PONG.value:
             raise RuntimeError(
                 f"Expected pong response, got type={response_type!r} payload={response}"
@@ -128,7 +146,8 @@ class ExecutionClient(ZMQClient, ABC):
         return self.get_server_info_snapshot().to_dict()
 
     def _send_control_request(self, request, timeout_ms=5000):
-        ctx = zmq.Context()
+        owns_context = self.zmq_context is None
+        ctx = zmq.Context() if owns_context else self.zmq_context
         sock = ctx.socket(zmq.REQ)
         sock.setsockopt(zmq.LINGER, 0)
         sock.setsockopt(zmq.RCVTIMEO, timeout_ms)
@@ -145,11 +164,12 @@ class ExecutionClient(ZMQClient, ABC):
             return pickle.loads(response)
         except zmq.Again:
             raise TimeoutError(
-                f"Server did not respond to {request.get(MessageFields.TYPE)} request within {timeout_ms}ms"
+                f"Server did not respond to {request[MessageFields.TYPE]} request within {timeout_ms}ms"
             )
         finally:
-            sock.close()
-            ctx.term()
+            sock.close(linger=0)
+            if owns_context:
+                ctx.term()
 
     def disconnect(self):
         if self._connected and self._progress_registered:
@@ -178,7 +198,9 @@ class ExecutionClient(ZMQClient, ABC):
                 MessageFields.CLIENT_ID: self._progress_client_id,
             }
         )
-        if response.get(MessageFields.STATUS) != ResponseType.OK.value:
+        if MessageFields.STATUS not in response:
+            raise RuntimeError(f"Progress registration response missing status: {response}")
+        if response[MessageFields.STATUS] != ResponseType.OK.value:
             raise RuntimeError(f"Progress registration failed: {response}")
         self._progress_registered = True
 
@@ -189,6 +211,10 @@ class ExecutionClient(ZMQClient, ABC):
         self._ensure_progress_subscription()
 
     @abstractmethod
-    def serialize_task(self, task: Any, config: Any) -> dict:
+    def serialize_task(
+        self,
+        task: TaskT,
+        config: ConfigT | None,
+    ) -> WireRequest:
         """Serialize task for transmission. Subclass provides serialization logic."""
         raise NotImplementedError

@@ -20,6 +20,11 @@ from zmqruntime.execution.lifecycle import (
 from zmqruntime.execution.progress_stream import ProgressStreamSubscriber
 from zmqruntime.execution.server import ExecutionServer
 from zmqruntime.execution.wait_policy import ExecutionWaiter, WaitPolicy
+from zmqruntime.execution.responses import (
+    ExecutionResponseDiagnostic,
+    ExecutionSubmissionResponse,
+    ExecutionWaitResult,
+)
 
 __all__ = [
     "ExecutionClient",
@@ -36,4 +41,7 @@ __all__ = [
     "ProgressStreamSubscriber",
     "ExecutionWaiter",
     "WaitPolicy",
+    "ExecutionResponseDiagnostic",
+    "ExecutionSubmissionResponse",
+    "ExecutionWaitResult",
 ]

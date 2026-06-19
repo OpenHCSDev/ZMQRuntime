@@ -4,12 +4,18 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict
+from typing import Callable
 
 from zmqruntime.messages import (
     ExecutionStatus,
     ExecutionStatusSnapshot,
     MessageFields,
+    ResponseType,
+)
+from zmqruntime.execution.responses import (
+    ExecutionResponseDiagnostic,
+    WireResponse,
+    WireValue,
 )
 
 logger = logging.getLogger(__name__)
@@ -25,10 +31,10 @@ class WaitPolicy:
 class ExecutionWaiter:
     """Reusable waiter for execution status polling loops."""
 
-    def __init__(self, poll_status: Callable[[str], Dict[str, Any]]) -> None:
+    def __init__(self, poll_status: Callable[[str], WireResponse]) -> None:
         self._poll_status = poll_status
 
-    def wait(self, execution_id: str, policy: WaitPolicy) -> Dict[str, Any]:
+    def wait(self, execution_id: str, policy: WaitPolicy) -> dict[str, WireValue]:
         consecutive_errors = 0
         while True:
             time.sleep(policy.poll_interval)
@@ -37,20 +43,26 @@ class ExecutionWaiter:
                 consecutive_errors = 0
                 snapshot = ExecutionStatusSnapshot.from_dict(status_response)
 
-                if snapshot.status.value == "ok" and snapshot.execution is not None:
+                if snapshot.status is ResponseType.OK and snapshot.execution is not None:
                     record = snapshot.execution
                     if record.status == ExecutionStatus.COMPLETE.value:
-                        return {
+                        result = {
                             MessageFields.STATUS: ExecutionStatus.COMPLETE.value,
                             MessageFields.EXECUTION_ID: execution_id,
-                            "results": record.results_summary or {},
                         }
+                        if record.results_summary is None:
+                            result["results"] = {}
+                        else:
+                            result["results"] = dict(record.results_summary)
+                        return result
                     if record.status == ExecutionStatus.FAILED.value:
-                        return {
+                        result = {
                             MessageFields.STATUS: ExecutionStatus.FAILED.value,
                             MessageFields.EXECUTION_ID: execution_id,
-                            MessageFields.MESSAGE: record.error,
                         }
+                        if record.error is not None:
+                            result[MessageFields.MESSAGE] = record.error
+                        return result
                     if record.status == ExecutionStatus.CANCELLED.value:
                         return {
                             MessageFields.STATUS: ExecutionStatus.CANCELLED.value,
@@ -58,15 +70,17 @@ class ExecutionWaiter:
                             MessageFields.MESSAGE: "Execution was cancelled",
                         }
 
-                if snapshot.status.value == "error":
-                    return {
-                        MessageFields.STATUS: "error",
+                if snapshot.status is ResponseType.ERROR:
+                    result = {
+                        MessageFields.STATUS: ResponseType.ERROR.value,
                         MessageFields.EXECUTION_ID: execution_id,
-                        MessageFields.MESSAGE: status_response.get(
-                            MessageFields.MESSAGE,
-                            status_response.get(MessageFields.ERROR, "Unknown error"),
-                        ),
                     }
+                    result.update(
+                        ExecutionResponseDiagnostic.from_wire(
+                            status_response
+                        ).as_message_items()
+                    )
+                    return result
 
             except Exception as error:
                 consecutive_errors += 1
