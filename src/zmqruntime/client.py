@@ -10,17 +10,21 @@ import subprocess
 import threading
 import time
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor, wait
 
 import zmq
 
 from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.messages import ControlMessageType, MessageFields, ResponseType
 from zmqruntime.transport import (
+    get_control_port,
     get_default_transport_mode,
     get_ipc_socket_path,
     get_zmq_transport_url,
     is_port_in_use,
+    ping_control_port,
     remove_ipc_socket,
+    request_control_ping,
     wait_for_server_ready,
 )
 
@@ -141,32 +145,14 @@ class ZMQClient(ABC):
             self.zmq_context = None
 
     def _try_connect_to_existing(self, port: int, timeout_ms: int = 500) -> bool:
-        try:
-            control_url = get_zmq_transport_url(
-                port + self.config.control_port_offset,
-                host=self.host,
-                mode=self.transport_mode,
-                config=self.config,
-            )
-
-            ctx = zmq.Context.instance()
-            sock = ctx.socket(zmq.REQ)
-            sock.setsockopt(zmq.LINGER, 0)
-            sock.setsockopt(zmq.RCVTIMEO, timeout_ms)
-            sock.connect(control_url)
-            sock.send(pickle.dumps({MessageFields.TYPE: ControlMessageType.PING.value}))
-            response = pickle.loads(sock.recv())
-            return (
-                response[MessageFields.TYPE] == ResponseType.PONG.value
-                and bool(response[MessageFields.READY])
-            )
-        except Exception:
-            return False
-        finally:
-            try:
-                sock.close(linger=0)
-            except Exception:
-                pass
+        return ping_control_port(
+            port,
+            self.transport_mode,
+            host=self.host,
+            config=self.config,
+            timeout_ms=timeout_ms,
+            require_ready=True,
+        )
 
     @staticmethod
     def _existing_endpoint_probe_timeout_ms(timeout: float) -> int:
@@ -260,36 +246,39 @@ class ZMQClient(ABC):
     ):
         config = config or ZMQConfig()
         transport_mode = transport_mode or get_default_transport_mode()
-        servers = []
-        for port in ports:
-            try:
-                control_port = port + config.control_port_offset
-                control_url = get_zmq_transport_url(
-                    control_port,
-                    host=host,
-                    mode=transport_mode,
-                    config=config,
-                )
+        ports = tuple(ports)
+        if not ports:
+            return []
 
-                ctx = zmq.Context.instance()
-                sock = ctx.socket(zmq.REQ)
-                sock.setsockopt(zmq.LINGER, 0)
-                sock.setsockopt(zmq.RCVTIMEO, timeout_ms)
-                sock.connect(control_url)
-                sock.send(pickle.dumps({MessageFields.TYPE: ControlMessageType.PING.value}))
-                pong = pickle.loads(sock.recv())
-                if pong[MessageFields.TYPE] == ResponseType.PONG.value:
-                    pong["port"] = port
-                    pong["control_port"] = control_port
-                    servers.append(pong)
-            except Exception:
-                pass
-            finally:
-                try:
-                    sock.close(linger=0)
-                except Exception:
-                    pass
-        return servers
+        def scan_port(port):
+            pong = request_control_ping(
+                port,
+                transport_mode,
+                host=host,
+                config=config,
+                timeout_ms=timeout_ms,
+            )
+            if pong is None or pong.get(MessageFields.TYPE) != ResponseType.PONG.value:
+                return None
+            return {
+                **pong,
+                "port": port,
+                "control_port": get_control_port(port, config),
+            }
+
+        servers = []
+        worker_count = min(len(ports), 32)
+        executor = ThreadPoolExecutor(max_workers=worker_count)
+        try:
+            futures = tuple(executor.submit(scan_port, port) for port in ports)
+            done, _ = wait(futures, timeout=max(timeout_ms / 1000, 0.001))
+            for future in done:
+                server = future.result()
+                if server is not None:
+                    servers.append(server)
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+        return sorted(servers, key=lambda server: ports.index(server["port"]))
 
     @staticmethod
     def kill_server_on_port(

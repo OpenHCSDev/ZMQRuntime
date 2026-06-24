@@ -144,25 +144,50 @@ def ping_control_port(
     require_ready: bool = True,
 ) -> bool:
     """Ping the control socket for a given data port."""
+    response = request_control_ping(
+        port,
+        transport_mode,
+        host=host,
+        config=config,
+        timeout_ms=timeout_ms,
+    )
+    if response is None or response.get("type") != "pong":
+        return False
+    if require_ready:
+        return bool(response.get("ready"))
+    return True
+
+
+def request_control_ping(
+    port: int,
+    transport_mode,
+    host: str = "localhost",
+    config: ZMQConfig | None = None,
+    timeout_ms: int = 500,
+) -> dict | None:
+    """Return the control PONG payload for a data port, or None when unreachable."""
     config = config or _default_config
     control_url = get_control_url(port, transport_mode, host=host, config=config)
-    ctx = None
     sock = None
     try:
         ctx = zmq.Context.instance()
         sock = ctx.socket(zmq.REQ)
         sock.setsockopt(zmq.LINGER, 0)
+        sock.setsockopt(zmq.IMMEDIATE, 1)
+        sock.setsockopt(zmq.SNDTIMEO, timeout_ms)
         sock.setsockopt(zmq.RCVTIMEO, timeout_ms)
         sock.connect(control_url)
-        sock.send(pickle.dumps({"type": "ping"}))
-        response = pickle.loads(sock.recv())
-        if response.get("type") != "pong":
-            return False
-        if require_ready:
-            return bool(response.get("ready"))
-        return True
+        if not sock.poll(timeout_ms, zmq.POLLOUT):
+            return None
+        sock.send(pickle.dumps({"type": "ping"}), flags=zmq.NOBLOCK)
+        if not sock.poll(timeout_ms, zmq.POLLIN):
+            return None
+        response = pickle.loads(sock.recv(flags=zmq.NOBLOCK))
+        if not isinstance(response, dict):
+            return None
+        return response
     except Exception:
-        return False
+        return None
     finally:
         if sock is not None:
             try:

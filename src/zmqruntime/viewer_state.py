@@ -311,7 +311,13 @@ class ViewerStateManager:
                 instance.processed_images += 1
                 self._notify_state_change(instance)
 
-    def release_viewer(self, viewer_type: str, port: int, stop: bool = False) -> bool:
+    def release_viewer(
+        self,
+        viewer_type: str,
+        port: int,
+        stop: bool = False,
+        force: bool = False,
+    ) -> bool:
         """
         Release a viewer from management.
 
@@ -319,6 +325,7 @@ class ViewerStateManager:
             viewer_type: Type of viewer
             port: Port number
             stop: If True, stop the process. If False, just untrack it.
+            force: If True with stop=True, ignore viewer persistence policy.
 
         Returns:
             True if viewer was found and released
@@ -334,7 +341,10 @@ class ViewerStateManager:
 
             if stop:
                 try:
-                    instance.visualizer.stop()
+                    if force:
+                        instance.visualizer.force_stop()
+                    else:
+                        instance.visualizer.stop()
                     logger.info(
                         "ViewerStateManager: Stopped %s viewer on port %d",
                         viewer_type,

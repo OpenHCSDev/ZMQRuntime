@@ -71,6 +71,13 @@ class ViewerWireField(str, Enum):
     IMAGES_DIR = "images_dir"
 
 
+class ViewerSourceSpatialWireField(str, Enum):
+    """Wire fields for source-image XY placement metadata."""
+
+    SPATIAL_ORIGIN_YX = "spatial_origin_yx"
+    SOURCE_SPATIAL_SHAPE_YX = "source_spatial_shape_yx"
+
+
 class ViewerComponentMode(str, Enum):
     """Viewer component placement modes shared by stream receivers."""
 
@@ -140,6 +147,78 @@ class ViewerBatchMessageExtraPayload(dict[str, ViewerWireValue]):
                 for field, value in values.items()
             }
         )
+
+
+@dataclass(frozen=True)
+class ViewerSourceSpatialDomainPayload:
+    """Viewer-wire source-image XY placement metadata."""
+
+    origin_yx: tuple[int, int] | None = None
+    source_shape_yx: tuple[int, int] | None = None
+
+    @classmethod
+    def from_wire_mapping(
+        cls,
+        payload: ViewerWireMapping,
+        *,
+        source_label: str,
+    ) -> "ViewerSourceSpatialDomainPayload":
+        return cls(
+            origin_yx=cls._optional_pair(
+                payload,
+                ViewerSourceSpatialWireField.SPATIAL_ORIGIN_YX,
+                source_label,
+            ),
+            source_shape_yx=cls._optional_pair(
+                payload,
+                ViewerSourceSpatialWireField.SOURCE_SPATIAL_SHAPE_YX,
+                source_label,
+            ),
+        )
+
+    def to_wire_mapping(self) -> dict[str, ViewerWireValue]:
+        payload: dict[str, ViewerWireValue] = {}
+        if self.origin_yx is not None:
+            payload[ViewerSourceSpatialWireField.SPATIAL_ORIGIN_YX.value] = (
+                int(self.origin_yx[0]),
+                int(self.origin_yx[1]),
+            )
+        if self.source_shape_yx is not None:
+            payload[ViewerSourceSpatialWireField.SOURCE_SPATIAL_SHAPE_YX.value] = (
+                int(self.source_shape_yx[0]),
+                int(self.source_shape_yx[1]),
+            )
+        return payload
+
+    def required_source_shape_yx(self, *, source_label: str) -> tuple[int, int]:
+        if self.source_shape_yx is None:
+            raise ValueError(
+                f"{source_label} requires "
+                f"{ViewerSourceSpatialWireField.SOURCE_SPATIAL_SHAPE_YX.value!r}."
+            )
+        return self.source_shape_yx
+
+    @staticmethod
+    def _optional_pair(
+        payload: ViewerWireMapping,
+        field: ViewerSourceSpatialWireField,
+        source_label: str,
+    ) -> tuple[int, int] | None:
+        field_name = field.value
+        if field_name not in payload or payload[field_name] is None:
+            return None
+        value = payload[field_name]
+        if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+            raise TypeError(
+                f"{source_label} field {field_name!r} must be a two-value sequence, "
+                f"got {type(value).__name__}."
+            )
+        if len(value) != 2:
+            raise ValueError(
+                f"{source_label} field {field_name!r} must have exactly two values, "
+                f"got {value!r}."
+            )
+        return int(value[0]), int(value[1])
 
 
 class ViewerBatchMessageWirePayload(dict[str, ViewerWireValue]):

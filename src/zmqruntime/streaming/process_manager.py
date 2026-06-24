@@ -59,6 +59,10 @@ class VisualizerProcessManager(ABC):
                     self.process.kill()
             self.process = None
 
+    def force_stop(self, timeout: float = 5.0):
+        """Stop the visualizer subprocess regardless of viewer persistence policy."""
+        self.stop(timeout=timeout)
+
     @property
     def is_running(self) -> bool:
         if not self.process:
