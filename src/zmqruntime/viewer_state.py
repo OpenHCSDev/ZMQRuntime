@@ -268,7 +268,7 @@ class ViewerStateManager:
             self._notify_state_change(instance)
 
             try:
-                instance.visualizer.stop()
+                instance.visualizer.force_stop()
             except Exception as e:
                 logger.warning("Error stopping viewer during removal: %s", e)
 
@@ -369,7 +369,7 @@ class ViewerStateManager:
 
         for key, instance in viewers_to_stop:
             try:
-                instance.visualizer.stop()
+                instance.visualizer.force_stop()
                 logger.info(
                     "ViewerStateManager: Stopped %s viewer on port %d",
                     instance.viewer_type,

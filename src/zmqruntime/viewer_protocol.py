@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
+from numbers import Integral, Real
 from typing import TypeAlias, Union
 
 import zmq
@@ -71,6 +72,68 @@ class ViewerWireField(str, Enum):
     IMAGES_DIR = "images_dir"
 
 
+ViewerWireRawValue: TypeAlias = (
+    ViewerWireScalar
+    | Enum
+    | Mapping[str | Enum, "ViewerWireRawValue"]
+    | Sequence["ViewerWireRawValue"]
+)
+ViewerWireRawMapping: TypeAlias = Mapping[str | Enum, ViewerWireRawValue]
+
+
+class ViewerWirePayload:
+    """Normalize declared viewer payloads into JSON-compatible wire values."""
+
+    @classmethod
+    def mapping(
+        cls,
+        values: ViewerWireRawMapping,
+        *,
+        context: str,
+    ) -> dict[str, ViewerWireValue]:
+        payload: dict[str, ViewerWireValue] = {}
+        for field, value in values.items():
+            key = cls.key(field, context=context)
+            payload[key] = cls.value(value, context=f"{context}.{key}")
+        return payload
+
+    @classmethod
+    def value(
+        cls,
+        value: ViewerWireRawValue,
+        *,
+        context: str,
+    ) -> ViewerWireValue:
+        if value is None or isinstance(value, (str, bool, int, float)):
+            return value
+        if isinstance(value, Integral):
+            return int(value)
+        if isinstance(value, Real):
+            return float(value)
+        if isinstance(value, Enum):
+            return cls.value(value.value, context=f"{context}.value")
+        if isinstance(value, Mapping):
+            return cls.mapping(value, context=context)
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            return [
+                cls.value(item, context=f"{context}[{index}]")
+                for index, item in enumerate(value)
+            ]
+        raise TypeError(
+            f"Viewer wire payload field {context!r} cannot serialize "
+            f"{type(value).__name__}."
+        )
+
+    @staticmethod
+    def key(field: str | Enum, *, context: str) -> str:
+        if isinstance(field, (str, Enum)):
+            return viewer_wire_key(field)
+        raise TypeError(
+            f"Viewer wire payload mapping {context!r} has non-string key "
+            f"{field!r} ({type(field).__name__})."
+        )
+
+
 class ViewerSourceSpatialWireField(str, Enum):
     """Wire fields for source-image XY placement metadata."""
 
@@ -120,14 +183,14 @@ ViewerDisplayConfigWireField: TypeAlias = ViewerWireField
 ViewerBatchContextWireField: TypeAlias = ViewerWireField
 ViewerBatchItemWireMapping: TypeAlias = Mapping[
     str | ViewerBatchItemWireField,
-    ViewerWireValue,
+    ViewerWireRawValue,
 ]
 ViewerBatchMessageImages: TypeAlias = Sequence[
-    Union["ViewerBatchItemPayload", ViewerWireMapping]
+    Union["ViewerBatchItemPayload", ViewerWireRawMapping]
 ]
 ViewerBatchMessageExtraInput: TypeAlias = Mapping[
     str | ViewerBatchWireField | ViewerBatchContextWireField,
-    ViewerWireValue,
+    ViewerWireRawValue,
 ] | None
 
 
@@ -142,10 +205,10 @@ class ViewerBatchMessageExtraPayload(dict[str, ViewerWireValue]):
         if values is None:
             return cls()
         return cls(
-            {
-                viewer_wire_key(field): value
-                for field, value in values.items()
-            }
+            ViewerWirePayload.mapping(
+                values,
+                context="viewer batch message extra",
+            )
         )
 
 
@@ -225,7 +288,7 @@ class ViewerBatchMessageWirePayload(dict[str, ViewerWireValue]):
     """Normalized wire envelope for a complete viewer batch message."""
 
 
-def viewer_wire_key(field: str | ViewerWireField) -> str:
+def viewer_wire_key(field: str | Enum) -> str:
     """Return the concrete JSON key for a named viewer wire field."""
 
     if isinstance(field, Enum):
@@ -290,14 +353,20 @@ class ViewerBatchDisplayPayload:
 
     def to_wire_mapping(self) -> dict[str, ViewerWireValue]:
         payload: dict[str, ViewerWireValue] = {
-            ViewerDisplayConfigWireField.COMPONENT_MODES.value: dict(self.component_modes),
-            ViewerDisplayConfigWireField.COMPONENT_ORDER.value: list(self.component_order),
+            ViewerDisplayConfigWireField.COMPONENT_MODES.value: ViewerWirePayload.mapping(
+                self.component_modes,
+                context="viewer display component modes",
+            ),
+            ViewerDisplayConfigWireField.COMPONENT_ORDER.value: ViewerWirePayload.value(
+                list(self.component_order),
+                context="viewer display component order",
+            ),
         }
         payload.update(
-            {
-                viewer_wire_key(field): value
-                for field, value in self.extra.items()
-            }
+            ViewerWirePayload.mapping(
+                self.extra,
+                context="viewer display extra",
+            )
         )
         return payload
 
@@ -326,25 +395,31 @@ class ViewerBatchItemPayload:
         producer_identity: ViewerWireMapping,
         image_id: str,
     ) -> "ViewerBatchItemPayload":
-        fields = {
-            viewer_wire_key(field): value
-            for field, value in item_payload.items()
-        }
+        fields = ViewerWirePayload.mapping(
+            item_payload,
+            context="viewer batch item payload",
+        )
         fields.update(
             {
                 ViewerBatchItemWireField.DATA_TYPE.value: data_type,
-                ViewerBatchItemWireField.METADATA.value: dict(metadata),
-                ViewerBatchItemWireField.PRODUCER_IDENTITY.value: dict(producer_identity),
+                ViewerBatchItemWireField.METADATA.value: ViewerWirePayload.mapping(
+                    metadata,
+                    context="viewer batch item metadata",
+                ),
+                ViewerBatchItemWireField.PRODUCER_IDENTITY.value: ViewerWirePayload.mapping(
+                    producer_identity,
+                    context="viewer batch item producer identity",
+                ),
                 ViewerBatchItemWireField.IMAGE_ID.value: image_id,
             }
         )
         return cls(fields)
 
     def to_wire_mapping(self) -> dict[str, ViewerWireValue]:
-        return {
-            viewer_wire_key(field): value
-            for field, value in self.fields.items()
-        }
+        return ViewerWirePayload.mapping(
+            self.fields,
+            context="viewer batch item",
+        )
 
 
 @dataclass(frozen=True)
@@ -390,19 +465,25 @@ class ViewerComponentMetadataPayload:
             ViewerBatchWireField.COMPONENT_NAMES_METADATA.value,
             ViewerBatchWireField.COMPONENT_VALUE_DOMAIN.value,
         }
-        return {
-            viewer_wire_key(field): value
-            for field, value in payload.items()
-            if viewer_wire_key(field) not in metadata_keys
-        }
+        stripped: dict[str | ViewerBatchWireField, ViewerWireValue] = {}
+        for field, value in payload.items():
+            key = viewer_wire_key(field)
+            if key not in metadata_keys:
+                stripped[field] = value
+        return ViewerWirePayload.mapping(
+            stripped,
+            context="viewer batch message extra without component metadata",
+        )
 
     def component_metadata_wire_mapping(self) -> dict[str, ViewerWireValue]:
         return {
-            ViewerBatchWireField.COMPONENT_NAMES_METADATA.value: dict(
-                self.component_names_metadata
+            ViewerBatchWireField.COMPONENT_NAMES_METADATA.value: ViewerWirePayload.mapping(
+                self.component_names_metadata,
+                context="viewer component names metadata",
             ),
-            ViewerBatchWireField.COMPONENT_VALUE_DOMAIN.value: dict(
-                self.component_value_domain
+            ViewerBatchWireField.COMPONENT_VALUE_DOMAIN.value: ViewerWirePayload.mapping(
+                self.component_value_domain,
+                context="viewer component value domain",
             ),
         }
 
@@ -425,7 +506,10 @@ class ViewerComponentMetadataPayload:
                 f"Viewer component metadata field {field_name!r} must be a mapping, "
                 f"got {type(value).__name__}."
             )
-        return dict(value)
+        return ViewerWirePayload.mapping(
+            value,
+            context=f"viewer component metadata {field_name}",
+        )
 
 
 class ViewerBatchMessagePayload(ViewerBatchMessageWirePayload):
@@ -447,23 +531,40 @@ class ViewerBatchMessagePayload(ViewerBatchMessageWirePayload):
                 ViewerBatchWireField.IMAGES.value: [
                     image.to_wire_mapping()
                     if isinstance(image, ViewerBatchItemPayload)
-                    else dict(image)
-                    for image in images
+                    else ViewerWirePayload.mapping(
+                        image,
+                        context=f"viewer batch message image[{index}]",
+                    )
+                    for index, image in enumerate(images)
                 ],
                 ViewerBatchWireField.DISPLAY_CONFIG.value: (
                     display_payload.to_wire_mapping()
                     if isinstance(display_payload, ViewerBatchDisplayPayload)
-                    else dict(display_payload)
+                    else ViewerWirePayload.mapping(
+                        display_payload,
+                        context="viewer batch display payload",
+                    )
                 ),
-                ViewerBatchWireField.TIMESTAMP.value: timestamp,
+                ViewerBatchWireField.TIMESTAMP.value: ViewerWirePayload.value(
+                    timestamp,
+                    context="viewer batch timestamp",
+                ),
             }
         )
         payload.update(component_metadata.component_metadata_wire_mapping())
         payload.update(ViewerBatchMessageExtraPayload.from_mapping(extra))
-        return payload
+        return cls(
+            ViewerWirePayload.mapping(
+                payload,
+                context="viewer batch message",
+            )
+        )
 
     def to_wire_mapping(self) -> dict[str, ViewerWireValue]:
-        return dict(self)
+        return ViewerWirePayload.mapping(
+            self,
+            context="viewer batch message",
+        )
 
 
 @dataclass(frozen=True)
@@ -520,7 +621,12 @@ class ViewerControlReplyPayload:
 
     def to_wire_mapping(self) -> dict[str, ViewerWireValue]:
         payload = self.header.to_wire_mapping()
-        payload.update(self.fields)
+        payload.update(
+            ViewerWirePayload.mapping(
+                self.fields,
+                context="viewer control reply fields",
+            )
+        )
         return payload
 
 
@@ -540,7 +646,10 @@ class ViewerAckResponsePayload:
         return cls(payload)
 
     def to_wire_mapping(self) -> dict[str, ViewerWireValue]:
-        return dict(self.payload)
+        return ViewerWirePayload.mapping(
+            self.payload,
+            context="viewer ack response",
+        )
 
 
 @dataclass(frozen=True)
