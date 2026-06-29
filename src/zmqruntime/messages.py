@@ -327,6 +327,7 @@ class MessageFields:
     CONTROL_PORT = "control_port"
     READY = "ready"
     SERVER = "server"
+    SERVER_TYPE = "server_type"
     LOG_FILE_PATH = "log_file_path"
     ACTIVE_EXECUTIONS = "active_executions"
     RUNNING_EXECUTIONS = "running_executions"
@@ -778,6 +779,7 @@ class PongResponse:
     control_port: int
     ready: bool
     server: str
+    server_type: Optional[str] = None
     log_file_path: Optional[str] = None
     active_executions: Optional[int] = None
     running_executions: Optional[Tuple[RunningExecutionInfo, ...]] = None
@@ -795,6 +797,8 @@ class PongResponse:
             MessageFields.READY: self.ready,
             MessageFields.SERVER: self.server,
         }
+        if self.server_type is not None:
+            result[MessageFields.SERVER_TYPE] = self.server_type
         if self.log_file_path is not None:
             result[MessageFields.LOG_FILE_PATH] = self.log_file_path
         if self.active_executions is not None:
@@ -852,6 +856,7 @@ class PongResponse:
             control_port=data[MessageFields.CONTROL_PORT],
             ready=data[MessageFields.READY],
             server=data[MessageFields.SERVER],
+            server_type=data.get(MessageFields.SERVER_TYPE),
             log_file_path=data.get(MessageFields.LOG_FILE_PATH),
             active_executions=data.get(MessageFields.ACTIVE_EXECUTIONS),
             running_executions=running_executions,

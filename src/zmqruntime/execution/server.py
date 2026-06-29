@@ -84,6 +84,7 @@ class ExecutionServer(ZMQServer, ABC):
                 control_port=self.control_port,
                 ready=self._ready,
                 server=self.__class__.__name__,
+                server_type=self.__class__.server_type(),
                 log_file_path=self.log_file_path,
                 active_executions=snapshot.active_executions,
                 running_executions=tuple(

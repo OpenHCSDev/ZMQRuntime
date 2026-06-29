@@ -71,6 +71,11 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
 
     _server_type: Optional[str] = None  # Override in subclasses for registration
 
+    @classmethod
+    def server_type(cls) -> Optional[str]:
+        """Return this server class's registered runtime role."""
+        return cls._server_type
+
     def __init__(
         self,
         port: int,
@@ -211,6 +216,7 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
                 control_port=self.control_port,
                 ready=self._ready,
                 server=self.__class__.__name__,
+                server_type=self.__class__.server_type(),
                 log_file_path=self.log_file_path,
             ).to_dict()
         )

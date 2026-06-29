@@ -37,12 +37,15 @@ def test_pong_response_dict():
         control_port=6555,
         ready=True,
         server="Test",
+        server_type="test",
         progress_subscribers=2,
     )
     data = pong.to_dict()
     assert data[MessageFields.TYPE] == ResponseType.PONG.value
     assert data[MessageFields.PORT] == 5555
+    assert data[MessageFields.SERVER_TYPE] == "test"
     assert data[MessageFields.PROGRESS_SUBSCRIBERS] == 2
+    assert PongResponse.from_dict(data).server_type == "test"
 
 
 def test_pong_response_rejects_legacy_running_execution_shape():
