@@ -148,6 +148,8 @@ class DummyExecutionClient(ExecutionClient):
         return True
 
     def _send_control_request(self, request, timeout_ms=5000):
+        if request[MessageFields.TYPE] == ControlMessageType.REGISTER_PROGRESS.value:
+            return {MessageFields.STATUS: ResponseType.OK.value}
         return request
 
 
@@ -308,6 +310,42 @@ def test_execution_waiter_surfaces_error_field_when_message_absent():
 
     assert result[MessageFields.STATUS] == ResponseType.ERROR.value
     assert result[MessageFields.MESSAGE] == "Execution missing from restarted server"
+
+
+def test_execution_waiter_treats_progress_as_liveness_during_status_timeouts():
+    calls = 0
+    progress_sequence = 0
+
+    def poll_status(_execution_id):
+        nonlocal calls, progress_sequence
+        calls += 1
+        if calls <= 3:
+            progress_sequence += 1
+            raise TimeoutError("status endpoint busy")
+        return {
+            MessageFields.STATUS: ResponseType.OK.value,
+            MessageFields.EXECUTION: {
+                MessageFields.EXECUTION_ID: "compile-1",
+                MessageFields.PLATE_ID: "plate-1",
+                MessageFields.STATUS: ExecutionStatus.COMPLETE.value,
+            },
+        }
+
+    waiter = ExecutionWaiter(
+        poll_status,
+        progress_sequence=lambda _execution_id: progress_sequence,
+    )
+
+    result = waiter.wait(
+        "compile-1",
+        WaitPolicy(
+            poll_interval=0,
+            max_consecutive_errors=2,
+            retry_backoff_seconds=0,
+        ),
+    )
+
+    assert result[MessageFields.STATUS] == ExecutionStatus.COMPLETE.value
 
 
 def test_submission_response_requires_explicit_tracking_and_diagnostics():

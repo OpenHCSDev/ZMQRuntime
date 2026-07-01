@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pickle
 import logging
+import threading
 import uuid
 from abc import ABC, abstractmethod
 from typing import Generic, TypeVar
@@ -38,18 +39,16 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
         super().__init__(port, host, persistent, transport_mode=transport_mode, config=config)
         self.progress_callback = progress_callback
         self._progress_stream: ProgressStreamSubscriber | None = None
-        self._execution_waiter = ExecutionWaiter(self.poll_status)
         self._progress_client_id = str(uuid.uuid4())
         self._progress_registered = False
+        self._progress_lock = threading.Lock()
+        self._progress_sequence_by_execution_id: dict[str, int] = {}
 
     def _start_progress_listener(self):
-        if not self.progress_callback:
-            logger.info("No progress callback, skipping listener")
-            return
         if self._progress_stream is None:
             self._progress_stream = ProgressStreamSubscriber(
                 socket_provider=lambda: self.data_socket,
-                callback=self.progress_callback,
+                callback=self._record_progress,
             )
         logger.info("Starting progress listener thread")
         self._progress_stream.start()
@@ -73,19 +72,38 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
         response = self._send_control_request(request)
         return response
 
-    def poll_status(self, execution_id: str | None = None):
+    def poll_status(
+        self,
+        execution_id: str | None = None,
+        *,
+        timeout_ms: int = 5000,
+    ):
         request = {MessageFields.TYPE: ControlMessageType.STATUS.value}
         if execution_id:
             request[MessageFields.EXECUTION_ID] = execution_id
-        return self._send_control_request(request)
+        return self._send_control_request(request, timeout_ms=timeout_ms)
 
-    def wait_for_completion(self, execution_id, poll_interval=0.5, max_consecutive_errors=5):
+    def wait_for_completion(
+        self,
+        execution_id,
+        poll_interval=0.5,
+        max_consecutive_errors=5,
+        status_timeout_ms: int = WaitPolicy.status_timeout_ms,
+    ):
         logger.info("Waiting for execution %s to complete", execution_id)
         policy = WaitPolicy(
             poll_interval=poll_interval,
             max_consecutive_errors=max_consecutive_errors,
+            status_timeout_ms=status_timeout_ms,
         )
-        return self._execution_waiter.wait(execution_id, policy)
+        waiter = ExecutionWaiter(
+            lambda current_execution_id: self.poll_status(
+                current_execution_id,
+                timeout_ms=policy.status_timeout_ms,
+            ),
+            self._progress_sequence,
+        )
+        return waiter.wait(execution_id, policy)
 
     def execute(
         self,
@@ -187,8 +205,6 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
         super().disconnect()
 
     def _ensure_progress_subscription(self) -> None:
-        if not self.progress_callback:
-            return
         self._start_progress_listener()
         if self._progress_registered:
             return
@@ -209,6 +225,19 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
         if not self._connected and not self.connect():
             raise RuntimeError("Failed to connect to execution server")
         self._ensure_progress_subscription()
+
+    def _record_progress(self, data: dict) -> None:
+        execution_id = data[MessageFields.EXECUTION_ID]
+        with self._progress_lock:
+            self._progress_sequence_by_execution_id[execution_id] = (
+                self._progress_sequence_by_execution_id.get(execution_id, 0) + 1
+            )
+        if self.progress_callback is not None:
+            self.progress_callback(data)
+
+    def _progress_sequence(self, execution_id: str) -> int | None:
+        with self._progress_lock:
+            return self._progress_sequence_by_execution_id.get(execution_id)
 
     @abstractmethod
     def serialize_task(

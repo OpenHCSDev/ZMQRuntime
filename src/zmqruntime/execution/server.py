@@ -53,6 +53,7 @@ class ExecutionServer(ZMQServer, ABC):
         self.active_executions: dict[str, ExecutionRecord] = self._lifecycle.records()
         self.start_time = None
         self.progress_queue: queue.Queue = queue.Queue()
+        self._progress_publish_lock = threading.Lock()
 
         self.execution_queue: queue.Queue = queue.Queue()
         self.queue_worker_thread: threading.Thread | None = None
@@ -129,7 +130,8 @@ class ExecutionServer(ZMQServer, ABC):
                 f"axis={progress_update.get('axis_id')}, plate_id={progress_update.get('plate_id')}, "
                 f"percent={progress_update.get('percent')}"
             )
-            self.data_socket.send_string(json.dumps(progress_update))
+            with self._progress_publish_lock:
+                self.data_socket.send_string(json.dumps(progress_update))
             count += 1
 
     def get_status_info(self):

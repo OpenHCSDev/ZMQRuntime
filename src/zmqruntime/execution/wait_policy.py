@@ -26,21 +26,31 @@ class WaitPolicy:
     poll_interval: float = 0.5
     max_consecutive_errors: int = 5
     retry_backoff_seconds: float = 1.0
+    status_timeout_ms: int = 1000
 
 
 class ExecutionWaiter:
     """Reusable waiter for execution status polling loops."""
 
-    def __init__(self, poll_status: Callable[[str], WireResponse]) -> None:
+    def __init__(
+        self,
+        poll_status: Callable[[str], WireResponse],
+        progress_sequence: Callable[[str], int | None] | None = None,
+    ) -> None:
         self._poll_status = poll_status
+        self._progress_sequence = progress_sequence
 
     def wait(self, execution_id: str, policy: WaitPolicy) -> dict[str, WireValue]:
         consecutive_errors = 0
+        observed_progress_sequence = self._observed_progress_sequence(execution_id)
         while True:
             time.sleep(policy.poll_interval)
             try:
                 status_response = self._poll_status(execution_id)
                 consecutive_errors = 0
+                observed_progress_sequence = self._observed_progress_sequence(
+                    execution_id
+                )
                 snapshot = ExecutionStatusSnapshot.from_dict(status_response)
 
                 if snapshot.status is ResponseType.OK and snapshot.execution is not None:
@@ -83,6 +93,19 @@ class ExecutionWaiter:
                     return result
 
             except Exception as error:
+                progress_sequence = self._observed_progress_sequence(execution_id)
+                if (
+                    progress_sequence is not None
+                    and progress_sequence != observed_progress_sequence
+                ):
+                    observed_progress_sequence = progress_sequence
+                    consecutive_errors = 0
+                    logger.debug(
+                        "Status poll failed for %s, but progress advanced: %s",
+                        execution_id,
+                        error,
+                    )
+                    continue
                 consecutive_errors += 1
                 logger.warning(
                     "Error checking execution status (attempt %s/%s): %s",
@@ -97,3 +120,8 @@ class ExecutionWaiter:
                         MessageFields.MESSAGE: "Lost connection to server",
                     }
                 time.sleep(policy.retry_backoff_seconds)
+
+    def _observed_progress_sequence(self, execution_id: str) -> int | None:
+        if self._progress_sequence is None:
+            return None
+        return self._progress_sequence(execution_id)
