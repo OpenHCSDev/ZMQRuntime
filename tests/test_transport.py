@@ -1,16 +1,25 @@
+import pickle
 import platform
+import threading
+import time
 import uuid
 
 import pytest
 import zmq
 
 from zmqruntime.config import TransportMode, ZMQConfig
+from zmqruntime.messages import (
+    ControlMessageType,
+    MessageFields,
+    PongResponse,
+)
 from zmqruntime.transport import (
     get_default_transport_mode,
     get_ipc_socket_path,
     get_zmq_transport_url,
     ipc_socket_is_stale,
     remove_ipc_socket,
+    wait_for_server_ready,
 )
 
 
@@ -81,3 +90,110 @@ def test_ipc_socket_staleness_uses_kernel_socket_ownership():
         assert ipc_socket_is_stale(port, config) is True
     finally:
         remove_ipc_socket(port, config)
+
+
+def test_wait_for_server_ready_retries_until_server_reports_ready(
+    monkeypatch,
+):
+    ping_calls = []
+
+    monkeypatch.setattr(
+        "zmqruntime.transport.is_port_in_use",
+        lambda *args, **kwargs: True,
+    )
+
+    def ping(*args, **kwargs):
+        ping_calls.append((args, kwargs))
+        return len(ping_calls) == 3
+
+    monkeypatch.setattr("zmqruntime.transport.ping_control_port", ping)
+
+    assert wait_for_server_ready(
+        5555,
+        TransportMode.IPC,
+        timeout=2.5,
+        poll_interval=0.001,
+    )
+    assert len(ping_calls) == 3
+    assert all(1 <= call[1]["timeout_ms"] <= 2500 for call in ping_calls)
+    assert ping_calls[0][1]["timeout_ms"] > 250
+    assert all(call[1]["require_ready"] is True for call in ping_calls)
+
+
+@pytest.mark.skipif(platform.system() == "Windows", reason="IPC is POSIX-only")
+def test_wait_for_server_ready_retains_request_for_delayed_ready_reply():
+    config = ZMQConfig(
+        app_name=f"zmqruntime-ready-{uuid.uuid4().hex}",
+        ipc_socket_prefix="test",
+    )
+    port = 45557
+    control_port = port + config.control_port_offset
+    server_started = threading.Event()
+    release_server = threading.Event()
+    server_errors = []
+
+    def delayed_ready_reply():
+        context = zmq.Context()
+        data_socket = context.socket(zmq.REP)
+        control_socket = context.socket(zmq.REP)
+        try:
+            data_socket.bind(
+                get_zmq_transport_url(
+                    port,
+                    mode=TransportMode.IPC,
+                    config=config,
+                )
+            )
+            control_socket.bind(
+                get_zmq_transport_url(
+                    control_port,
+                    mode=TransportMode.IPC,
+                    config=config,
+                )
+            )
+            server_started.set()
+            if not control_socket.poll(2000, zmq.POLLIN):
+                raise TimeoutError("Readiness test server received no control PING")
+            request = pickle.loads(control_socket.recv())
+            assert request == {
+                MessageFields.TYPE: ControlMessageType.PING.value,
+            }
+            time.sleep(0.4)
+            control_socket.send(
+                pickle.dumps(
+                    PongResponse(
+                        port=port,
+                        control_port=control_port,
+                        ready=True,
+                        server="DelayedReadyTestServer",
+                    ).to_dict()
+                )
+            )
+            release_server.wait(timeout=2.0)
+        except Exception as error:
+            server_errors.append(error)
+        finally:
+            server_started.set()
+            data_socket.close(linger=0)
+            control_socket.close(linger=0)
+            context.term()
+
+    server_thread = threading.Thread(target=delayed_ready_reply)
+    server_thread.start()
+    try:
+        assert server_started.wait(timeout=1.0)
+        assert not server_errors
+        assert wait_for_server_ready(
+            port,
+            TransportMode.IPC,
+            config=config,
+            timeout=1.5,
+            poll_interval=0.01,
+        )
+    finally:
+        release_server.set()
+        server_thread.join(timeout=3.0)
+        remove_ipc_socket(port, config)
+        remove_ipc_socket(control_port, config)
+    assert not server_thread.is_alive()
+    assert not server_errors

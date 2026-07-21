@@ -11,7 +11,7 @@ from pathlib import Path
 import zmq
 
 from zmqruntime.config import TransportMode, ZMQConfig
-from zmqruntime.messages import MessageFields, ResponseType
+from zmqruntime.messages import ControlMessageType, MessageFields, ResponseType
 
 _default_config = ZMQConfig()
 
@@ -218,19 +218,37 @@ def request_control_ping(
     """Return the control PONG payload for a data port, or None when unreachable."""
     config = config or _default_config
     control_url = get_control_url(port, transport_mode, host=host, config=config)
+    deadline = time.monotonic() + max(0, timeout_ms) / 1000.0
+
+    def remaining_timeout_ms() -> int:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return 0
+        return max(1, int(remaining * 1000))
+
+    ctx = zmq.Context.instance()
     sock = None
     try:
-        ctx = zmq.Context.instance()
         sock = ctx.socket(zmq.REQ)
         sock.setsockopt(zmq.LINGER, 0)
         sock.setsockopt(zmq.IMMEDIATE, 1)
         sock.setsockopt(zmq.SNDTIMEO, timeout_ms)
         sock.setsockopt(zmq.RCVTIMEO, timeout_ms)
         sock.connect(control_url)
-        if not sock.poll(timeout_ms, zmq.POLLOUT):
+        send_timeout_ms = remaining_timeout_ms()
+        if send_timeout_ms <= 0 or not sock.poll(send_timeout_ms, zmq.POLLOUT):
             return None
-        sock.send(pickle.dumps({"type": "ping"}), flags=zmq.NOBLOCK)
-        if not sock.poll(timeout_ms, zmq.POLLIN):
+        sock.send(
+            pickle.dumps(
+                {MessageFields.TYPE: ControlMessageType.PING.value},
+            ),
+            flags=zmq.NOBLOCK,
+        )
+        receive_timeout_ms = remaining_timeout_ms()
+        if receive_timeout_ms <= 0 or not sock.poll(
+            receive_timeout_ms,
+            zmq.POLLIN,
+        ):
             return None
         response = pickle.loads(sock.recv(flags=zmq.NOBLOCK))
         if not isinstance(response, dict):
@@ -257,32 +275,27 @@ def wait_for_server_ready(
 ) -> bool:
     """Wait for a server to bind its data/control sockets and respond to ping."""
     config = config or _default_config
-    start_time = time.time()
+    deadline = time.monotonic() + timeout
     control_port = get_control_port(port, config)
 
-    while time.time() - start_time < timeout:
+    while time.monotonic() < deadline:
         if is_port_in_use(port, transport_mode, host=host, config=config) and is_port_in_use(
             control_port,
             transport_mode,
             host=host,
             config=config,
         ):
-            break
-        time.sleep(poll_interval)
-    else:
-        return False
-
-    start_time = time.time()
-    while time.time() - start_time < timeout:
-        if ping_control_port(
-            port,
-            transport_mode,
-            host=host,
-            config=config,
-            timeout_ms=1000,
-            require_ready=require_ready,
-        ):
-            return True
-        time.sleep(0.5)
-
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            if ping_control_port(
+                port,
+                transport_mode,
+                host=host,
+                config=config,
+                timeout_ms=max(1, int(remaining * 1000)),
+                require_ready=require_ready,
+            ):
+                return True
+        time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
     return False
