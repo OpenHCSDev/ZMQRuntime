@@ -1,6 +1,12 @@
 API Reference
 =============
 
+.. toctree::
+   :maxdepth: 1
+   :caption: Protocol APIs
+
+   viewer_protocol
+
 zmqruntime exposes a small, focused surface area for ZMQ-based execution
 and streaming. Key classes live in the public package namespace.
 

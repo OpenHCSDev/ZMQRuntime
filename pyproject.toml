@@ -30,6 +30,10 @@ dependencies = [
 
 [project.optional-dependencies]
 registry = ["metaclass-registry"]
+docs = [
+    "sphinx>=7.0",
+    "sphinx-rtd-theme>=2.0",
+]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
@@ -39,7 +43,7 @@ dev = [
 
 [project.urls]
 Homepage = "https://github.com/OpenHCSDev/zmqruntime"
-Documentation = "https://github.com/OpenHCSDev/zmqruntime#readme"
+Documentation = "https://zmqruntime.readthedocs.io"
 Repository = "https://github.com/OpenHCSDev/zmqruntime"
 Issues = "https://github.com/OpenHCSDev/zmqruntime/issues"
 

@@ -1,5 +1,5 @@
 Architecture
-===========
+============
 
 High-level architecture for zmqruntime's execution, streaming, and acknowledgment
 patterns.

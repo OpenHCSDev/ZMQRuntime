@@ -1,70 +1,53 @@
-# zmqruntime
+# ZMQRuntime
 
-Generic ZMQ-based distributed execution framework extracted from OpenHCS.
+Generic ZeroMQ transport, lifecycle, progress, cancellation, viewer-control,
+and execution-projection primitives.
 
-## Features
+## Important boundary
 
-- **Client-Server Architecture**: Simple ZMQ-based client and server for distributed task execution
-- **Multiple Transport Modes**: Support for TCP and IPC transports
-- **Message Protocol**: Typed message classes for requests, responses, progress updates, and control messages
-- **Queue Tracking**: Built-in queue tracking for monitoring execution status
-- **Acknowledgment System**: Global acknowledgment listener for reliable message delivery
+``ZMQServer`` and ``ZMQClient`` are abstract application integration points.
+They cannot be instantiated directly:
+
+- a server implements ``handle_control_message`` and ``handle_data_message``;
+- a client implements ``_spawn_server_process`` and ``send_data``.
+
+The package does not provide a generic ``send_request`` API or define an
+application's execution payload. Applications subclass the bases and map their
+typed domain requests onto the transport.
+
+## Transport configuration
+
+```python
+from zmqruntime import TransportMode, ZMQConfig
+from zmqruntime.transport import get_zmq_transport_url
+
+config = ZMQConfig(control_port_offset=1000)
+data_url = get_zmq_transport_url(
+    7777,
+    host="localhost",
+    mode=TransportMode.TCP,
+    config=config,
+)
+```
+
+Application subclasses can use ``serve_forever``, readiness probes, control
+port helpers, progress records, cancellation messages, lifecycle engines, and
+projection adapters without duplicating socket or process machinery.
 
 ## Installation
 
 ```bash
-pip install zmqruntime
+python -m pip install zmqruntime
 ```
 
-## Quick Start
+Documentation: [zmqruntime.readthedocs.io](https://zmqruntime.readthedocs.io/).
 
-### Server
+For local development, install the documentation dependencies and run a clean,
+warning-fatal build:
 
-```python
-from zmqruntime import ZMQServer, serve_forever
-
-# Create and start a server
-server = ZMQServer(port=7777)
-serve_forever(server)
+```bash
+python -m pip install -e ".[dev,docs]"
+python -m sphinx -E -W --keep-going -b html docs/source docs/_build/html
 ```
 
-### Client
-
-```python
-from zmqruntime import ZMQClient, ExecuteRequest
-
-# Connect to the server
-client = ZMQClient(port=7777)
-
-# Send an execution request
-request = ExecuteRequest(
-    execution_id="task-001",
-    payload={"task": "process_data"}
-)
-response = client.send_request(request)
-```
-
-## Core Components
-
-- `ZMQServer`: Server that listens for and processes execution requests
-- `ZMQClient`: Client for sending requests to the server
-- `ExecuteRequest` / `ExecuteResponse`: Request/response message types
-- `ProgressUpdate`: Progress reporting during execution
-- `QueueTracker`: Track pending and active executions
-- `GlobalAckListener`: Acknowledgment handling for reliable delivery
-
-## Transport Configuration
-
-```python
-from zmqruntime import ZMQConfig, TransportMode
-
-# TCP transport (default)
-config = ZMQConfig(port=7777, transport_mode=TransportMode.TCP)
-
-# IPC transport (Unix sockets)
-config = ZMQConfig(port=7777, transport_mode=TransportMode.IPC)
-```
-
-## License
-
-MIT License - see LICENSE file for details.
+Repository: [OpenHCSDev/ZMQRuntime](https://github.com/OpenHCSDev/ZMQRuntime).

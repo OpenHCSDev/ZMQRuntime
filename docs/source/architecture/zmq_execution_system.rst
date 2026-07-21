@@ -43,6 +43,51 @@ Receiver-side streaming projection semantics (component grouping, window/layer
 assembly, viewer-specific batch processing) belong to higher-level libraries
 such as ``polystore``, not ``zmqruntime``.
 
+Endpoint startup and ownership lifecycle
+----------------------------------------
+
+``ZMQClient.connect()`` performs discovery and optional auto-spawn inside
+``endpoint_startup_lock()``. For IPC transport, that context manager takes an
+exclusive file lock derived from the endpoint path, so concurrent clients cannot
+both observe an absent endpoint and spawn competing servers. TCP transport does
+not use the filesystem lock.
+
+While holding the startup boundary, the client follows one ordered decision:
+
+1. If the endpoint path/port exists, require a ready control PONG before treating
+   it as an existing server.
+2. For IPC, preserve an unresponsive path when the kernel still owns a Unix
+   socket. ``ipc_socket_is_stale()`` reports stale only when the path exists and
+   the Unix-socket inventory proves no matching kernel-owned socket. If process
+   inspection is unavailable or fails, it returns false and cleanup remains
+   conservative.
+3. Remove only a proven stale IPC path, or apply the platform's explicit TCP
+   port cleanup policy, before spawning.
+4. Retain the returned process handle as ``server_process`` and require the
+   normal readiness handshake before creating client data sockets.
+
+Startup failure is ownership-aware. If readiness times out or client-socket
+setup raises, the client stops the child it just spawned and clears the handle.
+It never assigns an existing server's process to ``server_process``.
+
+Disconnect has the same distinction. Client sockets always close, but a server
+process is stopped only when this client spawned it, the client did not connect
+to an existing endpoint, and ``persistent`` is false. Both
+``multiprocessing.Process`` and ``subprocess.Popen`` children receive graceful
+termination plus a bounded wait, then forced kill if necessary. IPC data and
+control paths are removed only after the owned child is confirmed stopped.
+``ZMQServer.stop()`` independently removes its own IPC endpoints after closing
+the sockets and context.
+
+This lifecycle keeps endpoint existence, control readiness, process ownership,
+and cleanup as separate facts. A socket path is not readiness evidence; an
+unresponsive live IPC socket is not stale; and knowing a port does not grant a
+client ownership of an existing process.
+
+Viewer readiness adds a stricter application-level handshake on top of this
+transport lifecycle. See :doc:`viewer_streaming_architecture`; it does not
+replace startup serialization or owned-process cleanup.
+
 ExecutionServer Responsibilities
 --------------------------------
 
