@@ -39,6 +39,7 @@ class ViewerControlResponseField(str, Enum):
     STATUS = MessageFields.STATUS
     TYPE = MessageFields.TYPE
     MESSAGE = MessageFields.MESSAGE
+    PAYLOAD = "payload"
 
 
 class ViewerBatchMessageType(str, Enum):
@@ -65,6 +66,9 @@ class ViewerWireField(str, Enum):
     METADATA = MessageFields.METADATA
     PRODUCER_IDENTITY = "producer_identity"
     IMAGE_ID = MessageFields.IMAGE_ID
+    SOURCE_CHANNEL_AXIS = "source_channel_axis"
+    PLANE_AXIS = "plane_axis"
+    PLANE_COMPONENT_VALUES = "plane_component_values"
     SHAPES = MessageFields.SHAPES
     ROIS = MessageFields.ROIS
     COMPONENT_MODES = "component_modes"
@@ -618,16 +622,19 @@ class ViewerControlReplyPayload:
 
     header: ViewerControlReplyHeader
     fields: Mapping[str, ViewerWireValue] = field(default_factory=dict)
+    payload: object | None = None
 
-    def to_wire_mapping(self) -> dict[str, ViewerWireValue]:
-        payload = self.header.to_wire_mapping()
-        payload.update(
+    def to_wire_mapping(self) -> dict[str, object]:
+        wire_payload: dict[str, object] = dict(self.header.to_wire_mapping())
+        wire_payload.update(
             ViewerWirePayload.mapping(
                 self.fields,
                 context="viewer control reply fields",
             )
         )
-        return payload
+        if self.payload is not None:
+            wire_payload[ViewerControlResponseField.PAYLOAD.value] = self.payload
+        return wire_payload
 
 
 @dataclass(frozen=True)

@@ -8,6 +8,7 @@ class RecordingVisualizer:
         self.fail_start = fail_start
         self.stop_calls = 0
         self.force_stop_calls = 0
+        self.ready_timeouts = []
         self.running = True
 
     def start(self):
@@ -16,7 +17,7 @@ class RecordingVisualizer:
         return None
 
     def wait_for_ready(self, timeout: float) -> bool:
-        del timeout
+        self.ready_timeouts.append(timeout)
         return True
 
     def stop(self):
@@ -66,3 +67,16 @@ def test_stop_all_viewers_uses_force_stop(viewer_manager):
 
     assert visualizer.force_stop_calls == 1
     assert visualizer.stop_calls == 0
+
+
+def test_viewer_manager_delegates_the_full_readiness_timeout(viewer_manager):
+    visualizer = RecordingVisualizer()
+
+    viewer_manager.get_or_create_viewer(
+        viewer_type="napari",
+        port=5700,
+        factory=lambda: visualizer,
+        ready_timeout=12.5,
+    )
+
+    assert visualizer.ready_timeouts == [12.5]

@@ -233,27 +233,22 @@ class ViewerStateManager:
             raise
 
     def _wait_for_viewer_ready(self, instance: ViewerInstance, timeout: float) -> None:
-        """Wait for viewer to become ready, updating state along the way."""
-        start_time = time.time()
-        check_interval = 0.5
+        """Delegate the complete readiness interval to the visualizer contract."""
+        if instance.visualizer.wait_for_ready(timeout=timeout):
+            instance.state = ViewerState.READY
+            self._notify_state_change(instance)
+            logger.info(
+                "ViewerStateManager: %s viewer on port %d is ready",
+                instance.viewer_type,
+                instance.port,
+            )
+            return
 
-        while time.time() - start_time < timeout:
-            if instance.visualizer.wait_for_ready(timeout=check_interval):
-                instance.state = ViewerState.READY
-                self._notify_state_change(instance)
-                logger.info(
-                    "ViewerStateManager: %s viewer on port %d is ready",
-                    instance.viewer_type,
-                    instance.port,
-                )
-                return
-
-            # Process-level liveness check protects against dead child process
-            if not instance.visualizer.is_running:
-                raise RuntimeError(
-                    f"{instance.viewer_type} viewer on port {instance.port} "
-                    "process terminated unexpectedly during startup"
-                )
+        if not instance.visualizer.is_running:
+            raise RuntimeError(
+                f"{instance.viewer_type} viewer on port {instance.port} "
+                "process terminated unexpectedly during startup"
+            )
 
         raise TimeoutError(
             f"Timeout waiting for {instance.viewer_type} viewer on port {instance.port} "
