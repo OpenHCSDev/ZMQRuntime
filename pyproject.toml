@@ -58,5 +58,5 @@ target-version = ["py310", "py311", "py312", "py313"]
 
 [tool.ruff]
 line-length = 100
-target-version = "0.1.8"
+target-version = "py310"
 select = ["E", "F", "I", "N", "W", "UP"]
