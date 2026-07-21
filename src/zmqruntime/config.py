@@ -11,7 +11,7 @@ class TransportMode(Enum):
     IPC = "ipc"
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class ZMQConfig:
     """Configuration for ZMQ transport."""
     control_port_offset: int = 1000

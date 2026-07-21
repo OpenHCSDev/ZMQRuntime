@@ -32,5 +32,6 @@ def serve_forever(server, poll_interval: float = 0.01, handle_signals: bool = Tr
     except KeyboardInterrupt:
         server.stop()
     finally:
+        server.stop()
         if on_shutdown:
             on_shutdown()

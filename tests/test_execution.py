@@ -1,11 +1,17 @@
 import pickle
+import platform
+import subprocess
+import sys
+import threading
+import time
 import pytest
 
+from zmqruntime.client import ZMQClient
 from zmqruntime.execution.client import ExecutionClient
 from zmqruntime.execution.responses import ExecutionSubmissionResponse
 from zmqruntime.execution.server import ExecutionServer
 from zmqruntime.execution.wait_policy import ExecutionWaiter, WaitPolicy
-from zmqruntime.config import TransportMode
+from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.messages import (
     ControlMessageType,
     ExecuteRequest,
@@ -14,6 +20,7 @@ from zmqruntime.messages import (
     ResponseType,
     TaskProgress,
 )
+from zmqruntime.transport import get_ipc_socket_path
 
 
 class DummyExecutionServer(ExecutionServer):
@@ -223,12 +230,12 @@ def test_execution_client_registers_progress_before_execute():
 
 
 class EndpointPolicyExecutionClient(ExecutionClient):
-    def __init__(self, *, transport_mode=TransportMode.IPC, process_exists=False):
+    def __init__(self, *, transport_mode=TransportMode.IPC, endpoint_stale=False):
         super().__init__(
             port=5555,
             transport_mode=transport_mode,
         )
-        self.process_exists = process_exists
+        self.endpoint_stale = endpoint_stale
         self.killed_ports = []
         self.spawned = False
         self.setup_called = False
@@ -239,8 +246,8 @@ class EndpointPolicyExecutionClient(ExecutionClient):
     def _try_connect_to_existing(self, port: int, timeout_ms: int = 500):
         return False
 
-    def _ipc_server_process_exists(self, port: int):
-        return self.process_exists
+    def _should_preserve_unresponsive_endpoint(self, port: int):
+        return self.transport_mode == TransportMode.IPC and not self.endpoint_stale
 
     def _kill_processes_on_port(self, port: int):
         self.killed_ports.append(port)
@@ -263,7 +270,7 @@ class EndpointPolicyExecutionClient(ExecutionClient):
 
 
 def test_ipc_connect_preserves_unresponsive_live_server_endpoint():
-    client = EndpointPolicyExecutionClient(process_exists=True)
+    client = EndpointPolicyExecutionClient(endpoint_stale=False)
 
     connected = client.connect(timeout=1)
 
@@ -274,7 +281,7 @@ def test_ipc_connect_preserves_unresponsive_live_server_endpoint():
 
 
 def test_ipc_connect_removes_stale_endpoint_before_spawning():
-    client = EndpointPolicyExecutionClient(process_exists=False)
+    client = EndpointPolicyExecutionClient(endpoint_stale=True)
 
     connected = client.connect(timeout=1)
 
@@ -287,7 +294,7 @@ def test_ipc_connect_removes_stale_endpoint_before_spawning():
 def test_tcp_connect_keeps_existing_spawn_cleanup_policy():
     client = EndpointPolicyExecutionClient(
         transport_mode=TransportMode.TCP,
-        process_exists=True,
+        endpoint_stale=False,
     )
 
     connected = client.connect(timeout=1)
@@ -296,6 +303,134 @@ def test_tcp_connect_keeps_existing_spawn_cleanup_policy():
     assert client.killed_ports == [client.port, client.control_port]
     assert client.spawned is True
     assert client.setup_called is True
+
+
+@pytest.mark.skipif(platform.system() == "Windows", reason="IPC is POSIX-only")
+def test_owned_server_shutdown_removes_exact_ipc_endpoints():
+    config = ZMQConfig(
+        app_name="zmqruntime-owned-process-test",
+        ipc_socket_prefix="owned",
+    )
+    client = EndpointPolicyExecutionClient()
+    client.config = config
+    client.port = 45556
+    client.control_port = client.port + config.control_port_offset
+    paths = (
+        get_ipc_socket_path(client.port, config),
+        get_ipc_socket_path(client.control_port, config),
+    )
+    for path in paths:
+        assert path is not None
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+    )
+    ZMQClient._stop_owned_server_process(client, process)
+
+    assert process.poll() is not None
+    assert all(not path.exists() for path in paths if path is not None)
+
+
+def test_disconnect_stops_owned_server_when_socket_cleanup_fails(monkeypatch):
+    client = EndpointPolicyExecutionClient()
+    process = object()
+    stopped = []
+    client._connected = True
+    client._connected_to_existing = False
+    client.persistent = False
+    client.server_process = process
+
+    def fail_cleanup():
+        raise RuntimeError("socket cleanup failed")
+
+    monkeypatch.setattr(client, "_cleanup_sockets", fail_cleanup)
+    monkeypatch.setattr(client, "_stop_owned_server_process", stopped.append)
+
+    with pytest.raises(RuntimeError, match="socket cleanup failed"):
+        client.disconnect()
+
+    assert stopped == [process]
+    assert client.server_process is None
+    assert client._connected is False
+    assert client._connected_to_existing is False
+
+
+class ConcurrentStartupExecutionClient(ExecutionClient):
+    def __init__(self, *, port, config, state):
+        super().__init__(
+            port=port,
+            transport_mode=TransportMode.IPC,
+            config=config,
+        )
+        self.state = state
+
+    def _try_connect_to_existing(self, port: int, timeout_ms: int = 500):
+        return self.state["ready"].is_set()
+
+    def _spawn_server_process(self):
+        with self.state["lock"]:
+            self.state["spawn_count"] += 1
+        return object()
+
+    def _wait_for_server_ready(self, timeout: float = 10.0):
+        for port in (self.port, self.control_port):
+            path = get_ipc_socket_path(port, self.config)
+            assert path is not None
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+        self.state["ready"].set()
+        time.sleep(0.1)
+        return True
+
+    def _setup_client_sockets(self):
+        return None
+
+    def send_data(self, data):
+        return None
+
+    def serialize_task(self, task, config):
+        return {"task": task}
+
+
+@pytest.mark.skipif(platform.system() == "Windows", reason="IPC is POSIX-only")
+def test_concurrent_clients_spawn_one_ipc_server():
+    config = ZMQConfig(
+        app_name="zmqruntime-concurrent-startup-test",
+        ipc_socket_prefix="concurrent",
+    )
+    port = 45557
+    state = {
+        "lock": threading.Lock(),
+        "ready": threading.Event(),
+        "spawn_count": 0,
+    }
+    clients = tuple(
+        ConcurrentStartupExecutionClient(port=port, config=config, state=state)
+        for _ in range(2)
+    )
+    barrier = threading.Barrier(len(clients))
+
+    def connect(client):
+        barrier.wait()
+        assert client.connect(timeout=1) is True
+
+    threads = tuple(threading.Thread(target=connect, args=(client,)) for client in clients)
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    try:
+        assert all(not thread.is_alive() for thread in threads)
+        assert state["spawn_count"] == 1
+        assert sum(client._connected_to_existing for client in clients) == 1
+    finally:
+        for endpoint_port in (port, port + config.control_port_offset):
+            path = get_ipc_socket_path(endpoint_port, config)
+            if path is not None and path.exists():
+                path.unlink()
 
 
 def test_execution_waiter_surfaces_error_field_when_message_absent():

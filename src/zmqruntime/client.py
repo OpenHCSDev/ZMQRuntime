@@ -15,13 +15,15 @@ from concurrent.futures import ThreadPoolExecutor, wait
 import zmq
 
 from zmqruntime.config import TransportMode, ZMQConfig
-from zmqruntime.messages import ControlMessageType, MessageFields, ResponseType
+from zmqruntime.messages import MessageFields, ResponseType
 from zmqruntime.transport import (
+    endpoint_startup_lock,
     get_control_port,
     get_default_transport_mode,
     get_ipc_socket_path,
     get_zmq_transport_url,
     is_port_in_use,
+    ipc_socket_is_stale,
     ping_control_port,
     remove_ipc_socket,
     request_control_ping,
@@ -58,60 +60,89 @@ class ZMQClient(ABC):
         with self._lock:
             if self._connected:
                 return True
-            if self._is_port_in_use(self.port):
-                if self._try_connect_to_existing(
-                    self.port,
-                    timeout_ms=self._existing_endpoint_probe_timeout_ms(timeout),
-                ):
-                    self._setup_client_sockets()  # ← FIX: Set up data socket even when connecting to existing server
-                    self._connected = self._connected_to_existing = True
-                    return True
-                if self._should_preserve_unresponsive_endpoint(self.port):
+            with endpoint_startup_lock(
+                self.port,
+                self.transport_mode,
+                self.config,
+            ):
+                self._connected_to_existing = False
+                if self._is_port_in_use(self.port):
+                    if self._try_connect_to_existing(
+                        self.port,
+                        timeout_ms=self._existing_endpoint_probe_timeout_ms(timeout),
+                    ):
+                        self._setup_client_sockets()
+                        self._connected = self._connected_to_existing = True
+                        return True
+                    if self._should_preserve_unresponsive_endpoint(self.port):
+                        return False
+                    self._kill_processes_on_port(self.port)
+                    self._kill_processes_on_port(self.control_port)
+                    time.sleep(0.5)
+                self.server_process = self._spawn_server_process()
+                if not self._wait_for_server_ready(timeout):
+                    self._stop_owned_server_process(self.server_process)
+                    self.server_process = None
                     return False
-                self._kill_processes_on_port(self.port)
-                self._kill_processes_on_port(self.control_port)
-                time.sleep(0.5)
-            self.server_process = self._spawn_server_process()
-            if not self._wait_for_server_ready(timeout):
-                return False
-            self._setup_client_sockets()
-            self._connected = True
-            return True
+                try:
+                    self._setup_client_sockets()
+                except Exception:
+                    self._stop_owned_server_process(self.server_process)
+                    self.server_process = None
+                    raise
+                self._connected = True
+                return True
 
     def disconnect(self):
         with self._lock:
             if not self._connected:
                 return
-            self._cleanup_sockets()
-            if not self._connected_to_existing and self.server_process and not self.persistent:
-                self._stop_owned_server_process(self.server_process)
-            self._connected = False
+            try:
+                try:
+                    self._cleanup_sockets()
+                finally:
+                    if (
+                        not self._connected_to_existing
+                        and self.server_process
+                        and not self.persistent
+                    ):
+                        self._stop_owned_server_process(self.server_process)
+            finally:
+                self.server_process = None
+                self._connected = False
+                self._connected_to_existing = False
 
     def is_connected(self):
         return self._connected
 
-    @staticmethod
-    def _stop_owned_server_process(server_process):
+    def _stop_owned_server_process(self, server_process):
+        stopped = False
         if isinstance(server_process, multiprocessing.Process):
             if server_process.is_alive():
                 server_process.terminate()
                 server_process.join(timeout=5)
                 if server_process.is_alive():
                     server_process.kill()
-            return
-
-        if isinstance(server_process, subprocess.Popen):
+                    server_process.join(timeout=5)
+            stopped = not server_process.is_alive()
+        elif isinstance(server_process, subprocess.Popen):
             if server_process.poll() is None:
                 server_process.terminate()
                 try:
                     server_process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     server_process.kill()
-            return
+                    server_process.wait(timeout=5)
+            stopped = server_process.poll() is not None
+        else:
+            raise TypeError(
+                "Unsupported ZMQ server process handle: "
+                f"{type(server_process).__name__}"
+            )
 
-        raise TypeError(
-            f"Unsupported ZMQ server process handle: {type(server_process).__name__}"
-        )
+        if stopped and self.transport_mode == TransportMode.IPC:
+            remove_ipc_socket(self.port, self.config)
+            remove_ipc_socket(self.control_port, self.config)
 
     def _setup_client_sockets(self):
         import zmq
@@ -161,25 +192,7 @@ class ZMQClient(ABC):
     def _should_preserve_unresponsive_endpoint(self, port: int) -> bool:
         if self.transport_mode != TransportMode.IPC:
             return False
-        return self._ipc_server_process_exists(port)
-
-    @staticmethod
-    def _ipc_server_process_exists(port: int) -> bool:
-        try:
-            import psutil
-        except Exception:
-            return False
-
-        port_flags = (f"--port {port}", f"--port={port}")
-        for proc in psutil.process_iter(["cmdline"]):
-            try:
-                cmdline = proc.info.get("cmdline") or []
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-            cmdline_str = " ".join(cmdline)
-            if any(flag in cmdline_str for flag in port_flags):
-                return True
-        return False
+        return not ipc_socket_is_stale(port, self.config)
 
     def _wait_for_server_ready(self, timeout: float = 10.0) -> bool:
         return wait_for_server_ready(

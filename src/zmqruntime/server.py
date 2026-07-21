@@ -2,15 +2,11 @@
 from __future__ import annotations
 
 import logging
-import os
 import platform
 import pickle
-import socket
 import subprocess
 import threading
-import time
 from abc import ABC, abstractmethod, ABCMeta
-from pathlib import Path
 from typing import Optional
 
 import zmq
@@ -25,7 +21,6 @@ from zmqruntime.messages import (
 )
 from zmqruntime.transport import (
     get_default_transport_mode,
-    get_ipc_socket_path,
     get_zmq_transport_url,
     remove_ipc_socket,
 )
@@ -148,8 +143,6 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
 
     def stop(self):
         with self._lock:
-            if not self._running:
-                return
             self._running = False
             if self.data_socket:
                 self.data_socket.close()
@@ -160,6 +153,9 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
             if self.zmq_context:
                 self.zmq_context.term()
                 self.zmq_context = None
+            if self.transport_mode == TransportMode.IPC:
+                remove_ipc_socket(self.port, self.config)
+                remove_ipc_socket(self.control_port, self.config)
             logger.info("ZMQ Server stopped")
 
     def is_running(self):

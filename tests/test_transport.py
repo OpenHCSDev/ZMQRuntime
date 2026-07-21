@@ -1,14 +1,15 @@
-import os
 import platform
-from pathlib import Path
+import uuid
 
 import pytest
+import zmq
 
 from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.transport import (
     get_default_transport_mode,
     get_ipc_socket_path,
     get_zmq_transport_url,
+    ipc_socket_is_stale,
     remove_ipc_socket,
 )
 
@@ -51,3 +52,32 @@ def test_remove_ipc_socket(tmp_path):
     assert socket_path.exists()
     assert remove_ipc_socket(5555, config) is True
     assert not socket_path.exists()
+
+
+@pytest.mark.skipif(platform.system() == "Windows", reason="IPC is POSIX-only")
+def test_ipc_socket_staleness_uses_kernel_socket_ownership():
+    config = ZMQConfig(
+        app_name=f"zmqruntime-stale-{uuid.uuid4().hex}",
+        ipc_socket_prefix="test",
+    )
+    port = 45555
+    socket_path = get_ipc_socket_path(port, config)
+    assert socket_path is not None
+    remove_ipc_socket(port, config)
+
+    context = zmq.Context()
+    socket = context.socket(zmq.REP)
+    socket.bind(get_zmq_transport_url(port, mode=TransportMode.IPC, config=config))
+    try:
+        assert socket_path.exists()
+        assert ipc_socket_is_stale(port, config) is False
+    finally:
+        socket.close(linger=0)
+        context.term()
+
+    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    socket_path.touch()
+    try:
+        assert ipc_socket_is_stale(port, config) is True
+    finally:
+        remove_ipc_socket(port, config)

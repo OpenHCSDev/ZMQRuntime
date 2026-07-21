@@ -5,12 +5,13 @@ import pickle
 import platform
 import socket
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
 
 import zmq
 
 from zmqruntime.config import TransportMode, ZMQConfig
+from zmqruntime.messages import MessageFields, ResponseType
 
 _default_config = ZMQConfig()
 
@@ -39,7 +40,7 @@ def coerce_transport_mode(transport_mode) -> TransportMode | None:
             return None
 
 
-def get_ipc_socket_path(port: int, config: ZMQConfig | None = None) -> Optional[Path]:
+def get_ipc_socket_path(port: int, config: ZMQConfig | None = None) -> Path | None:
     """Get IPC socket path for a given port (Unix/Mac only)."""
     config = config or _default_config
     if platform.system() == "Windows":
@@ -97,6 +98,35 @@ def get_control_url(
     )
 
 
+@contextmanager
+def endpoint_startup_lock(
+    port: int,
+    transport_mode,
+    config: ZMQConfig | None = None,
+):
+    """Serialize discovery and startup for one IPC endpoint across clients."""
+
+    config = config or _default_config
+    mode = coerce_transport_mode(transport_mode) or get_default_transport_mode()
+    if mode != TransportMode.IPC:
+        yield
+        return
+
+    import fcntl
+
+    socket_path = get_ipc_socket_path(port, config)
+    if socket_path is None:
+        raise ValueError("IPC endpoint lock requires an IPC socket path")
+    lock_path = socket_path.with_name(f"{socket_path.name}.startup.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def remove_ipc_socket(port: int, config: ZMQConfig | None = None) -> bool:
     """Remove stale IPC socket file."""
     socket_path = get_ipc_socket_path(port, config)
@@ -104,6 +134,26 @@ def remove_ipc_socket(port: int, config: ZMQConfig | None = None) -> bool:
         socket_path.unlink()
         return True
     return False
+
+
+def ipc_socket_is_stale(port: int, config: ZMQConfig | None = None) -> bool:
+    """Return whether an IPC path exists without a kernel-owned Unix socket."""
+
+    socket_path = get_ipc_socket_path(port, config)
+    if socket_path is None or not socket_path.exists():
+        return False
+
+    try:
+        import psutil
+
+        connections = psutil.net_connections(kind="unix")
+    except (ImportError, OSError):
+        return False
+    except psutil.Error:
+        return False
+
+    path = str(socket_path)
+    return all(connection.laddr != path for connection in connections)
 
 
 def is_port_in_use(
@@ -151,10 +201,10 @@ def ping_control_port(
         config=config,
         timeout_ms=timeout_ms,
     )
-    if response is None or response.get("type") != "pong":
+    if response is None or response.get(MessageFields.TYPE) != ResponseType.PONG.value:
         return False
     if require_ready:
-        return bool(response.get("ready"))
+        return bool(response.get(MessageFields.READY))
     return True
 
 
