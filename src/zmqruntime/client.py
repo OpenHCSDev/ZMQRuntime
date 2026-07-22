@@ -16,7 +16,13 @@ from concurrent.futures import ThreadPoolExecutor, wait
 import zmq
 
 from zmqruntime.config import TransportMode, ZMQConfig
-from zmqruntime.messages import MessageFields, PongResponse, ProcessIdentity, ResponseType
+from zmqruntime.messages import (
+    MessageFields,
+    PongResponse,
+    ProcessExit,
+    ProcessIdentity,
+    ResponseType,
+)
 from zmqruntime.transport import (
     endpoint_startup_lock,
     get_control_port,
@@ -127,6 +133,19 @@ class ZMQClient(ABC):
         if isinstance(self.server_process, subprocess.Popen):
             return self.server_process.poll() is None
         return None
+
+    def owned_server_process_exit(self) -> ProcessExit | None:
+        """Return an exact terminal status when this client owns the process."""
+
+        if self._connected_to_existing or self.server_process is None:
+            return None
+        if isinstance(self.server_process, multiprocessing.Process):
+            returncode = self.server_process.exitcode
+        elif isinstance(self.server_process, subprocess.Popen):
+            returncode = self.server_process.poll()
+        else:
+            return None
+        return None if returncode is None else ProcessExit(returncode)
 
     def known_server_process_is_alive(self) -> bool | None:
         """Return exact liveness for an owned or identified local server."""

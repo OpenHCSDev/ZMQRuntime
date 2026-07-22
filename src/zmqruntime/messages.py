@@ -6,6 +6,7 @@ at the application layer, not in this runtime library.
 """
 
 import logging
+import signal
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Optional, Tuple
@@ -403,6 +404,25 @@ class ProcessIdentity:
             return False
         except psutil.AccessDenied:
             return None
+
+
+@dataclass(frozen=True)
+class ProcessExit:
+    """Exact exit status retained by a process-owning client."""
+
+    returncode: int
+
+    def describe(self) -> str:
+        """Render the platform process status without losing its numeric value."""
+
+        if self.returncode >= 0:
+            return f"exit code {self.returncode}"
+        signal_number = -self.returncode
+        try:
+            signal_name = signal.Signals(signal_number).name
+        except ValueError:
+            signal_name = f"signal {signal_number}"
+        return f"signal {signal_name} ({self.returncode})"
 
 
 # =============================================================================

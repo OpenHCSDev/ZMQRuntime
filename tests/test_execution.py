@@ -6,6 +6,7 @@ import threading
 import time
 import pytest
 
+from zmqruntime import ProcessExit
 from zmqruntime.client import ZMQClient
 from zmqruntime.execution.client import ExecutionClient
 from zmqruntime.execution.responses import ExecutionSubmissionResponse
@@ -365,6 +366,23 @@ def test_owned_server_process_liveness_distinguishes_process_ownership():
             process.wait(timeout=5)
 
 
+def test_owned_server_process_exit_retains_exact_terminal_status():
+    client = EndpointPolicyExecutionClient()
+    process = subprocess.Popen([sys.executable, "-c", "raise SystemExit(7)"])
+    client.server_process = process
+
+    process.wait(timeout=5)
+
+    assert client.owned_server_process_exit() == ProcessExit(7)
+    client._connected_to_existing = True
+    assert client.owned_server_process_exit() is None
+
+
+def test_process_exit_describes_exit_codes_and_signals():
+    assert ProcessExit(7).describe() == "exit code 7"
+    assert ProcessExit(-9).describe() == "signal SIGKILL (-9)"
+
+
 def test_known_server_process_liveness_includes_identified_local_server():
     client = EndpointPolicyExecutionClient(transport_mode=TransportMode.IPC)
     client._connected_to_existing = True
@@ -595,6 +613,7 @@ def test_execution_waiter_stops_when_known_server_process_exits():
     waiter = ExecutionWaiter(
         lambda _execution_id: (_ for _ in ()).throw(TimeoutError("no response")),
         known_server_process_is_alive=lambda: False,
+        owned_server_process_exit=lambda: ProcessExit(-9),
     )
 
     result = waiter.wait(
@@ -609,7 +628,10 @@ def test_execution_waiter_stops_when_known_server_process_exits():
     assert result == {
         MessageFields.STATUS: ExecutionStatus.CANCELLED.value,
         MessageFields.EXECUTION_ID: "compile-1",
-        MessageFields.MESSAGE: "Lost connection to server",
+        MessageFields.MESSAGE: (
+            "Lost connection to server (server process exited with signal "
+            "SIGKILL (-9); last status error: TimeoutError: no response)"
+        ),
     }
 
 
@@ -634,6 +656,7 @@ def test_execution_client_composes_known_server_liveness_into_waiter(monkeypatch
 
     monkeypatch.setattr(client, "poll_status", poll_status)
     monkeypatch.setattr(client, "known_server_process_is_alive", lambda: True)
+    monkeypatch.setattr(client, "owned_server_process_exit", lambda: None)
 
     result = client.wait_for_completion(
         "compile-1",

@@ -10,6 +10,7 @@ from zmqruntime.messages import (
     ExecutionStatus,
     ExecutionStatusSnapshot,
     MessageFields,
+    ProcessExit,
     ResponseType,
 )
 from zmqruntime.execution.responses import (
@@ -37,10 +38,12 @@ class ExecutionWaiter:
         poll_status: Callable[[str], WireResponse],
         progress_sequence: Callable[[str], int | None] | None = None,
         known_server_process_is_alive: Callable[[], bool | None] | None = None,
+        owned_server_process_exit: Callable[[], ProcessExit | None] | None = None,
     ) -> None:
         self._poll_status = poll_status
         self._progress_sequence = progress_sequence
         self._known_server_process_is_alive = known_server_process_is_alive
+        self._owned_server_process_exit = owned_server_process_exit
 
     def wait(self, execution_id: str, policy: WaitPolicy) -> dict[str, WireValue]:
         consecutive_errors = 0
@@ -106,7 +109,7 @@ class ExecutionWaiter:
                     )
                     continue
                 if known_server_alive is False:
-                    return self._lost_connection(execution_id)
+                    return self._lost_connection(execution_id, error)
                 progress_sequence = self._observed_progress_sequence(execution_id)
                 if (
                     progress_sequence is not None
@@ -128,7 +131,7 @@ class ExecutionWaiter:
                     error,
                 )
                 if consecutive_errors >= policy.max_consecutive_errors:
-                    return self._lost_connection(execution_id)
+                    return self._lost_connection(execution_id, error)
                 time.sleep(policy.retry_backoff_seconds)
 
     def _observed_progress_sequence(self, execution_id: str) -> int | None:
@@ -141,10 +144,25 @@ class ExecutionWaiter:
             return None
         return self._known_server_process_is_alive()
 
-    @staticmethod
-    def _lost_connection(execution_id: str) -> dict[str, WireValue]:
+    def _lost_connection(
+        self,
+        execution_id: str,
+        last_error: Exception,
+    ) -> dict[str, WireValue]:
+        details = []
+        process_exit = (
+            None
+            if self._owned_server_process_exit is None
+            else self._owned_server_process_exit()
+        )
+        if process_exit is not None:
+            details.append(f"server process exited with {process_exit.describe()}")
+        details.append(
+            f"last status error: {type(last_error).__name__}: {last_error}"
+        )
+        message = f"Lost connection to server ({'; '.join(details)})"
         return {
             MessageFields.STATUS: ExecutionStatus.CANCELLED.value,
             MessageFields.EXECUTION_ID: execution_id,
-            MessageFields.MESSAGE: "Lost connection to server",
+            MessageFields.MESSAGE: message,
         }
