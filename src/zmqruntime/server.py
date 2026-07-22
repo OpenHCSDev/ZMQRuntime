@@ -102,44 +102,63 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
             if self._running:
                 return
             self.zmq_context = zmq.Context()
-            self.data_socket = self.zmq_context.socket(self.data_socket_type)
-            self.data_socket.setsockopt(zmq.LINGER, 0)
-
-            # Set high water mark for SUB/PULL sockets to prevent message drops
-            if self.data_socket_type in (zmq.SUB, zmq.PULL):
-                self.data_socket.setsockopt(zmq.RCVHWM, 100000)
-                socket_type_name = "SUB" if self.data_socket_type == zmq.SUB else "PULL"
-                logger.info(
-                    "ZMQ %s socket RCVHWM set to 100000 to prevent drops during blocking operations",
-                    socket_type_name,
-                )
-
-            data_url = get_zmq_transport_url(
-                self.port,
-                host=self.host,
-                mode=self.transport_mode,
-                config=self.config,
-            )
-            control_url = get_zmq_transport_url(
-                self.control_port,
-                host=self.host,
-                mode=self.transport_mode,
-                config=self.config,
-            )
-
-            self.data_socket.bind(data_url)
-            if self.data_socket_type == zmq.SUB:
-                self.data_socket.setsockopt(zmq.SUBSCRIBE, b"")
-            self.control_socket = self.zmq_context.socket(zmq.REP)
-            self.control_socket.setsockopt(zmq.LINGER, 0)
-            self.control_socket.bind(control_url)
+            self.data_socket = self.bind_data_socket(self.zmq_context)
+            self.control_socket = self.bind_control_socket(self.zmq_context)
             self._running = True
             logger.info(
                 "ZMQ Server started on %s (%s), control %s",
-                data_url,
+                self.data_transport_url(),
                 SocketType.from_zmq_constant(self.data_socket_type).get_display_name(),
-                control_url,
+                self.control_transport_url(),
             )
+
+    def data_transport_url(self) -> str:
+        """Return the configured data endpoint for this server."""
+
+        return get_zmq_transport_url(
+            self.port,
+            host=self.host,
+            mode=self.transport_mode,
+            config=self.config,
+        )
+
+    def control_transport_url(self) -> str:
+        """Return the configured control endpoint for this server."""
+
+        return get_zmq_transport_url(
+            self.control_port,
+            host=self.host,
+            mode=self.transport_mode,
+            config=self.config,
+        )
+
+    def bind_data_socket(self, context: zmq.Context) -> zmq.Socket:
+        """Create and bind the data socket in its calling thread."""
+
+        socket = context.socket(self.data_socket_type)
+        socket.setsockopt(zmq.LINGER, 0)
+
+        # Set high water mark for SUB/PULL sockets to prevent message drops.
+        if self.data_socket_type in (zmq.SUB, zmq.PULL):
+            socket.setsockopt(zmq.RCVHWM, 100000)
+            socket_type_name = "SUB" if self.data_socket_type == zmq.SUB else "PULL"
+            logger.info(
+                "ZMQ %s socket RCVHWM set to 100000 to prevent drops during blocking operations",
+                socket_type_name,
+            )
+
+        socket.bind(self.data_transport_url())
+        if self.data_socket_type == zmq.SUB:
+            socket.setsockopt(zmq.SUBSCRIBE, b"")
+        return socket
+
+    def bind_control_socket(self, context: zmq.Context) -> zmq.Socket:
+        """Create and bind the control socket in its calling thread."""
+
+        socket = context.socket(zmq.REP)
+        socket.setsockopt(zmq.LINGER, 0)
+        socket.bind(self.control_transport_url())
+        return socket
 
     def stop(self):
         with self._lock:
