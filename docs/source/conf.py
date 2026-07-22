@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 project = "zmqruntime"
 author = "Tristan Simas"
-version = "0.1.9"
+version = "0.1.10"
 release = version
 
 extensions = [

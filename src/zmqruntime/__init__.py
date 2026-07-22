@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.1.9"
+__version__ = "0.1.10"
 
 from zmqruntime.ack_listener import GlobalAckListener
 from zmqruntime.client import ZMQClient
