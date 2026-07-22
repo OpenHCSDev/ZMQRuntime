@@ -36,9 +36,11 @@ class ExecutionWaiter:
         self,
         poll_status: Callable[[str], WireResponse],
         progress_sequence: Callable[[str], int | None] | None = None,
+        owned_server_process_is_alive: Callable[[], bool | None] | None = None,
     ) -> None:
         self._poll_status = poll_status
         self._progress_sequence = progress_sequence
+        self._owned_server_process_is_alive = owned_server_process_is_alive
 
     def wait(self, execution_id: str, policy: WaitPolicy) -> dict[str, WireValue]:
         consecutive_errors = 0
@@ -93,6 +95,18 @@ class ExecutionWaiter:
                     return result
 
             except Exception as error:
+                owned_server_alive = self._owned_server_alive()
+                if owned_server_alive is True:
+                    consecutive_errors = 0
+                    logger.debug(
+                        "Status poll failed for %s, but its client-owned server "
+                        "process remains alive: %s",
+                        execution_id,
+                        error,
+                    )
+                    continue
+                if owned_server_alive is False:
+                    return self._lost_connection(execution_id)
                 progress_sequence = self._observed_progress_sequence(execution_id)
                 if (
                     progress_sequence is not None
@@ -114,14 +128,23 @@ class ExecutionWaiter:
                     error,
                 )
                 if consecutive_errors >= policy.max_consecutive_errors:
-                    return {
-                        MessageFields.STATUS: ExecutionStatus.CANCELLED.value,
-                        MessageFields.EXECUTION_ID: execution_id,
-                        MessageFields.MESSAGE: "Lost connection to server",
-                    }
+                    return self._lost_connection(execution_id)
                 time.sleep(policy.retry_backoff_seconds)
 
     def _observed_progress_sequence(self, execution_id: str) -> int | None:
         if self._progress_sequence is None:
             return None
         return self._progress_sequence(execution_id)
+
+    def _owned_server_alive(self) -> bool | None:
+        if self._owned_server_process_is_alive is None:
+            return None
+        return self._owned_server_process_is_alive()
+
+    @staticmethod
+    def _lost_connection(execution_id: str) -> dict[str, WireValue]:
+        return {
+            MessageFields.STATUS: ExecutionStatus.CANCELLED.value,
+            MessageFields.EXECUTION_ID: execution_id,
+            MessageFields.MESSAGE: "Lost connection to server",
+        }

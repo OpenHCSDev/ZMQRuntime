@@ -333,6 +333,28 @@ def test_owned_server_shutdown_removes_exact_ipc_endpoints():
     assert all(not path.exists() for path in paths if path is not None)
 
 
+def test_owned_server_process_liveness_distinguishes_process_ownership():
+    client = EndpointPolicyExecutionClient()
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+    )
+    client.server_process = process
+    try:
+        assert client.owned_server_process_is_alive() is True
+
+        client._connected_to_existing = True
+        assert client.owned_server_process_is_alive() is None
+        client._connected_to_existing = False
+
+        process.terminate()
+        process.wait(timeout=5)
+        assert client.owned_server_process_is_alive() is False
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+
 def test_disconnect_stops_owned_server_when_socket_cleanup_fails(monkeypatch):
     client = EndpointPolicyExecutionClient()
     process = object()
@@ -480,6 +502,94 @@ def test_execution_waiter_treats_progress_as_liveness_during_status_timeouts():
         ),
     )
 
+    assert result[MessageFields.STATUS] == ExecutionStatus.COMPLETE.value
+
+
+def test_execution_waiter_treats_owned_server_process_as_exact_liveness():
+    calls = 0
+
+    def poll_status(_execution_id):
+        nonlocal calls
+        calls += 1
+        if calls <= 3:
+            raise TimeoutError("interpreter busy")
+        return {
+            MessageFields.STATUS: ResponseType.OK.value,
+            MessageFields.EXECUTION: {
+                MessageFields.EXECUTION_ID: "compile-1",
+                MessageFields.PLATE_ID: "plate-1",
+                MessageFields.STATUS: ExecutionStatus.COMPLETE.value,
+            },
+        }
+
+    waiter = ExecutionWaiter(
+        poll_status,
+        owned_server_process_is_alive=lambda: True,
+    )
+    result = waiter.wait(
+        "compile-1",
+        WaitPolicy(
+            poll_interval=0,
+            max_consecutive_errors=2,
+            retry_backoff_seconds=0,
+        ),
+    )
+
+    assert calls == 4
+    assert result[MessageFields.STATUS] == ExecutionStatus.COMPLETE.value
+
+
+def test_execution_waiter_stops_when_owned_server_process_exits():
+    waiter = ExecutionWaiter(
+        lambda _execution_id: (_ for _ in ()).throw(TimeoutError("no response")),
+        owned_server_process_is_alive=lambda: False,
+    )
+
+    result = waiter.wait(
+        "compile-1",
+        WaitPolicy(
+            poll_interval=0,
+            max_consecutive_errors=5,
+            retry_backoff_seconds=0,
+        ),
+    )
+
+    assert result == {
+        MessageFields.STATUS: ExecutionStatus.CANCELLED.value,
+        MessageFields.EXECUTION_ID: "compile-1",
+        MessageFields.MESSAGE: "Lost connection to server",
+    }
+
+
+def test_execution_client_composes_owned_server_liveness_into_waiter(monkeypatch):
+    client = DummyExecutionClient()
+    calls = 0
+
+    def poll_status(_execution_id, *, timeout_ms):
+        nonlocal calls
+        assert timeout_ms == WaitPolicy.status_timeout_ms
+        calls += 1
+        if calls <= 3:
+            raise TimeoutError("interpreter busy")
+        return {
+            MessageFields.STATUS: ResponseType.OK.value,
+            MessageFields.EXECUTION: {
+                MessageFields.EXECUTION_ID: "compile-1",
+                MessageFields.PLATE_ID: "plate-1",
+                MessageFields.STATUS: ExecutionStatus.COMPLETE.value,
+            },
+        }
+
+    monkeypatch.setattr(client, "poll_status", poll_status)
+    monkeypatch.setattr(client, "owned_server_process_is_alive", lambda: True)
+
+    result = client.wait_for_completion(
+        "compile-1",
+        poll_interval=0,
+        max_consecutive_errors=2,
+    )
+
+    assert calls == 4
     assert result[MessageFields.STATUS] == ExecutionStatus.COMPLETE.value
 
 

@@ -101,7 +101,8 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
                 current_execution_id,
                 timeout_ms=policy.status_timeout_ms,
             ),
-            self._progress_sequence,
+            progress_sequence=self._progress_sequence,
+            owned_server_process_is_alive=self.owned_server_process_is_alive,
         )
         return waiter.wait(execution_id, policy)
 

@@ -115,6 +115,16 @@ class ZMQClient(ABC):
     def is_connected(self):
         return self._connected
 
+    def owned_server_process_is_alive(self) -> bool | None:
+        """Return exact liveness when this client owns the server process."""
+        if self._connected_to_existing or self.server_process is None:
+            return None
+        if isinstance(self.server_process, multiprocessing.Process):
+            return self.server_process.is_alive()
+        if isinstance(self.server_process, subprocess.Popen):
+            return self.server_process.poll() is None
+        return None
+
     def _stop_owned_server_process(self, server_process):
         stopped = False
         if isinstance(server_process, multiprocessing.Process):
