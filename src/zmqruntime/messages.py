@@ -6,9 +6,11 @@ at the application layer, not in this runtime library.
 """
 
 import logging
-from enum import Enum, auto
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Dict, Optional, Tuple
+
+import psutil
 
 
 logger = logging.getLogger(__name__)
@@ -56,7 +58,7 @@ class WorkerState:
     memory_mb: float
     metadata: Dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "pid": self.pid,
             "status": self.status,
@@ -367,6 +369,40 @@ class MessageFields:
     METADATA = "metadata"
     CLIENT_ID = "client_id"
     PROGRESS_SUBSCRIBERS = "progress_subscribers"
+    PROCESS_IDENTITY = "process_identity"
+
+
+@dataclass(frozen=True)
+class ProcessIdentity:
+    """PID-reuse-safe identity for a process visible on the local host."""
+
+    pid: int
+    create_time: float
+
+    @classmethod
+    def current(cls) -> "ProcessIdentity":
+        process = psutil.Process()
+        return cls(pid=process.pid, create_time=process.create_time())
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"pid": self.pid, "create_time": self.create_time}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ProcessIdentity":
+        return cls(pid=int(data["pid"]), create_time=float(data["create_time"]))
+
+    def is_alive(self) -> bool | None:
+        """Return exact local liveness, or unknown when access is denied."""
+
+        try:
+            process = psutil.Process(self.pid)
+            if process.create_time() != self.create_time:
+                return False
+            return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+        except psutil.NoSuchProcess:
+            return False
+        except psutil.AccessDenied:
+            return None
 
 
 # =============================================================================
@@ -787,6 +823,7 @@ class PongResponse:
     workers: Optional[Tuple[WorkerState, ...]] = None
     uptime: Optional[float] = None
     progress_subscribers: Optional[int] = None
+    process_identity: Optional[ProcessIdentity] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for transport."""
@@ -817,6 +854,8 @@ class PongResponse:
             result[MessageFields.UPTIME] = self.uptime
         if self.progress_subscribers is not None:
             result[MessageFields.PROGRESS_SUBSCRIBERS] = self.progress_subscribers
+        if self.process_identity is not None:
+            result[MessageFields.PROCESS_IDENTITY] = self.process_identity.to_dict()
         return result
 
     @classmethod
@@ -851,6 +890,13 @@ class PongResponse:
                 for entry in queued_executions_data
             )
 
+        process_identity_data = data.get(MessageFields.PROCESS_IDENTITY)
+        process_identity = None
+        if process_identity_data is not None:
+            if not isinstance(process_identity_data, dict):
+                raise TypeError("PongResponse.process_identity must be a dict")
+            process_identity = ProcessIdentity.from_dict(process_identity_data)
+
         return cls(
             port=data[MessageFields.PORT],
             control_port=data[MessageFields.CONTROL_PORT],
@@ -864,6 +910,7 @@ class PongResponse:
             workers=workers,
             uptime=data.get(MessageFields.UPTIME),
             progress_subscribers=data.get(MessageFields.PROGRESS_SUBSCRIBERS),
+            process_identity=process_identity,
         )
 
 

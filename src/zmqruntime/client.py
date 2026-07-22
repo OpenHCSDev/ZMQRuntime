@@ -1,6 +1,7 @@
 """ZMQ client base class."""
 from __future__ import annotations
 
+import ipaddress
 import logging
 import multiprocessing
 import pickle
@@ -15,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, wait
 import zmq
 
 from zmqruntime.config import TransportMode, ZMQConfig
-from zmqruntime.messages import MessageFields, ResponseType
+from zmqruntime.messages import MessageFields, PongResponse, ProcessIdentity, ResponseType
 from zmqruntime.transport import (
     endpoint_startup_lock,
     get_control_port,
@@ -24,7 +25,6 @@ from zmqruntime.transport import (
     get_zmq_transport_url,
     is_port_in_use,
     ipc_socket_is_stale,
-    ping_control_port,
     remove_ipc_socket,
     request_control_ping,
     wait_for_server_ready,
@@ -54,6 +54,7 @@ class ZMQClient(ABC):
         self.server_process = None
         self._connected = False
         self._connected_to_existing = False
+        self._connected_server_process_identity: ProcessIdentity | None = None
         self._lock = threading.Lock()
 
     def connect(self, timeout: float = 10.0):
@@ -66,6 +67,7 @@ class ZMQClient(ABC):
                 self.config,
             ):
                 self._connected_to_existing = False
+                self._connected_server_process_identity = None
                 if self._is_port_in_use(self.port):
                     if self._try_connect_to_existing(
                         self.port,
@@ -111,6 +113,7 @@ class ZMQClient(ABC):
                 self.server_process = None
                 self._connected = False
                 self._connected_to_existing = False
+                self._connected_server_process_identity = None
 
     def is_connected(self):
         return self._connected
@@ -124,6 +127,35 @@ class ZMQClient(ABC):
         if isinstance(self.server_process, subprocess.Popen):
             return self.server_process.poll() is None
         return None
+
+    def known_server_process_is_alive(self) -> bool | None:
+        """Return exact liveness for an owned or identified local server."""
+
+        owned_process_alive = self.owned_server_process_is_alive()
+        if owned_process_alive is not None:
+            return owned_process_alive
+        if (
+            not self._connected_to_existing
+            or self._connected_server_process_identity is None
+            or not self._endpoint_is_local()
+        ):
+            return None
+        return self._connected_server_process_identity.is_alive()
+
+    def _endpoint_is_local(self) -> bool:
+        if self.transport_mode == TransportMode.IPC:
+            return True
+        try:
+            addresses = socket.getaddrinfo(
+                self.host,
+                self.control_port,
+                type=socket.SOCK_STREAM,
+            )
+        except OSError:
+            return False
+        return bool(addresses) and all(
+            ipaddress.ip_address(address[4][0]).is_loopback for address in addresses
+        )
 
     def _stop_owned_server_process(self, server_process):
         stopped = False
@@ -186,14 +218,23 @@ class ZMQClient(ABC):
             self.zmq_context = None
 
     def _try_connect_to_existing(self, port: int, timeout_ms: int = 500) -> bool:
-        return ping_control_port(
+        response = request_control_ping(
             port,
             self.transport_mode,
             host=self.host,
             config=self.config,
             timeout_ms=timeout_ms,
-            require_ready=True,
         )
+        if (
+            response is None
+            or response.get(MessageFields.TYPE) != ResponseType.PONG.value
+            or not response.get(MessageFields.READY)
+        ):
+            return False
+        self._connected_server_process_identity = PongResponse.from_dict(
+            response
+        ).process_identity
+        return True
 
     @staticmethod
     def _existing_endpoint_probe_timeout_ms(timeout: float) -> int:

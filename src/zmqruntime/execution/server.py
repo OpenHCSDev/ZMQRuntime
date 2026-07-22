@@ -20,6 +20,7 @@ from zmqruntime.messages import (
     ExecutionRecord,
     ExecutionStatus,
     MessageFields,
+    ProcessIdentity,
     PongResponse,
     QueuedExecutionInfo,
     ResponseType,
@@ -109,6 +110,7 @@ class ExecutionServer(ZMQServer, ABC):
                 workers=self._get_worker_info(),
                 uptime=time.time() - self.start_time if self.start_time else 0,
                 progress_subscribers=len(self._progress_subscribers),
+                process_identity=ProcessIdentity.current(),
             ).to_dict()
         )
 

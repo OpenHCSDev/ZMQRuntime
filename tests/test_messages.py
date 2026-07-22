@@ -4,6 +4,7 @@ from zmqruntime.messages import (
     CancelRequest,
     ExecuteRequest,
     MessageFields,
+    ProcessIdentity,
     PongResponse,
     ResponseType,
 )
@@ -32,6 +33,7 @@ def test_cancel_request_roundtrip():
 
 
 def test_pong_response_dict():
+    process_identity = ProcessIdentity.current()
     pong = PongResponse(
         port=5555,
         control_port=6555,
@@ -39,13 +41,17 @@ def test_pong_response_dict():
         server="Test",
         server_type="test",
         progress_subscribers=2,
+        process_identity=process_identity,
     )
     data = pong.to_dict()
     assert data[MessageFields.TYPE] == ResponseType.PONG.value
     assert data[MessageFields.PORT] == 5555
     assert data[MessageFields.SERVER_TYPE] == "test"
     assert data[MessageFields.PROGRESS_SUBSCRIBERS] == 2
-    assert PongResponse.from_dict(data).server_type == "test"
+    parsed = PongResponse.from_dict(data)
+    assert parsed.server_type == "test"
+    assert parsed.process_identity == process_identity
+    assert process_identity.is_alive() is True
 
 
 def test_pong_response_rejects_legacy_running_execution_shape():

@@ -26,6 +26,7 @@ keywords = ["zmq", "zeromq", "distributed", "execution", "rpc", "messaging"]
 
 dependencies = [
     "pyzmq>=22.0",
+    "psutil>=5.9",
 ]
 
 [project.optional-dependencies]

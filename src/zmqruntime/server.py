@@ -15,6 +15,7 @@ from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.messages import (
     ControlMessageType,
     MessageFields,
+    ProcessIdentity,
     PongResponse,
     ResponseType,
     SocketType,
@@ -273,6 +274,7 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
                 server=self.__class__.__name__,
                 server_type=self.__class__.server_type(),
                 log_file_path=self.log_file_path,
+                process_identity=ProcessIdentity.current(),
             ).to_dict()
         )
 

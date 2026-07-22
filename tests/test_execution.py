@@ -17,6 +17,8 @@ from zmqruntime.messages import (
     ExecuteRequest,
     ExecutionStatus,
     MessageFields,
+    PongResponse,
+    ProcessIdentity,
     ResponseType,
     TaskProgress,
 )
@@ -31,6 +33,14 @@ class DummyExecutionServer(ExecutionServer):
 class FailingExecutionServer(ExecutionServer):
     def execute_task(self, execution_id: str, request: ExecuteRequest):
         raise RuntimeError("boom")
+
+
+def test_execution_server_pong_projects_its_process_identity():
+    pong = PongResponse.from_dict(
+        DummyExecutionServer(port=5555)._create_pong_response()
+    )
+
+    assert pong.process_identity == ProcessIdentity.current()
 
 
 def test_execution_server_handle_execute_and_run():
@@ -355,6 +365,48 @@ def test_owned_server_process_liveness_distinguishes_process_ownership():
             process.wait(timeout=5)
 
 
+def test_known_server_process_liveness_includes_identified_local_server():
+    client = EndpointPolicyExecutionClient(transport_mode=TransportMode.IPC)
+    client._connected_to_existing = True
+    process_identity = ProcessIdentity.current()
+    client._connected_server_process_identity = process_identity
+
+    assert client.known_server_process_is_alive() is True
+
+    client._connected_server_process_identity = ProcessIdentity(
+        pid=process_identity.pid,
+        create_time=process_identity.create_time - 1,
+    )
+    assert client.known_server_process_is_alive() is False
+
+
+def test_known_server_process_liveness_leaves_remote_identity_unknown(monkeypatch):
+    client = EndpointPolicyExecutionClient(transport_mode=TransportMode.TCP)
+    client._connected_to_existing = True
+    client._connected_server_process_identity = ProcessIdentity.current()
+    monkeypatch.setattr(client, "_endpoint_is_local", lambda: False)
+
+    assert client.known_server_process_is_alive() is None
+
+
+def test_existing_connection_retains_typed_server_process_identity(monkeypatch):
+    process_identity = ProcessIdentity.current()
+    monkeypatch.setattr(
+        "zmqruntime.client.request_control_ping",
+        lambda *_args, **_kwargs: PongResponse(
+            port=5555,
+            control_port=6555,
+            ready=True,
+            server="DummyExecutionServer",
+            process_identity=process_identity,
+        ).to_dict(),
+    )
+    client = EndpointPolicyExecutionClient()
+
+    assert ZMQClient._try_connect_to_existing(client, 5555) is True
+    assert client._connected_server_process_identity == process_identity
+
+
 def test_disconnect_stops_owned_server_when_socket_cleanup_fails(monkeypatch):
     client = EndpointPolicyExecutionClient()
     process = object()
@@ -505,7 +557,7 @@ def test_execution_waiter_treats_progress_as_liveness_during_status_timeouts():
     assert result[MessageFields.STATUS] == ExecutionStatus.COMPLETE.value
 
 
-def test_execution_waiter_treats_owned_server_process_as_exact_liveness():
+def test_execution_waiter_treats_known_server_process_as_exact_liveness():
     calls = 0
 
     def poll_status(_execution_id):
@@ -524,7 +576,7 @@ def test_execution_waiter_treats_owned_server_process_as_exact_liveness():
 
     waiter = ExecutionWaiter(
         poll_status,
-        owned_server_process_is_alive=lambda: True,
+        known_server_process_is_alive=lambda: True,
     )
     result = waiter.wait(
         "compile-1",
@@ -539,10 +591,10 @@ def test_execution_waiter_treats_owned_server_process_as_exact_liveness():
     assert result[MessageFields.STATUS] == ExecutionStatus.COMPLETE.value
 
 
-def test_execution_waiter_stops_when_owned_server_process_exits():
+def test_execution_waiter_stops_when_known_server_process_exits():
     waiter = ExecutionWaiter(
         lambda _execution_id: (_ for _ in ()).throw(TimeoutError("no response")),
-        owned_server_process_is_alive=lambda: False,
+        known_server_process_is_alive=lambda: False,
     )
 
     result = waiter.wait(
@@ -561,7 +613,7 @@ def test_execution_waiter_stops_when_owned_server_process_exits():
     }
 
 
-def test_execution_client_composes_owned_server_liveness_into_waiter(monkeypatch):
+def test_execution_client_composes_known_server_liveness_into_waiter(monkeypatch):
     client = DummyExecutionClient()
     calls = 0
 
@@ -581,7 +633,7 @@ def test_execution_client_composes_owned_server_liveness_into_waiter(monkeypatch
         }
 
     monkeypatch.setattr(client, "poll_status", poll_status)
-    monkeypatch.setattr(client, "owned_server_process_is_alive", lambda: True)
+    monkeypatch.setattr(client, "known_server_process_is_alive", lambda: True)
 
     result = client.wait_for_completion(
         "compile-1",
