@@ -13,6 +13,7 @@ from zmqruntime.messages import (
     MessageFields,
     PongResponse,
 )
+from zmqruntime.server import ZMQServer
 from zmqruntime.transport import (
     get_default_transport_mode,
     get_ipc_socket_path,
@@ -26,6 +27,32 @@ from zmqruntime.transport import (
 def test_get_default_transport_mode():
     mode = get_default_transport_mode()
     assert mode in (TransportMode.TCP, TransportMode.IPC)
+
+
+def test_control_response_payload_accepts_an_external_dispatch_owner():
+    class TestServer(ZMQServer):
+        def __init__(self):
+            super().__init__(5555)
+            self.handled_messages = []
+
+        def handle_control_message(self, message):
+            self.handled_messages.append(message)
+            return {"status": "unexpected"}
+
+        def handle_data_message(self, message):
+            raise AssertionError(message)
+
+    server = TestServer()
+    payload = server.control_response_payload(
+        {MessageFields.TYPE: "thread_owned"},
+        response_factory=lambda: {"status": "success", "owner": "transport"},
+    )
+
+    assert pickle.loads(payload) == {
+        "status": "success",
+        "owner": "transport",
+    }
+    assert server.handled_messages == []
 
 
 def test_get_zmq_transport_url_tcp():

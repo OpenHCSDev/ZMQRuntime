@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import logging
-import platform
 import pickle
+import platform
 import subprocess
 import threading
-from abc import ABC, abstractmethod, ABCMeta
-from typing import Optional
+from abc import ABC, ABCMeta, abstractmethod
+from collections.abc import Callable, Mapping
 
 import zmq
 
@@ -64,10 +64,10 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
 
     __registry_key__ = "_server_type"
 
-    _server_type: Optional[str] = None  # Override in subclasses for registration
+    _server_type: str | None = None  # Override in subclasses for registration
 
     @classmethod
-    def server_type(cls) -> Optional[str]:
+    def server_type(cls) -> str | None:
         """Return this server class's registered runtime role."""
         return cls._server_type
 
@@ -190,20 +190,50 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
         except zmq.Again:
             return
 
+        payload = self.control_response_payload(control_data)
+
+        try:
+            self.control_socket.send(payload)
+        except Exception as e:
+            logger.error("Failed to send response on control socket: %s", e, exc_info=True)
+
+    def control_response(
+        self,
+        control_data: Mapping[str, object],
+        *,
+        response_factory: Callable[[], object] | None = None,
+    ) -> object:
+        """Return one control response independently of socket ownership."""
+
         try:
             if control_data.get(MessageFields.TYPE) == ControlMessageType.PING.value:
                 if not self._ready:
                     self._ready = True
                     logger.info("Server ready")
                 response = self._create_pong_response()
+            elif response_factory is not None:
+                response = response_factory()
             else:
                 response = self.handle_control_message(control_data)
         except Exception as e:
-            logger.error("Error processing control message: %s", e, exc_info=True)
-            response = {"status": "error", "message": str(e), "type": "error"}
+            response = self.control_error_response(e)
+        return response
+
+    def control_error_response(self, error: Exception) -> dict[str, object]:
+        """Return the canonical control error reply for a dispatch failure."""
+
+        logger.error(
+            "Error processing control message: %s",
+            error,
+            exc_info=(type(error), error, error.__traceback__),
+        )
+        return {"status": "error", "message": str(error), "type": "error"}
+
+    def serialize_control_response(self, response: object) -> bytes:
+        """Serialize a control response with the canonical error fallback."""
 
         try:
-            payload = pickle.dumps(response)
+            return pickle.dumps(response)
         except Exception as e:
             logger.error(
                 "Failed to serialize control response: %s (response_type=%s)",
@@ -211,7 +241,7 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
                 type(response).__name__,
                 exc_info=True,
             )
-            payload = pickle.dumps(
+            return pickle.dumps(
                 {
                     MessageFields.STATUS: ResponseType.ERROR.value,
                     MessageFields.TYPE: ResponseType.ERROR.value,
@@ -219,10 +249,20 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
                 }
             )
 
-        try:
-            self.control_socket.send(payload)
-        except Exception as e:
-            logger.error("Failed to send response on control socket: %s", e, exc_info=True)
+    def control_response_payload(
+        self,
+        control_data: Mapping[str, object],
+        *,
+        response_factory: Callable[[], object] | None = None,
+    ) -> bytes:
+        """Create and serialize one control response without touching a socket."""
+
+        return self.serialize_control_response(
+            self.control_response(
+                control_data,
+                response_factory=response_factory,
+            )
+        )
 
     def _create_pong_response(self):
         return (
@@ -286,8 +326,9 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
     @staticmethod
     def load_images_from_shared_memory(images, error_callback=None):
         """Load images from shared memory and clean up."""
-        import numpy as np
         from multiprocessing import shared_memory
+
+        import numpy as np
 
         image_data_list = []
         for image_info in images:
