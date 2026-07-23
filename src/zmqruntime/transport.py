@@ -5,7 +5,9 @@ import pickle
 import platform
 import socket
 import time
+from collections.abc import Collection
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 import zmq
@@ -14,6 +16,55 @@ from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.messages import ControlMessageType, MessageFields, ResponseType
 
 _default_config = ZMQConfig()
+
+
+@dataclass(frozen=True, slots=True)
+class TcpDataControlPortPair:
+    """One loopback TCP endpoint pair derived from a ZMQ configuration."""
+
+    data_port: int
+    control_port: int
+
+    @property
+    def ports(self) -> frozenset[int]:
+        """Return both ports for subsequent allocation exclusion."""
+        return frozenset((self.data_port, self.control_port))
+
+
+class TcpDataControlPortPairAuthority:
+    """Acquire free loopback TCP pairs without assuming ephemeral adjacency."""
+
+    @staticmethod
+    def acquire(
+        config: ZMQConfig,
+        *,
+        excluded: Collection[int] = (),
+        host: str = "127.0.0.1",
+    ) -> TcpDataControlPortPair:
+        """Return the first bindable configured data/control TCP pair."""
+        first_port = config.default_port
+        last_port = 65535 - config.control_port_offset
+        for data_port in range(first_port, last_port + 1):
+            control_port = get_control_port(data_port, config)
+            if data_port in excluded or control_port in excluded:
+                continue
+            try:
+                with (
+                    socket.socket(socket.AF_INET, socket.SOCK_STREAM) as data_socket,
+                    socket.socket(
+                        socket.AF_INET,
+                        socket.SOCK_STREAM,
+                    ) as control_socket,
+                ):
+                    data_socket.bind((host, data_port))
+                    control_socket.bind((host, control_port))
+            except OSError:
+                continue
+            return TcpDataControlPortPair(
+                data_port=data_port,
+                control_port=control_port,
+            )
+        raise RuntimeError("Could not allocate a free TCP data/control port pair.")
 
 
 def get_default_transport_mode() -> TransportMode:

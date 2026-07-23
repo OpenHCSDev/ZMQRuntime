@@ -1,5 +1,6 @@
 import pickle
 import platform
+import socket
 import threading
 import time
 import uuid
@@ -15,6 +16,7 @@ from zmqruntime.messages import (
 )
 from zmqruntime.server import ZMQServer
 from zmqruntime.transport import (
+    TcpDataControlPortPairAuthority,
     get_default_transport_mode,
     get_ipc_socket_path,
     get_zmq_transport_url,
@@ -22,6 +24,52 @@ from zmqruntime.transport import (
     remove_ipc_socket,
     wait_for_server_ready,
 )
+
+
+def test_tcp_port_pair_authority_returns_free_configured_pair():
+    config = ZMQConfig(default_port=47777, control_port_offset=1000)
+
+    pair = TcpDataControlPortPairAuthority.acquire(config)
+
+    assert pair.control_port == pair.data_port + config.control_port_offset
+    assert pair.ports == frozenset((pair.data_port, pair.control_port))
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as data_socket:
+        data_socket.bind(("127.0.0.1", pair.data_port))
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as control_socket:
+        control_socket.bind(("127.0.0.1", pair.control_port))
+
+
+def test_tcp_port_pair_authority_scans_both_ports_together(monkeypatch):
+    config = ZMQConfig(default_port=47777, control_port_offset=1000)
+    attempted_ports = []
+
+    class FakeSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def bind(self, address):
+            port = int(address[1])
+            attempted_ports.append(port)
+            if port == config.default_port + config.control_port_offset:
+                raise OSError("simulated reserved control port")
+
+    monkeypatch.setattr("zmqruntime.transport.socket.socket", lambda *_args: FakeSocket())
+
+    pair = TcpDataControlPortPairAuthority.acquire(config)
+
+    assert pair.data_port == config.default_port + 1
+    assert pair.control_port == (
+        config.default_port + 1 + config.control_port_offset
+    )
+    assert attempted_ports == [
+        config.default_port,
+        config.default_port + config.control_port_offset,
+        config.default_port + 1,
+        config.default_port + 1 + config.control_port_offset,
+    ]
 
 
 def test_get_default_transport_mode():

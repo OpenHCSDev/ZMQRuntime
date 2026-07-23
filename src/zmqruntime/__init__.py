@@ -7,60 +7,62 @@ __version__ = "0.1.13"
 from zmqruntime.ack_listener import GlobalAckListener
 from zmqruntime.client import ZMQClient
 from zmqruntime.config import TransportMode, ZMQConfig
+from zmqruntime.execution import (
+    ExecutionLifecycleEngineABC,
+    ExecutionResponseDiagnostic,
+    ExecutionSubmissionResponse,
+    ExecutionWaiter,
+    ExecutionWaitResult,
+    InMemoryExecutionLifecycleEngine,
+    ProgressStreamSubscriber,
+    WaitPolicy,
+)
 from zmqruntime.messages import (
     CancelRequest,
     ControlMessageType,
     ExecuteRequest,
     ExecuteResponse,
     ExecutionRecord,
-    ExecutionStatusSnapshot,
-    RunningExecutionInfo,
-    QueuedExecutionInfo,
     ExecutionStatus,
+    ExecutionStatusSnapshot,
     ImageAck,
     MessageFields,
+    PongResponse,
     ProcessExit,
     ProcessIdentity,
-    PongResponse,
     ProgressRegistrationRequest,
     ProgressUnregistrationRequest,
-    # Generic types
-    TaskProgress,
-    TaskPhase,
-    TaskStatus,
-    WorkerState,
-    ServerInfo,
-    ServerCapability,
+    QueuedExecutionInfo,
     ResponseType,
     ROIMessage,
+    RunningExecutionInfo,
+    ServerCapability,
+    ServerInfo,
     ShapesMessage,
     SocketType,
     StatusRequest,
+    TaskPhase,
+    # Generic types
+    TaskProgress,
+    TaskStatus,
+    WorkerState,
     validate_progress_payload,
-)
-from zmqruntime.execution import (
-    ExecutionLifecycleEngineABC,
-    InMemoryExecutionLifecycleEngine,
-    ProgressStreamSubscriber,
-    ExecutionWaiter,
-    WaitPolicy,
-    ExecutionResponseDiagnostic,
-    ExecutionSubmissionResponse,
-    ExecutionWaitResult,
 )
 from zmqruntime.progress import (
     EventRegistryABC,
-    LatestEventRegistry,
     GenericAxisProjection,
-    GenericPlateProjection,
     GenericExecutionProjection,
+    GenericPlateProjection,
+    LatestEventRegistry,
     ProgressProjectionAdapterABC,
     build_execution_projection,
 )
-from zmqruntime.queue_tracker import QueueTracker, GlobalQueueTrackerRegistry
+from zmqruntime.queue_tracker import GlobalQueueTrackerRegistry, QueueTracker
 from zmqruntime.runner import serve_forever
 from zmqruntime.server import ZMQServer
 from zmqruntime.transport import (
+    TcpDataControlPortPair,
+    TcpDataControlPortPairAuthority,
     coerce_transport_mode,
     get_control_port,
     get_control_url,
@@ -72,34 +74,28 @@ from zmqruntime.transport import (
     remove_ipc_socket,
     wait_for_server_ready,
 )
-from zmqruntime.viewer_state import (
-    ViewerState,
-    ViewerStateManager,
-    ViewerInstance,
-    get_or_create_viewer,
-)
 from zmqruntime.viewer_protocol import (
     ViewerAckPolicy,
     ViewerAckResponsePayload,
     ViewerBatchContextWireField,
     ViewerBatchDisplayPayload,
     ViewerBatchItemPayload,
-    ViewerBatchItemWireMapping,
     ViewerBatchItemWireField,
-    ViewerBatchMessageType,
-    ViewerBatchMessageImages,
+    ViewerBatchItemWireMapping,
     ViewerBatchMessageExtraInput,
     ViewerBatchMessageExtraPayload,
+    ViewerBatchMessageImages,
     ViewerBatchMessagePayload,
+    ViewerBatchMessageType,
     ViewerBatchMessageWirePayload,
     ViewerBatchWireField,
-    ViewerDisplayConfigWireField,
+    ViewerComponentMetadataPayload,
+    ViewerComponentMode,
+    ViewerComponentModeGroups,
     ViewerControlReplyHeader,
     ViewerControlReplyPayload,
     ViewerControlResponseField,
-    ViewerComponentMode,
-    ViewerComponentModeGroups,
-    ViewerComponentMetadataPayload,
+    ViewerDisplayConfigWireField,
     ViewerProtocolStatus,
     ViewerTransportEndpoint,
     ViewerWireMapping,
@@ -107,6 +103,12 @@ from zmqruntime.viewer_protocol import (
     ViewerWireScalar,
     ViewerWireValue,
     viewer_wire_key,
+)
+from zmqruntime.viewer_state import (
+    ViewerInstance,
+    ViewerState,
+    ViewerStateManager,
+    get_or_create_viewer,
 )
 
 __all__ = [
@@ -147,6 +149,8 @@ __all__ = [
     "GlobalQueueTrackerRegistry",
     "serve_forever",
     "ZMQServer",
+    "TcpDataControlPortPair",
+    "TcpDataControlPortPairAuthority",
     "coerce_transport_mode",
     "get_control_port",
     "get_control_url",
