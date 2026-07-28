@@ -4,7 +4,6 @@ from __future__ import annotations
 import subprocess
 import threading
 from abc import ABC, abstractmethod
-from typing import List
 
 
 class VisualizerProcessManager(ABC):
@@ -16,35 +15,14 @@ class VisualizerProcessManager(ABC):
         self._lock = threading.Lock()
 
     @abstractmethod
-    def get_launch_command(self) -> List[str]:
-        """Get command to launch visualizer. Implementation provides command."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def get_launch_env(self) -> dict:
-        """Get environment variables for subprocess."""
-        raise NotImplementedError
-
-    @abstractmethod
     def wait_for_ready(self, timeout: float = 10.0) -> bool:
         """Wait until viewer is ready to receive streamed payloads."""
         raise NotImplementedError
 
-    def start(self, detached: bool = True):
-        """Start the visualizer subprocess."""
-        with self._lock:
-            if self.process and self.is_running:
-                return self.process
-            cmd = self.get_launch_command()
-            env = self.get_launch_env()
-            self.process = subprocess.Popen(
-                cmd,
-                env=env or None,
-                start_new_session=detached,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-            )
-            return self.process
+    @abstractmethod
+    def start(self, detached: bool = True) -> subprocess.Popen:
+        """Start the concrete visualizer through its launch authority."""
+        raise NotImplementedError
 
     def stop(self, timeout: float = 5.0):
         """Stop the visualizer subprocess."""
