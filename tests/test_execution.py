@@ -1,3 +1,4 @@
+import json
 import pickle
 import platform
 import subprocess
@@ -37,9 +38,7 @@ class FailingExecutionServer(ExecutionServer):
 
 
 def test_execution_server_pong_projects_its_process_identity():
-    pong = PongResponse.from_dict(
-        DummyExecutionServer(port=5555)._create_pong_response()
-    )
+    pong = PongResponse.from_dict(DummyExecutionServer(port=5555)._create_pong_response())
 
     assert pong.process_identity == ProcessIdentity.current()
 
@@ -220,10 +219,7 @@ class ProgressAwareExecutionClient(DummyExecutionClient):
         self.sent_requests.append(request)
         if request.get(MessageFields.TYPE) == ControlMessageType.REGISTER_PROGRESS.value:
             return {MessageFields.STATUS: ResponseType.OK.value}
-        if (
-            request.get(MessageFields.TYPE)
-            == ControlMessageType.UNREGISTER_PROGRESS.value
-        ):
+        if request.get(MessageFields.TYPE) == ControlMessageType.UNREGISTER_PROGRESS.value:
             return {MessageFields.STATUS: ResponseType.OK.value}
         return request
 
@@ -237,7 +233,9 @@ def test_execution_client_registers_progress_before_execute():
     assert client.sent_requests[1][MessageFields.TYPE] == ControlMessageType.EXECUTE.value
 
     client.disconnect()
-    assert client.sent_requests[2][MessageFields.TYPE] == ControlMessageType.UNREGISTER_PROGRESS.value
+    assert (
+        client.sent_requests[2][MessageFields.TYPE] == ControlMessageType.UNREGISTER_PROGRESS.value
+    )
 
 
 class EndpointPolicyExecutionClient(ExecutionClient):
@@ -378,6 +376,113 @@ def test_owned_server_process_exit_retains_exact_terminal_status():
     assert client.owned_server_process_exit() is None
 
 
+@pytest.mark.skipif(
+    platform.system() == "Windows",
+    reason="multiprocessing resource tracker is a child process on POSIX",
+)
+def test_execution_cleanup_preserves_resource_tracker_and_kills_worker():
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import json
+import subprocess
+import sys
+from multiprocessing import resource_tracker, shared_memory
+
+import psutil
+
+from zmqruntime.execution.server import ExecutionServer
+
+
+class ProbeExecutionServer(ExecutionServer):
+    def execute_task(self, execution_id, request):
+        return {}
+
+
+first = shared_memory.SharedMemory(create=True, size=1)
+tracker_pid = resource_tracker._resource_tracker._pid
+worker = subprocess.Popen(
+    [sys.executable, "-c", "import time; time.sleep(60)"]
+)
+try:
+    killed = ProbeExecutionServer(port=5555)._kill_worker_processes()
+    tracker_alive = psutil.pid_exists(tracker_pid)
+    second = shared_memory.SharedMemory(create=True, size=1)
+    second.close()
+    second.unlink()
+    print(
+        json.dumps(
+            {
+                "killed": killed,
+                "tracker_alive": tracker_alive,
+                "worker_alive": psutil.pid_exists(worker.pid),
+            }
+        )
+    )
+finally:
+    if worker.poll() is None:
+        worker.kill()
+        worker.wait(timeout=5)
+    first.close()
+    first.unlink()
+""",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert probe.returncode == 0, probe.stderr
+    payload = json.loads(probe.stdout)
+    assert payload == {
+        "killed": 1,
+        "tracker_alive": True,
+        "worker_alive": False,
+    }
+    assert "process died unexpectedly" not in probe.stderr
+    assert "KeyError" not in probe.stderr
+
+
+@pytest.mark.parametrize(
+    "command",
+    (
+        "from multiprocessing.resource_tracker import main; main(5)",
+        "from joblib.externals.loky.backend.resource_tracker import main; main(5)",
+        "from multiprocessing.semaphore_tracker import main; main(5)",
+        "from multiprocessing.forkserver import main; main(5, 6, [], **{})",
+        "import napari; napari.run()",
+        "from fiji_bridge import main; main()",
+    ),
+)
+def test_execution_process_ownership_preserves_infrastructure_and_viewers(command):
+    process = type(
+        "FakeProcess",
+        (),
+        {"cmdline": lambda self: [sys.executable, "-c", command]},
+    )()
+
+    assert DummyExecutionServer._is_execution_worker_process(process) is False
+
+
+def test_execution_process_ownership_identifies_python_worker():
+    process = type(
+        "FakeProcess",
+        (),
+        {
+            "cmdline": lambda self: [
+                sys.executable,
+                "-c",
+                "import time; time.sleep(60)",
+            ]
+        },
+    )()
+
+    assert DummyExecutionServer._is_execution_worker_process(process) is True
+
+
 def test_process_exit_describes_exit_codes_and_signals():
     assert ProcessExit(7).describe() == "exit code 7"
     assert ProcessExit(-9).describe() == "signal SIGKILL (-9)"
@@ -499,8 +604,7 @@ def test_concurrent_clients_spawn_one_ipc_server():
         "spawn_count": 0,
     }
     clients = tuple(
-        ConcurrentStartupExecutionClient(port=port, config=config, state=state)
-        for _ in range(2)
+        ConcurrentStartupExecutionClient(port=port, config=config, state=state) for _ in range(2)
     )
     barrier = threading.Barrier(len(clients))
 
@@ -688,6 +792,4 @@ def test_submission_response_requires_explicit_tracking_and_diagnostics():
             MessageFields.ERROR: "missing plate",
         }
     )
-    assert failed_with_both.require_failure_text("submission") == (
-        "bad request (missing plate)"
-    )
+    assert failed_with_both.require_failure_text("submission") == ("bad request (missing plate)")

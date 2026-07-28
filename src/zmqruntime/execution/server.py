@@ -1,4 +1,5 @@
 """Generic ZMQ execution server with queue-based processing."""
+
 from __future__ import annotations
 
 import json
@@ -43,9 +44,22 @@ class ExecutionServer(ZMQServer, ABC):
     """Queue-based execution server with progress streaming."""
 
     _server_type = "execution"
+    _preserved_child_process_markers = (
+        "napari",
+        "fiji",
+        "resource_tracker",
+        "semaphore_tracker",
+        "multiprocessing.forkserver",
+    )
 
-    def __init__(self, port: int | None = None, host: str = "*", log_file_path: str | None = None,
-                 transport_mode=None, config: ZMQConfig | None = None):
+    def __init__(
+        self,
+        port: int | None = None,
+        host: str = "*",
+        log_file_path: str | None = None,
+        transport_mode=None,
+        config: ZMQConfig | None = None,
+    ):
         config = config or ZMQConfig()
         if port is None:
             port = config.default_port
@@ -80,39 +94,37 @@ class ExecutionServer(ZMQServer, ABC):
         )
         running = snapshot.running_executions or tuple()
         queued = snapshot.queued_executions or tuple()
-        return (
-            PongResponse(
-                port=self.port,
-                control_port=self.control_port,
-                ready=self._ready,
-                server=self.__class__.__name__,
-                server_type=self.__class__.server_type(),
-                log_file_path=self.log_file_path,
-                active_executions=snapshot.active_executions,
-                running_executions=tuple(
-                    RunningExecutionInfo(
-                        execution_id=info.execution_id,
-                        plate_id=info.plate_id,
-                        start_time=info.start_time,
-                        elapsed=info.elapsed,
-                        compile_only=info.compile_only,
-                    )
-                    for info in running
-                ),
-                queued_executions=tuple(
-                    QueuedExecutionInfo(
-                        execution_id=info.execution_id,
-                        plate_id=info.plate_id,
-                        queue_position=info.queue_position,
-                    )
-                    for info in queued
-                ),
-                workers=self._get_worker_info(),
-                uptime=time.time() - self.start_time if self.start_time else 0,
-                progress_subscribers=len(self._progress_subscribers),
-                process_identity=ProcessIdentity.current(),
-            ).to_dict()
-        )
+        return PongResponse(
+            port=self.port,
+            control_port=self.control_port,
+            ready=self._ready,
+            server=self.__class__.__name__,
+            server_type=self.__class__.server_type(),
+            log_file_path=self.log_file_path,
+            active_executions=snapshot.active_executions,
+            running_executions=tuple(
+                RunningExecutionInfo(
+                    execution_id=info.execution_id,
+                    plate_id=info.plate_id,
+                    start_time=info.start_time,
+                    elapsed=info.elapsed,
+                    compile_only=info.compile_only,
+                )
+                for info in running
+            ),
+            queued_executions=tuple(
+                QueuedExecutionInfo(
+                    execution_id=info.execution_id,
+                    plate_id=info.plate_id,
+                    queue_position=info.queue_position,
+                )
+                for info in queued
+            ),
+            workers=self._get_worker_info(),
+            uptime=time.time() - self.start_time if self.start_time else 0,
+            progress_subscribers=len(self._progress_subscribers),
+            process_identity=ProcessIdentity.current(),
+        ).to_dict()
 
     def process_messages(self):
         super().process_messages()
@@ -201,7 +213,9 @@ class ExecutionServer(ZMQServer, ABC):
 
                     record = self.active_executions[execution_id]
                     if record.status == ExecutionStatus.CANCELLED.value:
-                        logger.info("[%s] Execution was cancelled while queued, skipping", execution_id)
+                        logger.info(
+                            "[%s] Execution was cancelled while queued, skipping", execution_id
+                        )
                         self.execution_queue.task_done()
                         continue
 
@@ -266,10 +280,14 @@ class ExecutionServer(ZMQServer, ABC):
                 (record.end_time or 0.0) - (record.start_time or 0.0),
             )
         except Exception as e:
-            if isinstance(e, BrokenProcessPool) and record.status == ExecutionStatus.CANCELLED.value:
+            if (
+                isinstance(e, BrokenProcessPool)
+                and record.status == ExecutionStatus.CANCELLED.value
+            ):
                 logger.info("[%s] Cancelled", execution_id)
             else:
                 import traceback
+
                 full_traceback = traceback.format_exc()
                 self._lifecycle.mark_failed(execution_id, str(e))
                 record = self.active_executions[execution_id]
@@ -390,14 +408,7 @@ class ExecutionServer(ZMQServer, ABC):
             workers = []
             for child in psutil.Process(os.getpid()).children(recursive=True):
                 try:
-                    cmdline = child.cmdline()
-                    if not (cmdline and "python" in cmdline[0].lower()):
-                        continue
-                    cmdline_str = " ".join(cmdline)
-                    if any(
-                        x in cmdline_str.lower()
-                        for x in ["napari", "fiji", "resource_tracker", "semaphore_tracker"]
-                    ) or child.pid == os.getpid():
+                    if not self._is_execution_worker_process(child):
                         continue
                     workers.append(
                         WorkerState(
@@ -415,6 +426,22 @@ class ExecutionServer(ZMQServer, ABC):
             logger.warning("Cannot get worker info: %s", e)
             return []
 
+    @classmethod
+    def _is_execution_worker_process(cls, process) -> bool:
+        """Whether one Python child is owned by the active execution.
+
+        Multiprocessing trackers and fork servers are interpreter
+        infrastructure shared across executions. Viewer processes have their
+        own lifecycle owners. Neither category is an execution worker and
+        neither may be terminated by per-execution cleanup.
+        """
+
+        cmdline = process.cmdline()
+        if not (cmdline and "python" in os.path.basename(cmdline[0]).lower()):
+            return False
+        command = " ".join(cmdline).lower()
+        return not any(marker in command for marker in cls._preserved_child_process_markers)
+
     def _kill_worker_processes(self) -> int:
         """Kill all worker processes and return the number killed."""
         try:
@@ -431,11 +458,8 @@ class ExecutionServer(ZMQServer, ABC):
                         logger.info("Found zombie process PID %s", child.pid)
                         continue
 
-                    cmd = child.cmdline()
-                    if cmd and "python" in cmd[0].lower():
-                        cmdline_str = " ".join(cmd)
-                        if "napari" not in cmdline_str.lower() and "fiji" not in cmdline_str.lower():
-                            workers.append(child)
+                    if self._is_execution_worker_process(child):
+                        workers.append(child)
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                     continue
 
@@ -469,7 +493,9 @@ class ExecutionServer(ZMQServer, ABC):
                 psutil.wait_procs(alive, timeout=1)
 
             total_killed = len(workers) + len(zombies)
-            logger.info("Killed %s worker processes and reaped %s zombies", len(workers), len(zombies))
+            logger.info(
+                "Killed %s worker processes and reaped %s zombies", len(workers), len(zombies)
+            )
             return total_killed
 
         except (ImportError, Exception) as e:
