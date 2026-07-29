@@ -51,9 +51,6 @@ def test_tcp_port_pair_authority_scans_both_ports_together(monkeypatch):
         def __exit__(self, *_args):
             return None
 
-        def setsockopt(self, *_args):
-            return None
-
         def bind(self, address):
             port = int(address[1])
             attempted_ports.append(port)
@@ -76,11 +73,7 @@ def test_tcp_port_pair_authority_scans_both_ports_together(monkeypatch):
     ]
 
 
-@pytest.mark.skipif(
-    platform.system() == "Windows",
-    reason="POSIX TCP servers use reusable-address bind semantics",
-)
-def test_tcp_port_probe_ignores_rebindable_time_wait_socket() -> None:
+def test_tcp_port_probe_reports_active_listener_then_ignores_time_wait() -> None:
     with (
         socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener,
         socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client,

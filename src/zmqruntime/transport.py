@@ -18,13 +18,6 @@ from zmqruntime.messages import ControlMessageType, MessageFields, ResponseType
 _default_config = ZMQConfig()
 
 
-def _configure_tcp_bind_probe(sock: socket.socket) -> None:
-    """Match the reusable-address behavior of TCP server sockets on POSIX."""
-
-    if platform.system() != "Windows":
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-
-
 @dataclass(frozen=True, slots=True)
 class TcpDataControlPortPair:
     """One loopback TCP endpoint pair derived from a ZMQ configuration."""
@@ -63,8 +56,6 @@ class TcpDataControlPortPairAuthority:
                         socket.SOCK_STREAM,
                     ) as control_socket,
                 ):
-                    _configure_tcp_bind_probe(data_socket)
-                    _configure_tcp_bind_probe(control_socket)
                     data_socket.bind((host, data_port))
                     control_socket.bind((host, control_port))
             except OSError:
@@ -231,12 +222,10 @@ def is_port_in_use(
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(0.1)
-    _configure_tcp_bind_probe(sock)
     try:
-        sock.bind((host, port))
-        return False
+        return sock.connect_ex((host, port)) == 0
     except OSError:
-        return True
+        return False
     except Exception:
         return False
     finally:
