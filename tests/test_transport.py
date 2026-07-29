@@ -21,6 +21,7 @@ from zmqruntime.transport import (
     get_ipc_socket_path,
     get_zmq_transport_url,
     ipc_socket_is_stale,
+    is_port_in_use,
     remove_ipc_socket,
     wait_for_server_ready,
 )
@@ -50,6 +51,9 @@ def test_tcp_port_pair_authority_scans_both_ports_together(monkeypatch):
         def __exit__(self, *_args):
             return None
 
+        def setsockopt(self, *_args):
+            return None
+
         def bind(self, address):
             port = int(address[1])
             attempted_ports.append(port)
@@ -70,6 +74,29 @@ def test_tcp_port_pair_authority_scans_both_ports_together(monkeypatch):
         config.default_port + 1,
         config.default_port + 1 + config.control_port_offset,
     ]
+
+
+@pytest.mark.skipif(
+    platform.system() == "Windows",
+    reason="POSIX TCP servers use reusable-address bind semantics",
+)
+def test_tcp_port_probe_ignores_rebindable_time_wait_socket() -> None:
+    with (
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener,
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client,
+    ):
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+        listener.listen()
+        client.connect(("127.0.0.1", port))
+        accepted, _address = listener.accept()
+        with accepted:
+            assert is_port_in_use(port, TransportMode.TCP, host="127.0.0.1")
+        listener.close()
+        client.close()
+
+    assert not is_port_in_use(port, TransportMode.TCP, host="127.0.0.1")
 
 
 def test_get_default_transport_mode():
