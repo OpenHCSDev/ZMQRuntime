@@ -3,6 +3,8 @@ from types import MappingProxyType
 
 import pytest
 
+from zmqruntime.messages import ProcessResourceUsage, ServerRole
+from zmqruntime.streaming import StreamingVisualizerServer
 from zmqruntime.viewer_protocol import (
     ViewerBatchDisplayPayload,
     ViewerBatchItemPayload,
@@ -14,6 +16,36 @@ from zmqruntime.viewer_protocol import (
     ViewerDisplayConfigWireField,
     ViewerWirePayload,
 )
+
+
+class _TestStreamingVisualizerServer(StreamingVisualizerServer):
+    _server_type = "test-viewer"
+
+    def handle_control_message(self, message):
+        del message
+        return {}
+
+    def display_image(self, image_data, metadata) -> None:
+        del image_data, metadata
+
+
+def test_streaming_server_inheritance_owns_viewer_process_usage(monkeypatch):
+    usage = ProcessResourceUsage(memory_mb=12.5, cpu_percent=3.0)
+    monkeypatch.setattr(
+        ProcessResourceUsage,
+        "current",
+        classmethod(lambda cls: usage),
+    )
+    server = object.__new__(_TestStreamingVisualizerServer)
+    server.port = 5555
+    server.control_port = 6555
+    server._ready = True
+    server.log_file_path = None
+
+    pong = server._create_pong_response()
+
+    assert pong.server_role is ServerRole.VIEWER
+    assert pong.process_usage is usage
 
 
 def test_viewer_batch_message_normalizes_nested_mapping_proxy_to_json_wire():

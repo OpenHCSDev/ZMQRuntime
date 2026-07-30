@@ -13,6 +13,8 @@ from abc import ABC, abstractmethod
 from concurrent.futures.process import BrokenProcessPool
 from typing import Any, Callable
 
+from zmqruntime.config import ZMQConfig
+from zmqruntime.execution.lifecycle import InMemoryExecutionLifecycleEngine
 from zmqruntime.messages import (
     CancelRequest,
     ControlMessageType,
@@ -21,17 +23,16 @@ from zmqruntime.messages import (
     ExecutionRecord,
     ExecutionStatus,
     MessageFields,
-    ProcessIdentity,
     PongResponse,
+    ProcessIdentity,
+    ProgressRegistrationRequest,
+    ProgressUnregistrationRequest,
     QueuedExecutionInfo,
     ResponseType,
     RunningExecutionInfo,
+    ServerRole,
     StatusRequest,
-    ProgressRegistrationRequest,
-    ProgressUnregistrationRequest,
 )
-from zmqruntime.config import ZMQConfig
-from zmqruntime.execution.lifecycle import InMemoryExecutionLifecycleEngine
 from zmqruntime.server import ZMQServer
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ class ExecutionServer(ZMQServer, ABC):
     """Queue-based execution server with progress streaming."""
 
     _server_type = "execution"
+    _server_role = ServerRole.EXECUTION
     _preserved_child_process_markers = (
         "napari",
         "fiji",
@@ -88,7 +90,7 @@ class ExecutionServer(ZMQServer, ABC):
         self.start_time = self.start_time or time.time()
         self._start_queue_worker()
 
-    def _create_pong_response(self):
+    def _create_pong_response(self) -> PongResponse:
         snapshot = self._lifecycle.snapshot(
             uptime=time.time() - self.start_time if self.start_time else 0.0
         )
@@ -100,6 +102,7 @@ class ExecutionServer(ZMQServer, ABC):
             ready=self._ready,
             server=self.__class__.__name__,
             server_type=self.__class__.server_type(),
+            server_role=self.__class__.server_role(),
             log_file_path=self.log_file_path,
             active_executions=snapshot.active_executions,
             running_executions=tuple(
@@ -124,7 +127,7 @@ class ExecutionServer(ZMQServer, ABC):
             uptime=time.time() - self.start_time if self.start_time else 0,
             progress_subscribers=len(self._progress_subscribers),
             process_identity=ProcessIdentity.current(),
-        ).to_dict()
+        )
 
     def process_messages(self):
         super().process_messages()
@@ -147,17 +150,6 @@ class ExecutionServer(ZMQServer, ABC):
             with self._progress_publish_lock:
                 self.data_socket.send_string(json.dumps(progress_update))
             count += 1
-
-    def get_status_info(self):
-        status = super().get_status_info()
-        status.update(
-            {
-                "active_executions": len(self.active_executions),
-                "uptime": time.time() - self.start_time if self.start_time else 0,
-                "executions": [record.to_dict() for record in self.active_executions.values()],
-            }
-        )
-        return status
 
     def handle_control_message(self, message):
         message_type_raw = message.get(MessageFields.TYPE)
@@ -403,6 +395,7 @@ class ExecutionServer(ZMQServer, ABC):
     def _get_worker_info(self):
         try:
             import psutil
+
             from zmqruntime.messages import WorkerState
 
             workers = []
@@ -416,7 +409,7 @@ class ExecutionServer(ZMQServer, ABC):
                             status=child.status(),
                             cpu_percent=child.cpu_percent(interval=0),
                             memory_mb=child.memory_info().rss / 1024 / 1024,
-                            metadata={"create_time": child.create_time()},
+                            create_time=child.create_time(),
                         )
                     )
                 except (psutil.NoSuchProcess, psutil.AccessDenied):

@@ -13,7 +13,6 @@ import zmq
 from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.messages import MessageFields
 
-
 ViewerWireScalar: TypeAlias = str | int | float | bool | None
 ViewerWireValue: TypeAlias = (
     ViewerWireScalar
@@ -22,7 +21,6 @@ ViewerWireValue: TypeAlias = (
     | dict[str, "ViewerWireValue"]
 )
 ViewerWireMapping: TypeAlias = Mapping[str, ViewerWireValue]
-ViewerTransportMode: TypeAlias = str | Enum
 ViewerCleanup: TypeAlias = Callable[[], None]
 
 
@@ -96,8 +94,8 @@ class ViewerWirePayload:
         context: str,
     ) -> dict[str, ViewerWireValue]:
         payload: dict[str, ViewerWireValue] = {}
-        for field, value in values.items():
-            key = cls.key(field, context=context)
+        for field_name, value in values.items():
+            key = cls.key(field_name, context=context)
             payload[key] = cls.value(value, context=f"{context}.{key}")
         return payload
 
@@ -470,10 +468,10 @@ class ViewerComponentMetadataPayload:
             ViewerBatchWireField.COMPONENT_VALUE_DOMAIN.value,
         }
         stripped: dict[str | ViewerBatchWireField, ViewerWireValue] = {}
-        for field, value in payload.items():
-            key = viewer_wire_key(field)
+        for field_name, value in payload.items():
+            key = viewer_wire_key(field_name)
             if key not in metadata_keys:
-                stripped[field] = value
+                stripped[field_name] = value
         return ViewerWirePayload.mapping(
             stripped,
             context="viewer batch message extra without component metadata",
@@ -577,13 +575,13 @@ class ViewerTransportEndpoint:
 
     host: str
     port: int
-    transport_mode: ViewerTransportMode
+    transport_mode: TransportMode
 
-    def resolved_transport_mode(self) -> TransportMode | None:
+    def resolved_transport_mode(self) -> TransportMode:
         """Return this endpoint's zmqruntime transport mode."""
-        from zmqruntime.transport import coerce_transport_mode
+        from zmqruntime.transport import resolve_transport_mode
 
-        return coerce_transport_mode(self.transport_mode)
+        return resolve_transport_mode(self.transport_mode)
 
     def data_url(self, config: ZMQConfig | None) -> str:
         """Return the viewer data socket URL for this endpoint."""

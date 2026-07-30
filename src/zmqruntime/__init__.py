@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.1.18"
+__version__ = "0.1.19"
 
 from zmqruntime.ack_listener import GlobalAckListener
 from zmqruntime.client import ZMQClient
@@ -20,6 +20,7 @@ from zmqruntime.execution import (
 from zmqruntime.messages import (
     CancelRequest,
     ControlMessageType,
+    ControlResponse,
     ExecuteRequest,
     ExecuteResponse,
     ExecutionRecord,
@@ -30,14 +31,14 @@ from zmqruntime.messages import (
     PongResponse,
     ProcessExit,
     ProcessIdentity,
+    ProcessResourceUsage,
     ProgressRegistrationRequest,
     ProgressUnregistrationRequest,
     QueuedExecutionInfo,
     ResponseType,
     ROIMessage,
     RunningExecutionInfo,
-    ServerCapability,
-    ServerInfo,
+    ServerRole,
     ShapesMessage,
     SocketType,
     StatusRequest,
@@ -63,7 +64,6 @@ from zmqruntime.server import ZMQServer
 from zmqruntime.transport import (
     TcpDataControlPortPair,
     TcpDataControlPortPairAuthority,
-    coerce_transport_mode,
     get_control_port,
     get_control_url,
     get_default_transport_mode,
@@ -72,6 +72,7 @@ from zmqruntime.transport import (
     is_port_in_use,
     ping_control_port,
     remove_ipc_socket,
+    resolve_transport_mode,
     wait_for_server_ready,
 )
 from zmqruntime.viewer_protocol import (
@@ -117,6 +118,7 @@ __all__ = [
     "TransportMode",
     "ZMQConfig",
     "CancelRequest",
+    "ControlResponse",
     "ControlMessageType",
     "ExecuteRequest",
     "ExecuteResponse",
@@ -130,6 +132,7 @@ __all__ = [
     "ProcessExit",
     "ProcessIdentity",
     "PongResponse",
+    "ProcessResourceUsage",
     "ProgressRegistrationRequest",
     "ProgressUnregistrationRequest",
     # Generic types
@@ -137,8 +140,7 @@ __all__ = [
     "TaskPhase",
     "TaskStatus",
     "WorkerState",
-    "ServerInfo",
-    "ServerCapability",
+    "ServerRole",
     "ResponseType",
     "ROIMessage",
     "ShapesMessage",
@@ -151,7 +153,6 @@ __all__ = [
     "ZMQServer",
     "TcpDataControlPortPair",
     "TcpDataControlPortPairAuthority",
-    "coerce_transport_mode",
     "get_control_port",
     "get_control_url",
     "get_default_transport_mode",
@@ -160,6 +161,7 @@ __all__ = [
     "is_port_in_use",
     "ping_control_port",
     "remove_ipc_socket",
+    "resolve_transport_mode",
     "wait_for_server_ready",
     "ViewerState",
     "ViewerStateManager",

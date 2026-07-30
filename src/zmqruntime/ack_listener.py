@@ -12,9 +12,8 @@ import zmq
 from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.messages import ImageAck
 from zmqruntime.queue_tracker import GlobalQueueTrackerRegistry
-
+from zmqruntime.transport import get_zmq_transport_url, resolve_transport_mode
 from zmqruntime.viewer_state import ViewerStateManager
-from zmqruntime.transport import get_default_transport_mode, get_zmq_transport_url
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +75,7 @@ class GlobalAckListener:
             if self._running:
                 logger.debug("Ack listener already running")
                 return
-            self._transport_mode = transport_mode or get_default_transport_mode()
+            self._transport_mode = resolve_transport_mode(transport_mode)
             self._config = config or ZMQConfig()
             self._port = port
             self._host = host

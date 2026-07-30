@@ -7,12 +7,12 @@ at the application layer, not in this runtime library.
 
 import logging
 import signal
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Optional, Tuple
 
 import psutil
-
 
 logger = logging.getLogger(__name__)
 
@@ -21,12 +21,14 @@ logger = logging.getLogger(__name__)
 # Generic Progress Types - Application Agnostic
 # =============================================================================
 
+
 class TaskPhase(Enum):
     """Generic task phases - base vocabulary for workflow states.
 
     Applications can extend with their own phase enums.
     TaskProgress accepts TaskPhase | <AppPhase> union types.
     """
+
     INIT = "init"
     QUEUED = "queued"
     RUNNING = "running"
@@ -42,6 +44,7 @@ class TaskStatus(Enum):
     Applications can extend with their own status enums.
     TaskProgress accepts TaskStatus | <AppStatus> union types.
     """
+
     PENDING = "pending"
     STARTED = "started"
     RUNNING = "running"
@@ -53,33 +56,40 @@ class TaskStatus(Enum):
 @dataclass(frozen=True)
 class WorkerState:
     """Generic worker/process information."""
+
     pid: int
     status: str
     cpu_percent: float
     memory_mb: float
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    create_time: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "pid": self.pid,
             "status": self.status,
             "cpu_percent": self.cpu_percent,
             "memory_mb": self.memory_mb,
-            **self.metadata,
         }
+        if self.create_time is not None:
+            result["create_time"] = self.create_time
+        return result
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "WorkerState":
-        # Extract known fields, rest goes to metadata
-        known_fields = {"pid", "status", "cpu_percent", "memory_mb"}
-        metadata = {k: v for k, v in data.items() if k not in known_fields}
+        known_fields = {"pid", "status", "cpu_percent", "memory_mb", "create_time"}
+        unexpected_fields = set(data).difference(known_fields)
+        if unexpected_fields:
+            raise ValueError(
+                "WorkerState received unknown fields: "
+                f"{sorted(unexpected_fields)!r}"
+            )
 
         return cls(
             pid=data["pid"],
             status=data["status"],
             cpu_percent=data["cpu_percent"],
             memory_mb=data["memory_mb"],
-            metadata=metadata,
+            create_time=data.get("create_time"),
         )
 
 
@@ -164,9 +174,21 @@ class TaskProgress:
 
         # Separate generic fields from app-specific context
         generic_fields = {
-            "type", "task_id", "execution_id", "phase", "status", "percent",
-            "timestamp", "completed", "total", "plate_id", "axis_id",
-            "error", "traceback", "step_name", "pid"
+            "type",
+            "task_id",
+            "execution_id",
+            "phase",
+            "status",
+            "percent",
+            "timestamp",
+            "completed",
+            "total",
+            "plate_id",
+            "axis_id",
+            "error",
+            "traceback",
+            "step_name",
+            "pid",
         }
 
         context = {k: v for k, v in data.items() if k not in generic_fields}
@@ -201,109 +223,9 @@ def validate_progress_payload(payload: dict) -> dict:
 
 
 # =============================================================================
-# Generic Server Info
-# =============================================================================
-
-class ServerCapability(Enum):
-    """Generic server capabilities - extend in applications."""
-    TASK_EXECUTION = "task_execution"  # Can execute tasks/jobs
-    WORKER_POOL = "worker_pool"        # Has worker processes
-    PROGRESS_STREAMING = "progress_streaming"  # Streams progress updates
-    VIEWER = "viewer"                 # Displays results
-
-
-@dataclass(frozen=True)
-class ServerInfo:
-    """Generic server info returned from ping."""
-
-    port: int
-    control_port: int
-    server_class: str  # Actual Python class name
-    capabilities: Tuple[ServerCapability, ...]
-    ready: bool
-
-    # Generic worker info (if applicable)
-    workers: Optional[Tuple[WorkerState, ...]] = None
-
-    # Task execution info (if applicable)
-    active_tasks: Optional[int] = None
-    running_tasks: Optional[Tuple[str, ...]] = None
-
-    # Server metadata
-    uptime: Optional[float] = None
-    log_file: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Serialize for transport."""
-        result = {
-            "type": "pong",
-            "port": self.port,
-            "control_port": self.control_port,
-            "server": self.server_class,
-            "ready": self.ready,
-            "capabilities": [c.value for c in self.capabilities],
-        }
-        if self.workers:
-            result["workers"] = [w.to_dict() for w in self.workers]
-        if self.active_tasks is not None:
-            result["active_tasks"] = self.active_tasks
-        if self.running_tasks is not None:
-            result["running_tasks"] = list(self.running_tasks)
-        if self.uptime is not None:
-            result["uptime"] = self.uptime
-        if self.log_file is not None:
-            result["log_file_path"] = self.log_file
-        result.update(self.metadata)
-        return result
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ServerInfo":
-        """Parse from transport."""
-        cap_data = data.get("capabilities", [])
-        capabilities = []
-        for cap_str in cap_data:
-            try:
-                capabilities.append(ServerCapability(cap_str))
-            except ValueError:
-                pass  # Skip unknown capabilities
-
-        workers_data = data.get("workers")
-        workers = None
-        if workers_data:
-            workers = tuple(WorkerState.from_dict(w) for w in workers_data)
-
-        running_tasks_data = data.get("running_tasks")
-        running_tasks = None
-        if running_tasks_data:
-            running_tasks = tuple(running_tasks_data)
-
-        # Separate generic fields from metadata
-        generic_fields = {
-            "type", "port", "control_port", "server", "ready",
-            "capabilities", "workers", "active_tasks", "running_tasks",
-            "uptime", "log_file_path"
-        }
-        metadata = {k: v for k, v in data.items() if k not in generic_fields}
-
-        return cls(
-            port=data["port"],
-            control_port=data["control_port"],
-            server_class=data["server"],
-            capabilities=tuple(capabilities),
-            ready=data["ready"],
-            workers=workers,
-            active_tasks=data.get("active_tasks"),
-            running_tasks=running_tasks,
-            uptime=data.get("uptime"),
-            log_file=data.get("log_file_path"),
-            metadata=metadata,
-        )
-
-
-# =============================================================================
 # Message Field Constants (used by control messages)
 # =============================================================================
+
 
 class MessageFields:
     TYPE = "type"
@@ -319,6 +241,8 @@ class MessageFields:
     COMPILE_ARTIFACT_ID = "compile_artifact_id"
     COMPILE_STATUS = "compile_status"
     COMPILE_MESSAGE = "compile_message"
+    MEMORY_MB = "memory_mb"
+    CPU_PERCENT = "cpu_percent"
     EXECUTION_ID = "execution_id"
     START_TIME = "start_time"
     END_TIME = "end_time"
@@ -331,6 +255,7 @@ class MessageFields:
     READY = "ready"
     SERVER = "server"
     SERVER_TYPE = "server_type"
+    SERVER_ROLE = "server_role"
     LOG_FILE_PATH = "log_file_path"
     ACTIVE_EXECUTIONS = "active_executions"
     RUNNING_EXECUTIONS = "running_executions"
@@ -429,6 +354,7 @@ class ProcessExit:
 # Control Message Types
 # =============================================================================
 
+
 class ControlMessageType(Enum):
     PING = "ping"
     EXECUTE = "execute"
@@ -438,6 +364,7 @@ class ControlMessageType(Enum):
     FORCE_SHUTDOWN = "force_shutdown"
     REGISTER_PROGRESS = "register_progress"
     UNREGISTER_PROGRESS = "unregister_progress"
+
 
 class ResponseType(Enum):
     PONG = "pong"
@@ -466,7 +393,16 @@ class SocketType(Enum):
     @classmethod
     def from_zmq_constant(cls, zmq_const):
         import zmq
-        return {zmq.PUB: cls.PUB, zmq.SUB: cls.SUB, zmq.REQ: cls.REQ, zmq.REP: cls.REP}.get(zmq_const, cls.PUB)
+
+        try:
+            return {
+                zmq.PUB: cls.PUB,
+                zmq.SUB: cls.SUB,
+                zmq.REQ: cls.REQ,
+                zmq.REP: cls.REP,
+            }[zmq_const]
+        except KeyError as error:
+            raise ValueError(f"Unsupported ZMQ socket type: {zmq_const!r}") from error
 
     def get_display_name(self):
         return self.value
@@ -535,8 +471,16 @@ class ExecuteRequest:
         )
 
 
+class ControlResponse(ABC):
+    """Nominal response that owns its control-wire mapping."""
+
+    @abstractmethod
+    def to_dict(self) -> Dict[str, Any]:
+        """Project this response to its control-wire representation."""
+
+
 @dataclass(frozen=True)
-class ExecuteResponse:
+class ExecuteResponse(ControlResponse):
     status: ResponseType
     execution_id: Optional[str] = None
     message: Optional[str] = None
@@ -590,8 +534,7 @@ class ExecutionRecord:
                 return value.value
             if isinstance(value, dict):
                 return {
-                    str(_to_transport_value(k)): _to_transport_value(v)
-                    for k, v in value.items()
+                    str(_to_transport_value(k)): _to_transport_value(v) for k, v in value.items()
                 }
             if isinstance(value, (list, tuple, set)):
                 return [_to_transport_value(v) for v in value]
@@ -610,9 +553,7 @@ class ExecutionRecord:
         if self.traceback is not None:
             result[MessageFields.TRACEBACK] = _to_transport_value(self.traceback)
         if self.results_summary is not None:
-            result[MessageFields.RESULTS_SUMMARY] = _to_transport_value(
-                self.results_summary
-            )
+            result[MessageFields.RESULTS_SUMMARY] = _to_transport_value(self.results_summary)
         return result
 
     @classmethod
@@ -742,9 +683,7 @@ class ExecutionStatusSnapshot:
         queued_executions = None
         queued_data = data.get(MessageFields.QUEUED_EXECUTIONS)
         if isinstance(queued_data, list):
-            queued_executions = tuple(
-                QueuedExecutionInfo.from_dict(entry) for entry in queued_data
-            )
+            queued_executions = tuple(QueuedExecutionInfo.from_dict(entry) for entry in queued_data)
 
         executions = None
         execution_ids = data.get(MessageFields.EXECUTIONS)
@@ -785,7 +724,10 @@ class CancelRequest:
         return "Missing execution_id" if not self.execution_id else None
 
     def to_dict(self):
-        return {MessageFields.TYPE: ControlMessageType.CANCEL.value, MessageFields.EXECUTION_ID: self.execution_id}
+        return {
+            MessageFields.TYPE: ControlMessageType.CANCEL.value,
+            MessageFields.EXECUTION_ID: self.execution_id,
+        }
 
     @classmethod
     def from_dict(cls, data):
@@ -829,12 +771,43 @@ class ProgressUnregistrationRequest:
 
 
 @dataclass(frozen=True)
-class PongResponse:
-    """Pong response with typed worker info."""
+class ProcessResourceUsage:
+    """Process resource metrics carried by a server heartbeat."""
+
+    memory_mb: float
+    cpu_percent: float
+
+    @classmethod
+    def current(cls) -> Optional["ProcessResourceUsage"]:
+        """Sample the current process when resource inspection is available."""
+
+        try:
+            process = psutil.Process()
+            return cls(
+                memory_mb=process.memory_info().rss / 1024 / 1024,
+                cpu_percent=process.cpu_percent(interval=0),
+            )
+        except (psutil.Error, OSError):
+            return None
+
+
+class ServerRole(str, Enum):
+    """Closed protocol-level role of a ZMQ server."""
+
+    GENERIC = "generic"
+    EXECUTION = "execution"
+    VIEWER = "viewer"
+
+
+@dataclass(frozen=True)
+class PongResponse(ControlResponse):
+    """Complete typed server-heartbeat response."""
+
     port: int
     control_port: int
     ready: bool
     server: str
+    server_role: ServerRole
     server_type: Optional[str] = None
     log_file_path: Optional[str] = None
     active_executions: Optional[int] = None
@@ -844,6 +817,9 @@ class PongResponse:
     uptime: Optional[float] = None
     progress_subscribers: Optional[int] = None
     process_identity: Optional[ProcessIdentity] = None
+    compile_status: Optional[str] = None
+    compile_message: Optional[str] = None
+    process_usage: Optional[ProcessResourceUsage] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for transport."""
@@ -856,6 +832,7 @@ class PongResponse:
         }
         if self.server_type is not None:
             result[MessageFields.SERVER_TYPE] = self.server_type
+        result[MessageFields.SERVER_ROLE] = self.server_role.value
         if self.log_file_path is not None:
             result[MessageFields.LOG_FILE_PATH] = self.log_file_path
         if self.active_executions is not None:
@@ -876,38 +853,59 @@ class PongResponse:
             result[MessageFields.PROGRESS_SUBSCRIBERS] = self.progress_subscribers
         if self.process_identity is not None:
             result[MessageFields.PROCESS_IDENTITY] = self.process_identity.to_dict()
+        if self.compile_status is not None:
+            result[MessageFields.COMPILE_STATUS] = self.compile_status
+        if self.compile_message is not None:
+            result[MessageFields.COMPILE_MESSAGE] = self.compile_message
+        if self.process_usage is not None:
+            result[MessageFields.MEMORY_MB] = self.process_usage.memory_mb
+            result[MessageFields.CPU_PERCENT] = self.process_usage.cpu_percent
         return result
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PongResponse":
         """Parse from transport."""
+        if data[MessageFields.TYPE] != ResponseType.PONG.value:
+            raise ValueError(
+                "PongResponse requires "
+                f"{MessageFields.TYPE}={ResponseType.PONG.value!r}."
+            )
+
         workers_data = data.get(MessageFields.WORKERS)
         workers = None
         if workers_data is not None:
+            if not isinstance(workers_data, list) or not all(
+                isinstance(entry, dict) for entry in workers_data
+            ):
+                raise TypeError(
+                    "PongResponse.workers must be a list of dict entries"
+                )
             workers = tuple(WorkerState.from_dict(w) for w in workers_data)
 
         running_executions_data = data.get(MessageFields.RUNNING_EXECUTIONS)
         running_executions = None
-        if isinstance(running_executions_data, list):
-            if not all(isinstance(entry, dict) for entry in running_executions_data):
+        if running_executions_data is not None:
+            if not isinstance(running_executions_data, list):
                 raise TypeError(
                     "PongResponse.running_executions must be a list of dict entries"
                 )
+            if not all(isinstance(entry, dict) for entry in running_executions_data):
+                raise TypeError("PongResponse.running_executions must be a list of dict entries")
             running_executions = tuple(
-                RunningExecutionInfo.from_dict(entry)
-                for entry in running_executions_data
+                RunningExecutionInfo.from_dict(entry) for entry in running_executions_data
             )
 
         queued_executions_data = data.get(MessageFields.QUEUED_EXECUTIONS)
         queued_executions = None
-        if isinstance(queued_executions_data, list):
-            if not all(isinstance(entry, dict) for entry in queued_executions_data):
+        if queued_executions_data is not None:
+            if not isinstance(queued_executions_data, list):
                 raise TypeError(
                     "PongResponse.queued_executions must be a list of dict entries"
                 )
+            if not all(isinstance(entry, dict) for entry in queued_executions_data):
+                raise TypeError("PongResponse.queued_executions must be a list of dict entries")
             queued_executions = tuple(
-                QueuedExecutionInfo.from_dict(entry)
-                for entry in queued_executions_data
+                QueuedExecutionInfo.from_dict(entry) for entry in queued_executions_data
             )
 
         process_identity_data = data.get(MessageFields.PROCESS_IDENTITY)
@@ -917,12 +915,26 @@ class PongResponse:
                 raise TypeError("PongResponse.process_identity must be a dict")
             process_identity = ProcessIdentity.from_dict(process_identity_data)
 
+        memory_mb = data.get(MessageFields.MEMORY_MB)
+        cpu_percent = data.get(MessageFields.CPU_PERCENT)
+        process_usage = None
+        if memory_mb is not None or cpu_percent is not None:
+            if memory_mb is None or cpu_percent is None:
+                raise TypeError(
+                    "PongResponse process usage requires both memory_mb and cpu_percent"
+                )
+            process_usage = ProcessResourceUsage(
+                memory_mb=float(memory_mb),
+                cpu_percent=float(cpu_percent),
+            )
+
         return cls(
             port=data[MessageFields.PORT],
             control_port=data[MessageFields.CONTROL_PORT],
             ready=data[MessageFields.READY],
             server=data[MessageFields.SERVER],
             server_type=data.get(MessageFields.SERVER_TYPE),
+            server_role=ServerRole(data[MessageFields.SERVER_ROLE]),
             log_file_path=data.get(MessageFields.LOG_FILE_PATH),
             active_executions=data.get(MessageFields.ACTIVE_EXECUTIONS),
             running_executions=running_executions,
@@ -931,12 +943,16 @@ class PongResponse:
             uptime=data.get(MessageFields.UPTIME),
             progress_subscribers=data.get(MessageFields.PROGRESS_SUBSCRIBERS),
             process_identity=process_identity,
+            compile_status=data.get(MessageFields.COMPILE_STATUS),
+            compile_message=data.get(MessageFields.COMPILE_MESSAGE),
+            process_usage=process_usage,
         )
 
 
 # =============================================================================
 # Streaming Message Types
 # =============================================================================
+
 
 @dataclass(frozen=True)
 class ImageAck:
@@ -945,12 +961,13 @@ class ImageAck:
     Sent via PUSH socket from viewer to shared ack port (7555).
     Used to track real-time queue depth and show progress like '3/10 images processed'.
     """
-    image_id: str          # UUID of the processed image
-    viewer_port: int       # Port of the viewer that processed it (for routing)
-    viewer_type: str       # 'napari' or 'fiji'
-    status: str = 'success'  # 'success', 'error', etc.
+
+    image_id: str  # UUID of the processed image
+    viewer_port: int  # Port of the viewer that processed it (for routing)
+    viewer_type: str  # 'napari' or 'fiji'
+    status: str = "success"  # 'success', 'error', etc.
     timestamp: Optional[float] = None  # When it was processed
-    error: Optional[str] = None      # Error message if status='error'
+    error: Optional[str] = None  # Error message if status='error'
 
     def to_dict(self):
         result = {
@@ -958,7 +975,7 @@ class ImageAck:
             MessageFields.IMAGE_ID: self.image_id,
             MessageFields.VIEWER_PORT: self.viewer_port,
             MessageFields.VIEWER_TYPE: self.viewer_type,
-            MessageFields.STATUS: self.status
+            MessageFields.STATUS: self.status,
         }
         if self.timestamp is not None:
             result[MessageFields.TIMESTAMP] = self.timestamp
@@ -972,9 +989,9 @@ class ImageAck:
             image_id=data[MessageFields.IMAGE_ID],
             viewer_port=data[MessageFields.VIEWER_PORT],
             viewer_type=data[MessageFields.VIEWER_TYPE],
-            status=data.get(MessageFields.STATUS, 'success'),
+            status=data.get(MessageFields.STATUS, "success"),
             timestamp=data.get(MessageFields.TIMESTAMP),
-            error=data.get(MessageFields.ERROR)
+            error=data.get(MessageFields.ERROR),
         )
 
 
@@ -984,6 +1001,7 @@ class ROIMessage:
 
     Sent via ZMQ to viewer servers to display ROIs in real-time.
     """
+
     rois: list  # List of ROI dictionaries with shapes and metadata
     layer_name: str = "ROIs"  # Name of the layer/overlay
 
@@ -991,14 +1009,13 @@ class ROIMessage:
         return {
             MessageFields.TYPE: "rois",
             MessageFields.ROIS: self.rois,
-            MessageFields.LAYER_NAME: self.layer_name
+            MessageFields.LAYER_NAME: self.layer_name,
         }
 
     @classmethod
     def from_dict(cls, data):
         return cls(
-            rois=data[MessageFields.ROIS],
-            layer_name=data.get(MessageFields.LAYER_NAME, "ROIs")
+            rois=data[MessageFields.ROIS], layer_name=data.get(MessageFields.LAYER_NAME, "ROIs")
         )
 
 
@@ -1008,6 +1025,7 @@ class ShapesMessage:
 
     Napari-specific format for displaying polygon/ellipse shapes.
     """
+
     shapes: list  # List of shape dictionaries with type, coordinates, metadata
     layer_name: str = "ROIs"
 
@@ -1015,12 +1033,11 @@ class ShapesMessage:
         return {
             MessageFields.TYPE: "shapes",
             MessageFields.SHAPES: self.shapes,
-            MessageFields.LAYER_NAME: self.layer_name
+            MessageFields.LAYER_NAME: self.layer_name,
         }
 
     @classmethod
     def from_dict(cls, data):
         return cls(
-            shapes=data[MessageFields.SHAPES],
-            layer_name=data.get(MessageFields.LAYER_NAME, "ROIs")
+            shapes=data[MessageFields.SHAPES], layer_name=data.get(MessageFields.LAYER_NAME, "ROIs")
         )

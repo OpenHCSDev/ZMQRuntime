@@ -13,6 +13,8 @@ from zmqruntime.messages import (
     ControlMessageType,
     MessageFields,
     PongResponse,
+    ServerRole,
+    SocketType,
 )
 from zmqruntime.server import ZMQServer
 from zmqruntime.transport import (
@@ -23,6 +25,7 @@ from zmqruntime.transport import (
     ipc_socket_is_stale,
     is_port_in_use,
     remove_ipc_socket,
+    resolve_transport_mode,
     wait_for_server_ready,
 )
 
@@ -62,9 +65,7 @@ def test_tcp_port_pair_authority_scans_both_ports_together(monkeypatch):
     pair = TcpDataControlPortPairAuthority.acquire(config)
 
     assert pair.data_port == config.default_port + 1
-    assert pair.control_port == (
-        config.default_port + 1 + config.control_port_offset
-    )
+    assert pair.control_port == (config.default_port + 1 + config.control_port_offset)
     assert attempted_ports == [
         config.default_port,
         config.default_port + config.control_port_offset,
@@ -97,6 +98,21 @@ def test_get_default_transport_mode():
     assert mode in (TransportMode.TCP, TransportMode.IPC)
 
 
+def test_resolve_transport_mode_preserves_exact_enum_or_uses_default():
+    assert resolve_transport_mode(TransportMode.TCP) is TransportMode.TCP
+    assert resolve_transport_mode(None) is get_default_transport_mode()
+
+
+def test_resolve_transport_mode_rejects_textual_mirror():
+    with pytest.raises(TypeError, match="TransportMode"):
+        resolve_transport_mode("tcp")
+
+
+def test_socket_type_rejects_unknown_zmq_constant():
+    with pytest.raises(ValueError, match="Unsupported ZMQ socket type"):
+        SocketType.from_zmq_constant(object())
+
+
 def test_control_response_payload_accepts_an_external_dispatch_owner():
     class TestServer(ZMQServer):
         def __init__(self):
@@ -121,6 +137,24 @@ def test_control_response_payload_accepts_an_external_dispatch_owner():
         "owner": "transport",
     }
     assert server.handled_messages == []
+
+
+def test_control_response_payload_serializes_nominal_ping_response():
+    class TestServer(ZMQServer):
+        def handle_control_message(self, message):
+            raise AssertionError(message)
+
+        def handle_data_message(self, message):
+            raise AssertionError(message)
+
+    server = TestServer(5555)
+    payload = pickle.loads(
+        server.control_response_payload(
+            {MessageFields.TYPE: ControlMessageType.PING.value},
+        )
+    )
+
+    assert PongResponse.from_dict(payload).server_role is ServerRole.GENERIC
 
 
 def test_get_zmq_transport_url_tcp():
@@ -261,6 +295,7 @@ def test_wait_for_server_ready_retains_request_for_delayed_ready_reply():
                         control_port=control_port,
                         ready=True,
                         server="DelayedReadyTestServer",
+                        server_role=ServerRole.GENERIC,
                     ).to_dict()
                 )
             )

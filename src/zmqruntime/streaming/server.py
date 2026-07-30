@@ -1,16 +1,25 @@
 """Streaming visualizer server base class."""
+
 from __future__ import annotations
 
 import json
 import logging
 import time
 from abc import ABC, abstractmethod
+from dataclasses import replace
+from multiprocessing import shared_memory
 from typing import Any
 
+import numpy as np
 import zmq
 
 from zmqruntime.config import TransportMode, ZMQConfig
-from zmqruntime.messages import ImageAck
+from zmqruntime.messages import (
+    ImageAck,
+    PongResponse,
+    ProcessResourceUsage,
+    ServerRole,
+)
 from zmqruntime.server import ZMQServer
 from zmqruntime.transport import get_zmq_transport_url
 
@@ -19,6 +28,39 @@ logger = logging.getLogger(__name__)
 
 class StreamingVisualizerServer(ZMQServer, ABC):
     """Streaming server that receives and displays images."""
+
+    _server_role = ServerRole.VIEWER
+
+    @staticmethod
+    def load_images_from_shared_memory(images, error_callback=None):
+        """Decode viewer image payloads from shared memory and clean up."""
+
+        image_data_list = []
+        for image_info in images:
+            shm_name = image_info.get("shm_name")
+            shape = tuple(image_info.get("shape"))
+            dtype = np.dtype(image_info.get("dtype"))
+            metadata = image_info.get("metadata", {})
+            image_id = image_info.get("image_id")
+
+            try:
+                shm = shared_memory.SharedMemory(name=shm_name)
+                np_data = np.ndarray(shape, dtype=dtype, buffer=shm.buf).copy()
+                shm.close()
+                shm.unlink()
+                image_data_list.append(
+                    {"data": np_data, "metadata": metadata, "image_id": image_id}
+                )
+            except Exception as error:
+                logger.error("Failed to read shared memory %s: %s", shm_name, error)
+                if error_callback and image_id:
+                    error_callback(
+                        image_id,
+                        "error",
+                        f"Failed to read shared memory: {error}",
+                    )
+
+        return image_data_list
 
     def __init__(
         self,
@@ -77,6 +119,14 @@ class StreamingVisualizerServer(ZMQServer, ABC):
             self.ack_socket.send_json(ack.to_dict())
         except Exception as e:
             logger.warning("Failed to send ack for %s: %s", image_id, e)
+
+    def _create_pong_response(self) -> PongResponse:
+        """Extend the shared heartbeat with current viewer-process usage."""
+
+        return replace(
+            super()._create_pong_response(),
+            process_usage=ProcessResourceUsage.current(),
+        )
 
     def deserialize_message(self, message: bytes) -> dict:
         """Deserialize a raw message payload into a dict."""

@@ -1,4 +1,5 @@
 """ZMQ server base class and utilities."""
+
 from __future__ import annotations
 
 import logging
@@ -6,53 +7,30 @@ import pickle
 import platform
 import subprocess
 import threading
-from abc import ABC, ABCMeta, abstractmethod
+from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 
 import zmq
+from metaclass_registry import AutoRegisterMeta
 
 from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.messages import (
     ControlMessageType,
+    ControlResponse,
     MessageFields,
-    ProcessIdentity,
     PongResponse,
+    ProcessIdentity,
     ResponseType,
+    ServerRole,
     SocketType,
 )
 from zmqruntime.transport import (
-    get_default_transport_mode,
     get_zmq_transport_url,
     remove_ipc_socket,
+    resolve_transport_mode,
 )
 
 logger = logging.getLogger(__name__)
-
-
-try:
-    from metaclass_registry import AutoRegisterMeta  # type: ignore
-except Exception:  # pragma: no cover - fallback for optional dependency
-
-    class AutoRegisterMeta(ABCMeta):
-        """Fallback registry metaclass when metaclass-registry is unavailable."""
-
-        def __new__(mcls, name, bases, namespace, **kwargs):
-            cls = super().__new__(mcls, name, bases, namespace, **kwargs)
-            registry_key = getattr(cls, "__registry_key__", None)
-            if registry_key is None:
-                return cls
-            registry_owner = None
-            for base in bases:
-                if hasattr(base, "__registry__"):
-                    registry_owner = base
-                    break
-            if registry_owner is None:
-                cls.__registry__ = {}
-                registry_owner = cls
-            key_value = getattr(cls, registry_key, None)
-            if key_value:
-                registry_owner.__registry__[key_value] = cls
-            return cls
 
 
 class ZMQServer(ABC, metaclass=AutoRegisterMeta):
@@ -66,11 +44,18 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
     __registry_key__ = "_server_type"
 
     _server_type: str | None = None  # Override in subclasses for registration
+    _server_role = ServerRole.GENERIC
 
     @classmethod
     def server_type(cls) -> str | None:
         """Return this server class's registered runtime role."""
         return cls._server_type
+
+    @classmethod
+    def server_role(cls) -> ServerRole:
+        """Return the protocol-level category of this server."""
+
+        return cls._server_role
 
     def __init__(
         self,
@@ -89,8 +74,7 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
         self.control_port = port + self.config.control_port_offset
         self.log_file_path = log_file_path
         self.data_socket_type = data_socket_type if data_socket_type is not None else zmq.PUB
-        # Windows doesn't support IPC (POSIX named pipes), so use TCP with localhost
-        self.transport_mode = transport_mode or get_default_transport_mode()
+        self.transport_mode = resolve_transport_mode(transport_mode)
         self.zmq_context = None
         self.data_socket = None
         self.control_socket = None
@@ -234,6 +218,8 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
         """Serialize a control response with the canonical error fallback."""
 
         try:
+            if isinstance(response, ControlResponse):
+                response = response.to_dict()
             return pickle.dumps(response)
         except Exception as e:
             logger.error(
@@ -265,28 +251,19 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
             )
         )
 
-    def _create_pong_response(self):
-        return (
-            PongResponse(
-                port=self.port,
-                control_port=self.control_port,
-                ready=self._ready,
-                server=self.__class__.__name__,
-                server_type=self.__class__.server_type(),
-                log_file_path=self.log_file_path,
-                process_identity=ProcessIdentity.current(),
-            ).to_dict()
-        )
+    def _create_pong_response(self) -> PongResponse:
+        """Return the typed heartbeat; serialization owns wire projection."""
 
-    def get_status_info(self):
-        return {
-            "port": self.port,
-            "control_port": self.control_port,
-            "running": self._running,
-            "ready": self._ready,
-            "server_type": self.__class__.__name__,
-            "log_file": self.log_file_path,
-        }
+        return PongResponse(
+            port=self.port,
+            control_port=self.control_port,
+            ready=self._ready,
+            server=self.__class__.__name__,
+            server_type=self.__class__.server_type(),
+            server_role=self.__class__.server_role(),
+            log_file_path=self.log_file_path,
+            process_identity=ProcessIdentity.current(),
+        )
 
     def request_shutdown(self):
         self._running = False
@@ -325,76 +302,6 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
             pass
         return killed
 
-    @staticmethod
-    def load_images_from_shared_memory(images, error_callback=None):
-        """Load images from shared memory and clean up."""
-        from multiprocessing import shared_memory
-
-        import numpy as np
-
-        image_data_list = []
-        for image_info in images:
-            shm_name = image_info.get("shm_name")
-            shape = tuple(image_info.get("shape"))
-            dtype = np.dtype(image_info.get("dtype"))
-            metadata = image_info.get("metadata", {})
-            image_id = image_info.get("image_id")
-
-            try:
-                shm = shared_memory.SharedMemory(name=shm_name)
-                np_data = np.ndarray(shape, dtype=dtype, buffer=shm.buf).copy()
-                shm.close()
-                shm.unlink()
-
-                image_data_list.append(
-                    {"data": np_data, "metadata": metadata, "image_id": image_id}
-                )
-            except Exception as e:
-                logger.error("Failed to read shared memory %s: %s", shm_name, e)
-                if error_callback and image_id:
-                    error_callback(image_id, "error", f"Failed to read shared memory: {e}")
-                continue
-
-        return image_data_list
-
-    @staticmethod
-    def collect_dimension_values(images, components):
-        """Collect unique dimension value tuples from images."""
-        if not components:
-            return [()]
-
-        values = set()
-        for img_data in images:
-            meta = img_data["metadata"]
-            value_tuple = tuple(meta[comp] for comp in components)
-            values.add(value_tuple)
-
-        return sorted(values)
-
-    @staticmethod
-    def organize_components_by_mode(
-        component_order,
-        component_modes,
-        component_unique_values,
-        always_include_window=True,
-        skip_flat_dimensions=True,
-    ):
-        """Organize components by their display mode."""
-        result = {"window": [], "channel": [], "slice": [], "frame": []}
-
-        for comp_name in component_order:
-            mode = component_modes[comp_name]
-            is_flat = len(component_unique_values.get(comp_name, set())) <= 1
-
-            if mode == "window":
-                result["window"].append(comp_name)
-            elif skip_flat_dimensions and is_flat:
-                continue
-            else:
-                result[mode].append(comp_name)
-
-        return result
-
     @abstractmethod
     def handle_control_message(self, message):
         pass
@@ -402,7 +309,3 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
     @abstractmethod
     def handle_data_message(self, message):
         pass
-
-
-# Registry export
-ZMQ_SERVERS = getattr(ZMQServer, "__registry__", {})

@@ -1,8 +1,8 @@
 """Execution client with submit/poll/wait and progress streaming."""
 from __future__ import annotations
 
-import pickle
 import logging
+import pickle
 import threading
 import uuid
 from abc import ABC, abstractmethod
@@ -12,12 +12,12 @@ import zmq
 
 from zmqruntime.client import ZMQClient
 from zmqruntime.execution.progress_stream import ProgressStreamSubscriber
-from zmqruntime.execution.wait_policy import ExecutionWaiter, WaitPolicy
 from zmqruntime.execution.responses import (
     ExecutionSubmissionResponse,
     WireRequest,
     WireResponse,
 )
+from zmqruntime.execution.wait_policy import ExecutionWaiter, WaitPolicy
 from zmqruntime.messages import (
     ControlMessageType,
     MessageFields,
@@ -152,18 +152,7 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
             raise TypeError(
                 f"Expected ping response dict, got {type(response).__name__}"
             )
-        if MessageFields.TYPE not in response:
-            raise RuntimeError(f"Ping response missing type field: {response}")
-        response_type = response[MessageFields.TYPE]
-        if response_type != ResponseType.PONG.value:
-            raise RuntimeError(
-                f"Expected pong response, got type={response_type!r} payload={response}"
-            )
         return PongResponse.from_dict(response)
-
-    def get_server_info(self):
-        """Backward-compatible dict view of typed ping snapshot."""
-        return self.get_server_info_snapshot().to_dict()
 
     def _send_control_request(self, request, timeout_ms=5000):
         owns_context = self.zmq_context is None

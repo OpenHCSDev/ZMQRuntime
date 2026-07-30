@@ -5,15 +5,16 @@ import subprocess
 import sys
 import threading
 import time
+
 import pytest
 
 from zmqruntime import ProcessExit
 from zmqruntime.client import ZMQClient
+from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.execution.client import ExecutionClient
 from zmqruntime.execution.responses import ExecutionSubmissionResponse
 from zmqruntime.execution.server import ExecutionServer
 from zmqruntime.execution.wait_policy import ExecutionWaiter, WaitPolicy
-from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.messages import (
     ControlMessageType,
     ExecuteRequest,
@@ -22,6 +23,7 @@ from zmqruntime.messages import (
     PongResponse,
     ProcessIdentity,
     ResponseType,
+    ServerRole,
     TaskProgress,
 )
 from zmqruntime.transport import get_ipc_socket_path
@@ -38,7 +40,7 @@ class FailingExecutionServer(ExecutionServer):
 
 
 def test_execution_server_pong_projects_its_process_identity():
-    pong = PongResponse.from_dict(DummyExecutionServer(port=5555)._create_pong_response())
+    pong = DummyExecutionServer(port=5555)._create_pong_response()
 
     assert pong.process_identity == ProcessIdentity.current()
 
@@ -521,8 +523,9 @@ def test_existing_connection_retains_typed_server_process_identity(monkeypatch):
             control_port=6555,
             ready=True,
             server="DummyExecutionServer",
+            server_role=ServerRole.EXECUTION,
             process_identity=process_identity,
-        ).to_dict(),
+        ),
     )
     client = EndpointPolicyExecutionClient()
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "zmqruntime"
-version = "0.1.18"
+version = "0.1.19"
 description = "Generic ZMQ-based distributed execution framework"
 authors = [{name = "Tristan Simas", email = "tristan.simas@mail.mcgill.ca"}]
 license = {text = "MIT"}
@@ -25,12 +25,14 @@ classifiers = [
 keywords = ["zmq", "zeromq", "distributed", "execution", "rpc", "messaging"]
 
 dependencies = [
+    "annotated-types>=0.7.0",
+    "metaclass-registry>=0.1.6",
     "pyzmq>=22.0",
     "psutil>=5.9",
+    "python-introspect>=0.1.6",
 ]
 
 [project.optional-dependencies]
-registry = ["metaclass-registry"]
 docs = [
     "sphinx>=7.0",
     "sphinx-rtd-theme>=2.0",

@@ -12,13 +12,13 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, wait
+from dataclasses import replace
 
 import zmq
 
 from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.messages import (
     MessageFields,
-    PongResponse,
     ProcessExit,
     ProcessIdentity,
     ResponseType,
@@ -26,13 +26,13 @@ from zmqruntime.messages import (
 from zmqruntime.transport import (
     endpoint_startup_lock,
     get_control_port,
-    get_default_transport_mode,
     get_ipc_socket_path,
     get_zmq_transport_url,
-    is_port_in_use,
     ipc_socket_is_stale,
+    is_port_in_use,
     remove_ipc_socket,
     request_control_ping,
+    resolve_transport_mode,
     wait_for_server_ready,
 )
 
@@ -53,7 +53,7 @@ class ZMQClient(ABC):
         self.host = host
         self.control_port = port + self.config.control_port_offset
         self.persistent = persistent
-        self.transport_mode = transport_mode or get_default_transport_mode()
+        self.transport_mode = resolve_transport_mode(transport_mode)
         self.zmq_context = None
         self.data_socket = None
         self.control_socket = None
@@ -244,15 +244,9 @@ class ZMQClient(ABC):
             config=self.config,
             timeout_ms=timeout_ms,
         )
-        if (
-            response is None
-            or response.get(MessageFields.TYPE) != ResponseType.PONG.value
-            or not response.get(MessageFields.READY)
-        ):
+        if response is None or not response.ready:
             return False
-        self._connected_server_process_identity = PongResponse.from_dict(
-            response
-        ).process_identity
+        self._connected_server_process_identity = response.process_identity
         return True
 
     @staticmethod
@@ -328,7 +322,7 @@ class ZMQClient(ABC):
         config: ZMQConfig | None = None,
     ):
         config = config or ZMQConfig()
-        transport_mode = transport_mode or get_default_transport_mode()
+        transport_mode = resolve_transport_mode(transport_mode)
         ports = tuple(ports)
         if not ports:
             return []
@@ -341,13 +335,13 @@ class ZMQClient(ABC):
                 config=config,
                 timeout_ms=timeout_ms,
             )
-            if pong is None or pong.get(MessageFields.TYPE) != ResponseType.PONG.value:
+            if pong is None:
                 return None
-            return {
-                **pong,
-                "port": port,
-                "control_port": get_control_port(port, config),
-            }
+            return replace(
+                pong,
+                port=port,
+                control_port=get_control_port(port, config),
+            )
 
         servers = []
         worker_count = min(len(ports), 32)
@@ -361,7 +355,7 @@ class ZMQClient(ABC):
                     servers.append(server)
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
-        return sorted(servers, key=lambda server: ports.index(server["port"]))
+        return sorted(servers, key=lambda server: ports.index(server.port))
 
     @staticmethod
     def kill_server_on_port(
@@ -373,7 +367,7 @@ class ZMQClient(ABC):
         config: ZMQConfig | None = None,
     ):
         config = config or ZMQConfig()
-        transport_mode = transport_mode or get_default_transport_mode()
+        transport_mode = resolve_transport_mode(transport_mode)
         msg_type = "shutdown" if graceful else "force_shutdown"
 
         def kill_ipc_server_processes(port: int) -> int:

@@ -1,4 +1,5 @@
 """Transport utilities for ZMQ communication."""
+
 from __future__ import annotations
 
 import pickle
@@ -13,7 +14,7 @@ from pathlib import Path
 import zmq
 
 from zmqruntime.config import TransportMode, ZMQConfig
-from zmqruntime.messages import ControlMessageType, MessageFields, ResponseType
+from zmqruntime.messages import ControlMessageType, MessageFields, PongResponse
 
 _default_config = ZMQConfig()
 
@@ -72,23 +73,17 @@ def get_default_transport_mode() -> TransportMode:
     return TransportMode.TCP if platform.system() == "Windows" else TransportMode.IPC
 
 
-def coerce_transport_mode(transport_mode) -> TransportMode | None:
-    """Normalize transport mode inputs to a zmqruntime TransportMode."""
-    if transport_mode is None:
-        return None
-    if isinstance(transport_mode, TransportMode):
-        return transport_mode
-    try:
-        value = transport_mode.value
-    except Exception:
-        value = transport_mode
-    try:
-        return TransportMode(value)
-    except Exception:
-        try:
-            return TransportMode(str(value))
-        except Exception:
-            return None
+def resolve_transport_mode(mode: TransportMode | None) -> TransportMode:
+    """Resolve an omitted mode without accepting alternate representations."""
+
+    if mode is None:
+        return get_default_transport_mode()
+    if not isinstance(mode, TransportMode):
+        raise TypeError(
+            "Transport mode must be a TransportMode instance or None, "
+            f"not {type(mode).__name__}."
+        )
+    return mode
 
 
 def get_ipc_socket_path(port: int, config: ZMQConfig | None = None) -> Path | None:
@@ -109,7 +104,7 @@ def get_zmq_transport_url(
 ) -> str:
     """Get ZMQ transport URL for given port/host/mode."""
     config = config or _default_config
-    mode = coerce_transport_mode(mode) or get_default_transport_mode()
+    mode = resolve_transport_mode(mode)
     if mode == TransportMode.IPC:
         if platform.system() == "Windows":
             raise ValueError(
@@ -134,13 +129,13 @@ def get_control_port(port: int, config: ZMQConfig | None = None) -> int:
 
 def get_control_url(
     port: int,
-    transport_mode,
+    transport_mode: TransportMode | None,
     host: str = "localhost",
     config: ZMQConfig | None = None,
 ) -> str:
     """Get control socket URL for a given data port."""
     config = config or _default_config
-    mode = coerce_transport_mode(transport_mode) or get_default_transport_mode()
+    mode = resolve_transport_mode(transport_mode)
     return get_zmq_transport_url(
         get_control_port(port, config),
         host=host,
@@ -152,13 +147,13 @@ def get_control_url(
 @contextmanager
 def endpoint_startup_lock(
     port: int,
-    transport_mode,
+    transport_mode: TransportMode | None,
     config: ZMQConfig | None = None,
 ):
     """Serialize discovery and startup for one IPC endpoint across clients."""
 
     config = config or _default_config
-    mode = coerce_transport_mode(transport_mode) or get_default_transport_mode()
+    mode = resolve_transport_mode(transport_mode)
     if mode != TransportMode.IPC:
         yield
         return
@@ -209,13 +204,13 @@ def ipc_socket_is_stale(port: int, config: ZMQConfig | None = None) -> bool:
 
 def is_port_in_use(
     port: int,
-    transport_mode,
+    transport_mode: TransportMode | None,
     host: str = "localhost",
     config: ZMQConfig | None = None,
 ) -> bool:
     """Check whether the given port is in use for the chosen transport."""
     config = config or _default_config
-    mode = coerce_transport_mode(transport_mode) or get_default_transport_mode()
+    mode = resolve_transport_mode(transport_mode)
     if mode == TransportMode.IPC:
         socket_path = get_ipc_socket_path(port, config)
         return socket_path.exists() if socket_path else False
@@ -237,7 +232,7 @@ def is_port_in_use(
 
 def ping_control_port(
     port: int,
-    transport_mode,
+    transport_mode: TransportMode | None,
     host: str = "localhost",
     config: ZMQConfig | None = None,
     timeout_ms: int = 500,
@@ -251,21 +246,21 @@ def ping_control_port(
         config=config,
         timeout_ms=timeout_ms,
     )
-    if response is None or response.get(MessageFields.TYPE) != ResponseType.PONG.value:
+    if response is None:
         return False
     if require_ready:
-        return bool(response.get(MessageFields.READY))
+        return response.ready
     return True
 
 
 def request_control_ping(
     port: int,
-    transport_mode,
+    transport_mode: TransportMode | None,
     host: str = "localhost",
     config: ZMQConfig | None = None,
     timeout_ms: int = 500,
-) -> dict | None:
-    """Return the control PONG payload for a data port, or None when unreachable."""
+) -> PongResponse | None:
+    """Return the typed control PONG for a data port, or None when unreachable."""
     config = config or _default_config
     control_url = get_control_url(port, transport_mode, host=host, config=config)
     deadline = time.monotonic() + max(0, timeout_ms) / 1000.0
@@ -303,7 +298,7 @@ def request_control_ping(
         response = pickle.loads(sock.recv(flags=zmq.NOBLOCK))
         if not isinstance(response, dict):
             return None
-        return response
+        return PongResponse.from_dict(response)
     except Exception:
         return None
     finally:
@@ -316,7 +311,7 @@ def request_control_ping(
 
 def wait_for_server_ready(
     port: int,
-    transport_mode,
+    transport_mode: TransportMode | None,
     host: str = "localhost",
     config: ZMQConfig | None = None,
     timeout: float = 10.0,
