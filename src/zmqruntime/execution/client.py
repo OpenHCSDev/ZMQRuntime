@@ -62,14 +62,16 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
         self,
         task: TaskT,
         config: ConfigT | None = None,
+        *,
+        timeout_ms: int = 5000,
     ) -> WireResponse:
         if not self._connected and not self.connect():
             raise RuntimeError("Failed to connect to execution server")
-        self._ensure_progress_subscription()
+        self._ensure_progress_subscription(timeout_ms=timeout_ms)
         request = self.serialize_task(task, config)
         if MessageFields.TYPE not in request:
             request[MessageFields.TYPE] = ControlMessageType.EXECUTE.value
-        response = self._send_control_request(request)
+        response = self._send_control_request(request, timeout_ms=timeout_ms)
         return response
 
     def poll_status(
@@ -121,7 +123,10 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
 
     def cancel_execution(self, execution_id):
         return self._send_control_request(
-            {MessageFields.TYPE: ControlMessageType.CANCEL.value, MessageFields.EXECUTION_ID: execution_id}
+            {
+                MessageFields.TYPE: ControlMessageType.CANCEL.value,
+                MessageFields.EXECUTION_ID: execution_id,
+            }
         )
 
     def ping(self):
@@ -173,7 +178,8 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
             return pickle.loads(response)
         except zmq.Again:
             raise TimeoutError(
-                f"Server did not respond to {request[MessageFields.TYPE]} request within {timeout_ms}ms"
+                f"Server did not respond to {request[MessageFields.TYPE]} request "
+                f"within {timeout_ms}ms"
             )
         finally:
             sock.close(linger=0)
@@ -195,7 +201,7 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
         self._stop_progress_listener()
         super().disconnect()
 
-    def _ensure_progress_subscription(self) -> None:
+    def _ensure_progress_subscription(self, *, timeout_ms: int = 5000) -> None:
         self._start_progress_listener()
         if self._progress_registered:
             return
@@ -203,7 +209,8 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
             {
                 MessageFields.TYPE: ControlMessageType.REGISTER_PROGRESS.value,
                 MessageFields.CLIENT_ID: self._progress_client_id,
-            }
+            },
+            timeout_ms=timeout_ms,
         )
         if MessageFields.STATUS not in response:
             raise RuntimeError(f"Progress registration response missing status: {response}")

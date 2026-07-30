@@ -218,7 +218,7 @@ class ProgressAwareExecutionClient(DummyExecutionClient):
         self.listener_started = True
 
     def _send_control_request(self, request, timeout_ms=5000):
-        self.sent_requests.append(request)
+        self.sent_requests.append((request, timeout_ms))
         if request.get(MessageFields.TYPE) == ControlMessageType.REGISTER_PROGRESS.value:
             return {MessageFields.STATUS: ResponseType.OK.value}
         if request.get(MessageFields.TYPE) == ControlMessageType.UNREGISTER_PROGRESS.value:
@@ -228,15 +228,28 @@ class ProgressAwareExecutionClient(DummyExecutionClient):
 
 def test_execution_client_registers_progress_before_execute():
     client = ProgressAwareExecutionClient()
-    response = client.submit_execution({"hello": "world"})
+    response = client.submit_execution({"hello": "world"}, timeout_ms=15000)
     assert response[MessageFields.TYPE] == ControlMessageType.EXECUTE.value
     assert client.listener_started is True
-    assert client.sent_requests[0][MessageFields.TYPE] == ControlMessageType.REGISTER_PROGRESS.value
-    assert client.sent_requests[1][MessageFields.TYPE] == ControlMessageType.EXECUTE.value
+    assert client.sent_requests[0] == (
+        {
+            MessageFields.TYPE: ControlMessageType.REGISTER_PROGRESS.value,
+            MessageFields.CLIENT_ID: client._progress_client_id,
+        },
+        15000,
+    )
+    assert client.sent_requests[1] == (
+        {
+            "task": {"hello": "world"},
+            MessageFields.TYPE: ControlMessageType.EXECUTE.value,
+        },
+        15000,
+    )
 
     client.disconnect()
     assert (
-        client.sent_requests[2][MessageFields.TYPE] == ControlMessageType.UNREGISTER_PROGRESS.value
+        client.sent_requests[2][0][MessageFields.TYPE]
+        == ControlMessageType.UNREGISTER_PROGRESS.value
     )
 
 
