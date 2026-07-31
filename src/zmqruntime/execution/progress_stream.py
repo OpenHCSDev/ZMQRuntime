@@ -1,4 +1,5 @@
 """Background subscriber for execution progress stream."""
+
 from __future__ import annotations
 
 import json
@@ -56,16 +57,22 @@ class ProgressStreamSubscriber:
                 time.sleep(0.05)
                 continue
 
-            data = json.loads(message)
-            validate_progress_payload(data)
-            message_count += 1
-            try:
-                self._callback(data)
-            except Exception as error:
-                logger.exception("Progress callback raised exception: %s", error)
-                raise
+            if self._dispatch_message(message):
+                message_count += 1
 
         logger.info(
             "Progress listener loop exited (received %s messages total)",
             message_count,
         )
+
+    def _dispatch_message(self, message: str) -> bool:
+        """Validate and dispatch one message without terminating the stream."""
+
+        try:
+            data = json.loads(message)
+            validate_progress_payload(data)
+            self._callback(data)
+        except Exception as error:
+            logger.exception("Progress message dispatch failed: %s", error)
+            return False
+        return True

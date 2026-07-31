@@ -37,17 +37,24 @@ Registry Primitive
 - terminal detection is injected via ``is_terminal``
 - timestamp extraction is injected via ``timestamp_of``
 
-This makes retention and de-duplication reusable across domains.
+Registration is monotonic: an event whose timestamp is not newer than the
+retained event for the same key is rejected and does not notify consumers.
+Accepted registrations and clear operations emit typed
+``EventRegistryMutation`` values after the registry lock is released. Listener
+failures are isolated from both registry mutation and progress-stream delivery.
+This makes retention, de-duplication, and projection invalidation reusable
+across domains.
 
 Registry Contract
 -----------------
 
 ``EventRegistryABC`` defines a minimal nominal interface:
 
-- ``register_event(event)``
-- ``register_events(events)``
-- ``snapshot_events()``
-- ``clear()``
+- ``register_event(execution_id, event)``
+- ``get_events(execution_id)``
+- ``get_execution_ids()``
+- ``clear_execution(execution_id)``
+- ``clear_all()``
 
 ``LatestEventRegistry`` is the reference in-memory implementation for this
 contract.
@@ -65,6 +72,7 @@ All domain semantics are adapter-driven through
 - known unit universe
 - failure/success terminal rules
 - state token mapping
+- application refinement of an otherwise-idle state from the event snapshot
 
 Projection Contract
 -------------------

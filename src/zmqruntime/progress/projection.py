@@ -118,6 +118,12 @@ class ProgressProjectionAdapterABC(ABC, Generic[TEvent, TState]):
     def state_idle(self) -> TState:
         """Return idle state token."""
 
+    def state_idle_from_events(self, events: Sequence[TEvent]) -> TState:
+        """Resolve an otherwise-idle state from application event semantics."""
+
+        del events
+        return self.state_idle()
+
     @abstractmethod
     def state_compiling(self) -> TState:
         """Return compiling state token."""
@@ -302,7 +308,7 @@ def _build_plate_projection(
     return GenericPlateProjection(
         execution_id=execution_id,
         plate_id=plate_id,
-        state=adapter.state_idle(),
+        state=adapter.state_idle_from_events(events),
         percent=0.0,
         axis_progress=tuple(),
         latest_timestamp=latest_timestamp,

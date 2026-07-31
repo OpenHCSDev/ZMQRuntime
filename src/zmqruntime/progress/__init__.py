@@ -1,16 +1,23 @@
 """Generic progress registry + projection primitives."""
 
-from .registry import EventRegistryABC, LatestEventRegistry
 from .projection import (
     GenericAxisProjection,
-    GenericPlateProjection,
     GenericExecutionProjection,
+    GenericPlateProjection,
     ProgressProjectionAdapterABC,
     build_execution_projection,
+)
+from .registry import (
+    EventRegistryABC,
+    EventRegistryMutation,
+    EventRegistryMutationKind,
+    LatestEventRegistry,
 )
 
 __all__ = [
     "EventRegistryABC",
+    "EventRegistryMutation",
+    "EventRegistryMutationKind",
     "LatestEventRegistry",
     "GenericAxisProjection",
     "GenericPlateProjection",

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.1.20"
+__version__ = "0.1.21"
 
 from zmqruntime.ack_listener import GlobalAckListener
 from zmqruntime.client import ZMQClient
@@ -51,6 +51,8 @@ from zmqruntime.messages import (
 )
 from zmqruntime.progress import (
     EventRegistryABC,
+    EventRegistryMutation,
+    EventRegistryMutationKind,
     GenericAxisProjection,
     GenericExecutionProjection,
     GenericPlateProjection,
@@ -204,6 +206,8 @@ __all__ = [
     "ExecutionSubmissionResponse",
     "ExecutionWaitResult",
     "EventRegistryABC",
+    "EventRegistryMutation",
+    "EventRegistryMutationKind",
     "LatestEventRegistry",
     "GenericAxisProjection",
     "GenericPlateProjection",

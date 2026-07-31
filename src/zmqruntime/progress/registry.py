@@ -2,24 +2,41 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from enum import Enum
 from typing import Callable, Dict, Generic, List, Optional, TypeVar
-import logging
-
 
 TEvent = TypeVar("TEvent")
 TKey = TypeVar("TKey")
 logger = logging.getLogger(__name__)
 
 
+class EventRegistryMutationKind(Enum):
+    """Closed mutation vocabulary for latest-event registries."""
+
+    REGISTERED = "registered"
+    CLEARED = "cleared"
+
+
+@dataclass(frozen=True, slots=True)
+class EventRegistryMutation(Generic[TEvent]):
+    """One accepted registry mutation delivered after the registry lock releases."""
+
+    kind: EventRegistryMutationKind
+    execution_id: str | None
+    event: TEvent | None = None
+
+
 class EventRegistryABC(ABC, Generic[TEvent]):
     """Nominal contract for latest-event registries."""
 
     @abstractmethod
-    def register_event(self, execution_id: str, event: TEvent) -> None:
-        """Register one event for an execution id."""
+    def register_event(self, execution_id: str, event: TEvent) -> bool:
+        """Register one event when it is newer than the retained event."""
 
     @abstractmethod
     def get_events(self, execution_id: str) -> List[TEvent]:
@@ -35,7 +52,7 @@ class EventRegistryABC(ABC, Generic[TEvent]):
 
     @abstractmethod
     def clear_all(self) -> None:
-        """Drop all events and listeners."""
+        """Drop all events while preserving registered listeners."""
 
 
 class LatestEventRegistry(EventRegistryABC[TEvent], Generic[TEvent, TKey]):
@@ -55,24 +72,37 @@ class LatestEventRegistry(EventRegistryABC[TEvent], Generic[TEvent, TKey]):
         self._retention_seconds = retention_seconds
         self._events: Dict[str, Dict[TKey, TEvent]] = {}
         self._listeners: List[Callable[[str, TEvent], None]] = []
+        self._mutation_listeners: List[Callable[[EventRegistryMutation[TEvent]], None]] = []
         self._lock = threading.Lock()
 
-    def register_event(self, execution_id: str, event: TEvent) -> None:
+    def register_event(self, execution_id: str, event: TEvent) -> bool:
         listeners: List[Callable[[str, TEvent], None]]
+        mutation_listeners: List[Callable[[EventRegistryMutation[TEvent]], None]]
         with self._lock:
             event_dict = self._events.setdefault(execution_id, {})
-            event_dict[self._key_builder(event)] = event
+            event_key = self._key_builder(event)
+            current = event_dict.get(event_key)
+            if current is not None and self._timestamp_of(event) <= self._timestamp_of(current):
+                return False
+            event_dict[event_key] = event
             listeners = list(self._listeners)
+            mutation_listeners = list(self._mutation_listeners)
 
         for listener in listeners:
-            try:
-                listener(execution_id, event)
-            except Exception:
-                logger.exception("Progress listener failed")
+            self._notify_listener(listener, execution_id, event)
+        mutation = EventRegistryMutation(
+            kind=EventRegistryMutationKind.REGISTERED,
+            execution_id=execution_id,
+            event=event,
+        )
+        for listener in mutation_listeners:
+            self._notify_mutation_listener(listener, mutation)
+        return True
 
     def get_events(self, execution_id: str) -> List[TEvent]:
         with self._lock:
-            return list(self._events.get(execution_id, {}).values())
+            events = list(self._events.get(execution_id, {}).values())
+        return sorted(events, key=self._timestamp_of)
 
     def get_latest_event(self, execution_id: str) -> Optional[TEvent]:
         events = self.get_events(execution_id)
@@ -80,7 +110,8 @@ class LatestEventRegistry(EventRegistryABC[TEvent], Generic[TEvent, TKey]):
 
     def add_listener(self, listener: Callable[[str, TEvent], None]) -> None:
         with self._lock:
-            self._listeners.append(listener)
+            if listener not in self._listeners:
+                self._listeners.append(listener)
 
     def remove_listener(self, listener: Callable[[str, TEvent], None]) -> bool:
         with self._lock:
@@ -93,19 +124,64 @@ class LatestEventRegistry(EventRegistryABC[TEvent], Generic[TEvent, TKey]):
         with self._lock:
             self._listeners.clear()
 
-    def clear_execution(self, execution_id: str) -> None:
+    def add_mutation_listener(
+        self,
+        listener: Callable[[EventRegistryMutation[TEvent]], None],
+    ) -> None:
+        """Subscribe to accepted registrations and event-clearing mutations."""
+
         with self._lock:
-            self._events.pop(execution_id, None)
+            if listener not in self._mutation_listeners:
+                self._mutation_listeners.append(listener)
+
+    def remove_mutation_listener(
+        self,
+        listener: Callable[[EventRegistryMutation[TEvent]], None],
+    ) -> bool:
+        with self._lock:
+            if listener not in self._mutation_listeners:
+                return False
+            self._mutation_listeners.remove(listener)
+            return True
+
+    def clear_mutation_listeners(self) -> None:
+        with self._lock:
+            self._mutation_listeners.clear()
+
+    def clear_execution(self, execution_id: str) -> None:
+        mutation_listeners: List[Callable[[EventRegistryMutation[TEvent]], None]]
+        with self._lock:
+            removed = self._events.pop(execution_id, None)
+            mutation_listeners = list(self._mutation_listeners)
+        if removed is None:
+            return
+        mutation = EventRegistryMutation(
+            kind=EventRegistryMutationKind.CLEARED,
+            execution_id=execution_id,
+        )
+        for listener in mutation_listeners:
+            self._notify_mutation_listener(listener, mutation)
 
     def clear_all(self) -> None:
+        mutation_listeners: List[Callable[[EventRegistryMutation[TEvent]], None]]
         with self._lock:
+            had_events = bool(self._events)
             self._events.clear()
-            self._listeners.clear()
+            mutation_listeners = list(self._mutation_listeners)
+        if not had_events:
+            return
+        mutation = EventRegistryMutation(
+            kind=EventRegistryMutationKind.CLEARED,
+            execution_id=None,
+        )
+        for listener in mutation_listeners:
+            self._notify_mutation_listener(listener, mutation)
 
     def cleanup_old_executions(self, retention_seconds: Optional[float] = None) -> int:
         max_age = self._retention_seconds if retention_seconds is None else retention_seconds
         now = time.time()
-        removed = 0
+        removed_execution_ids: List[str] = []
+        mutation_listeners: List[Callable[[EventRegistryMutation[TEvent]], None]]
         with self._lock:
             for execution_id in list(self._events.keys()):
                 event_dict = self._events.get(execution_id)
@@ -118,8 +194,17 @@ class LatestEventRegistry(EventRegistryABC[TEvent], Generic[TEvent, TKey]):
                 if age <= max_age:
                     continue
                 del self._events[execution_id]
-                removed += 1
-        return removed
+                removed_execution_ids.append(execution_id)
+            mutation_listeners = list(self._mutation_listeners)
+
+        for execution_id in removed_execution_ids:
+            mutation = EventRegistryMutation(
+                kind=EventRegistryMutationKind.CLEARED,
+                execution_id=execution_id,
+            )
+            for listener in mutation_listeners:
+                self._notify_mutation_listener(listener, mutation)
+        return len(removed_execution_ids)
 
     def get_execution_ids(self) -> List[str]:
         with self._lock:
@@ -128,3 +213,24 @@ class LatestEventRegistry(EventRegistryABC[TEvent], Generic[TEvent, TKey]):
     def get_event_count(self, execution_id: str) -> int:
         with self._lock:
             return len(self._events.get(execution_id, {}))
+
+    @staticmethod
+    def _notify_listener(
+        listener: Callable[[str, TEvent], None],
+        execution_id: str,
+        event: TEvent,
+    ) -> None:
+        try:
+            listener(execution_id, event)
+        except Exception:
+            logger.exception("Progress listener failed")
+
+    @staticmethod
+    def _notify_mutation_listener(
+        listener: Callable[[EventRegistryMutation[TEvent]], None],
+        mutation: EventRegistryMutation[TEvent],
+    ) -> None:
+        try:
+            listener(mutation)
+        except Exception:
+            logger.exception("Progress registry mutation listener failed")
