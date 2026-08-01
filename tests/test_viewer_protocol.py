@@ -29,6 +29,11 @@ class _TestStreamingVisualizerServer(StreamingVisualizerServer):
         del image_data, metadata
 
 
+def test_viewer_component_modes_distinguish_napari_layers_from_plane_slices():
+    assert ViewerComponentMode.LAYER.value == "layer"
+    assert ViewerComponentMode.SLICE.value == "slice"
+
+
 def test_streaming_server_inheritance_owns_viewer_process_usage(monkeypatch):
     usage = ProcessResourceUsage(memory_mb=12.5, cpu_percent=3.0)
     monkeypatch.setattr(

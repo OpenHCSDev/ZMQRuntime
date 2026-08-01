@@ -147,6 +147,7 @@ class ViewerComponentMode(str, Enum):
     """Viewer component placement modes shared by stream receivers."""
 
     STACK = "stack"
+    LAYER = "layer"
     SLICE = "slice"
     WINDOW = "window"
     CHANNEL = "channel"
