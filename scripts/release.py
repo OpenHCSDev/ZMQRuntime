@@ -1,26 +1,22 @@
 #!/usr/bin/env python3
-import re
 import subprocess
 import sys
-from pathlib import Path
+import tomllib
 
 import requests
 from packaging import version
 
 
 def get_current_version():
-    with open("src/zmqruntime/__init__.py", "r") as f:
-        for line in f:
-            if line.startswith("__version__"):
-                return line.split("=")[1].strip().strip('"\'')
-    return None
+    with open("pyproject.toml", "rb") as pyproject_file:
+        return tomllib.load(pyproject_file)["project"]["version"]
 
 def get_pypi_version():
     try:
         response = requests.get("https://pypi.org/pypi/zmqruntime/json")
         if response.status_code == 200:
             return response.json()["info"]["version"]
-    except:
+    except requests.RequestException:
         pass
     return None
 
@@ -28,7 +24,7 @@ def main():
     # Get current version
     current_version = get_current_version()
     if not current_version:
-        print("Error: Could not find version in __init__.py")
+        print("Error: Could not find version in pyproject.toml")
         sys.exit(1)
     
     # Get PyPI version

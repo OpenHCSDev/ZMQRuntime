@@ -1,5 +1,6 @@
 """Sphinx configuration for zmqruntime."""
 
+from importlib.metadata import version as distribution_version
 from pathlib import Path
 import sys
 
@@ -8,8 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 project = "zmqruntime"
 author = "Tristan Simas"
-version = "0.1.14"
-release = version
+release = distribution_version("zmqruntime")
+version = release.rsplit(".", maxsplit=1)[0]
 
 extensions = [
     "sphinx.ext.autodoc",

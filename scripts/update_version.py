@@ -3,17 +3,16 @@ import argparse
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 from packaging import version
 
 
 def get_current_version():
-    """Get the current version from __init__.py"""
-    init_file = Path("src/zmqruntime/__init__.py")
-    content = init_file.read_text()
-    match = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', content)
-    return match.group(1) if match else None
+    """Get the authoritative project version."""
+    with Path("pyproject.toml").open("rb") as pyproject_file:
+        return tomllib.load(pyproject_file)["project"]["version"]
 
 def validate_version(new_version):
     """Validate the new version string"""
@@ -38,7 +37,7 @@ def update_version(new_version=None):
         # Get current version first
         current_version = get_current_version()
         if not current_version:
-            print("Error: Could not find current version in __init__.py")
+            print("Error: Could not find current version in pyproject.toml")
             sys.exit(1)
 
         if new_version is None:
@@ -64,16 +63,6 @@ def update_version(new_version=None):
             print(f"Error: Failed to pull latest changes: {e}")
             sys.exit(1)
         
-        # Update version in __init__.py
-        init_file = Path("src/zmqruntime/__init__.py")
-        content = init_file.read_text()
-        new_content = re.sub(
-            r'(__version__\s*=\s*[\'"])[^\'"]+([\'"])',
-            rf'\g<1>{new_version}\2',
-            content
-        )
-        init_file.write_text(new_content)
-
         # Update version in pyproject.toml
         pyproject_file = Path("pyproject.toml")
         content = pyproject_file.read_text()
@@ -85,7 +74,7 @@ def update_version(new_version=None):
         pyproject_file.write_text(new_content)
 
         # Commit and push changes
-        subprocess.run(['git', 'add', 'src/zmqruntime/__init__.py', 'pyproject.toml'], check=True)
+        subprocess.run(['git', 'add', 'pyproject.toml'], check=True)
         subprocess.run(['git', 'commit', '-m', f'bump version to {new_version}'], check=True)
         subprocess.run(['git', 'push', 'origin', 'main'], check=True)
         

@@ -9,34 +9,33 @@ This script checks:
 - Dependencies are available
 """
 
-import os
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 
 def check_version():
     """Check that version is valid and follows semantic versioning."""
     print("Checking version...")
-    init_file = Path("src/zmqruntime/__init__.py")
-    if not init_file.exists():
-        print("  ❌ src/zmqruntime/__init__.py not found")
+    pyproject_file = Path("pyproject.toml")
+    if not pyproject_file.exists():
+        print("  ❌ pyproject.toml not found")
         return False
-    
-    content = init_file.read_text()
-    match = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', content)
-    if not match:
-        print("  ❌ __version__ not found in src/zmqruntime/__init__.py")
+
+    with pyproject_file.open("rb") as stream:
+        project_version = tomllib.load(stream).get("project", {}).get("version")
+    if not project_version:
+        print("  ❌ project.version not found in pyproject.toml")
         return False
-    
-    version = match.group(1)
+
     # Basic semantic versioning check
-    if not re.match(r'^\d+\.\d+\.\d+', version):
-        print(f"  ❌ Version '{version}' doesn't follow semantic versioning (MAJOR.MINOR.PATCH)")
+    if not re.match(r'^\d+\.\d+\.\d+', project_version):
+        print(f"  ❌ Version '{project_version}' doesn't follow semantic versioning (MAJOR.MINOR.PATCH)")
         return False
-    
-    print(f"  ✅ Version: {version}")
+
+    print(f"  ✅ Version: {project_version}")
     return True
 
 
@@ -48,20 +47,21 @@ def check_pyproject_toml():
         print("  ❌ pyproject.toml not found")
         return False
 
-    content = pyproject_file.read_text()
+    with pyproject_file.open("rb") as stream:
+        pyproject = tomllib.load(stream)
+    project = pyproject.get("project", {})
+    build_system = pyproject.get("build-system", {})
     required_fields = {
-        'name': r'name\s*=\s*["\']openhcs["\']',
-        'version': r'version\s*=',
-        'description': r'description\s*=',
-        'authors': r'authors\s*=',
-        'build-backend': r'build-backend\s*=\s*["\']setuptools\.build_meta["\']',
+        "name": project.get("name") == "zmqruntime",
+        "version": bool(project.get("version")),
+        "description": bool(project.get("description")),
+        "authors": bool(project.get("authors")),
+        "build-backend": build_system.get("build-backend") == "hatchling.build",
     }
-
-    all_found = True
-    for field, pattern in required_fields.items():
-        if not re.search(pattern, content):
+    all_found = all(required_fields.values())
+    for field, valid in required_fields.items():
+        if not valid:
             print(f"  ❌ Missing or invalid field: {field}")
-            all_found = False
 
     if all_found:
         print("  ✅ All required fields present")
@@ -129,7 +129,7 @@ def check_git_status():
         if branch != 'main':
             print(f"  ⚠️  Current branch is '{branch}', not 'main'")
         else:
-            print(f"  ✅ On main branch")
+            print("  ✅ On main branch")
         
         return True
     except subprocess.CalledProcessError:
@@ -149,7 +149,7 @@ def try_build():
                 print(f"  🧹 Cleaned {dir_name}/")
         
         # Build
-        result = subprocess.run(
+        subprocess.run(
             ['python', '-m', 'build'],
             capture_output=True,
             text=True,
@@ -162,7 +162,7 @@ def try_build():
             print("  ❌ Build succeeded but no files in dist/")
             return False
         
-        print(f"  ✅ Build successful!")
+        print("  ✅ Build successful!")
         print(f"     Created {len(dist_files)} files:")
         for f in dist_files:
             print(f"       - {f.name}")
@@ -180,7 +180,7 @@ def try_build():
                 return True  # Don't fail the build check just because twine is missing
 
             dist_files = glob.glob('dist/*')
-            result = subprocess.run(
+            subprocess.run(
                 ['twine', 'check'] + dist_files,
                 capture_output=True,
                 text=True,
@@ -212,12 +212,11 @@ def check_github_workflow():
         return False
     
     content = workflow_file.read_text()
-    if 'PYPI_API_TOKEN' not in content:
-        print("  ❌ PYPI_API_TOKEN not referenced in workflow")
+    if "id-token: write" not in content or "pypa/gh-action-pypi-publish" not in content:
+        print("  ❌ Trusted PyPI publishing is not configured")
         return False
-    
-    print("  ✅ GitHub Actions workflow configured")
-    print("     Remember to set PYPI_API_TOKEN secret in GitHub!")
+
+    print("  ✅ GitHub Actions trusted publishing workflow configured")
     return True
 
 
@@ -271,4 +270,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-

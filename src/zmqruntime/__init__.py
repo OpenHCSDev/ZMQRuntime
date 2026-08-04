@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-__version__ = "0.1.21"
+from importlib.metadata import version as _distribution_version
+
+__version__ = _distribution_version("zmqruntime")
 
 from zmqruntime.ack_listener import GlobalAckListener
 from zmqruntime.client import ZMQClient
