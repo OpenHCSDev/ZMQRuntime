@@ -7,7 +7,7 @@ from importlib.metadata import version as _distribution_version
 __version__ = _distribution_version("zmqruntime")
 
 from zmqruntime.ack_listener import GlobalAckListener
-from zmqruntime.client import ZMQClient
+from zmqruntime.client import EndpointConnectionPolicy, ZMQClient
 from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.execution import (
     ExecutionLifecycleEngineABC,
@@ -129,6 +129,7 @@ from zmqruntime.viewer_state import (
 
 __all__ = [
     "GlobalAckListener",
+    "EndpointConnectionPolicy",
     "ZMQClient",
     "TransportMode",
     "ZMQConfig",

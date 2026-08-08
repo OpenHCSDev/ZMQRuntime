@@ -9,7 +9,7 @@ import time
 import pytest
 
 from zmqruntime import ProcessExit
-from zmqruntime.client import ZMQClient
+from zmqruntime.client import EndpointConnectionPolicy, ZMQClient
 from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.execution.client import ExecutionClient
 from zmqruntime.execution.responses import ExecutionSubmissionResponse
@@ -326,6 +326,34 @@ def test_tcp_connect_keeps_existing_spawn_cleanup_policy():
     assert connected is True
     assert client.killed_ports == [client.port, client.control_port]
     assert client.spawned is True
+    assert client.setup_called is True
+
+
+def test_attach_existing_never_replaces_an_unresponsive_endpoint():
+    client = EndpointPolicyExecutionClient(
+        transport_mode=TransportMode.TCP,
+        endpoint_stale=True,
+    )
+
+    connected = EndpointConnectionPolicy.ATTACH_EXISTING.connect(client, timeout=1)
+
+    assert connected is False
+    assert client.killed_ports == []
+    assert client.spawned is False
+    assert client.setup_called is False
+
+
+def test_attach_existing_connects_a_ready_endpoint_without_spawning(monkeypatch):
+    client = EndpointPolicyExecutionClient()
+    monkeypatch.setattr(client, "_try_connect_to_existing", lambda *_args, **_kwargs: True)
+
+    connected = EndpointConnectionPolicy.ATTACH_EXISTING.connect(client, timeout=1)
+
+    assert connected is True
+    assert client.is_connected()
+    assert client._connected_to_existing is True
+    assert client.killed_ports == []
+    assert client.spawned is False
     assert client.setup_called is True
 
 

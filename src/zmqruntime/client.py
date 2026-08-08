@@ -11,8 +11,10 @@ import subprocess
 import threading
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import replace
+from enum import Enum
 
 import zmq
 
@@ -40,6 +42,34 @@ from zmqruntime.transport import (
     resolve_transport_mode,
     wait_for_server_ready,
 )
+
+
+class EndpointConnectionPolicy(Enum):
+    """Closed endpoint-connection policies with member-owned execution."""
+
+    def __new__(
+        cls,
+        value: str,
+        connector: Callable[[ZMQClient, float], bool],
+    ) -> EndpointConnectionPolicy:
+        member = object.__new__(cls)
+        member._value_ = value
+        member._connector = connector
+        return member
+
+    ATTACH_OR_START = (
+        "attach_or_start",
+        lambda client, timeout: client.connect(timeout=timeout),
+    )
+    ATTACH_EXISTING = (
+        "attach_existing",
+        lambda client, timeout: client.connect_existing(timeout=timeout),
+    )
+
+    def connect(self, client: ZMQClient, timeout: float) -> bool:
+        """Execute this policy's exact connection leaf."""
+
+        return self._connector(client, timeout)
 
 
 class ZMQClient(ABC):
@@ -103,33 +133,58 @@ class ZMQClient(ABC):
             )
             raise
 
+    def connect_existing(self, timeout: float = 1.0) -> bool:
+        """Attach to a ready endpoint without starting or replacing a server."""
+
+        self._emit_connection_status(
+            EndpointStartupPhase.CHECKING_ENDPOINT,
+            f"Checking existing server endpoint on port {self.port}",
+        )
+        try:
+            with self._lock:
+                if self._connected:
+                    self._emit_connected_status()
+                    return True
+                with endpoint_startup_lock(
+                    self.port,
+                    self.transport_mode,
+                    self.config,
+                ):
+                    self._reset_existing_endpoint_identity()
+                    if not self._is_port_in_use(self.port):
+                        self._emit_connection_status(
+                            EndpointStartupPhase.DISCONNECTED,
+                            f"No server endpoint available on port {self.port}",
+                        )
+                        return False
+                    if self._attach_existing_endpoint(timeout):
+                        return True
+                    self._emit_connection_status(
+                        EndpointStartupPhase.FAILED,
+                        f"Server endpoint on port {self.port} is unresponsive",
+                    )
+                    return False
+        except BaseException as error:
+            self._emit_connection_status(
+                EndpointStartupPhase.FAILED,
+                f"Existing server endpoint connection failed: {error}",
+            )
+            raise
+
     def _connect_locked(self, timeout: float) -> bool:
         """Connect while the caller owns the client lifecycle lock."""
 
         if self._connected:
-            self._emit_connection_status(
-                EndpointStartupPhase.CONNECTED,
-                f"Connected to server endpoint on port {self.port}",
-            )
+            self._emit_connected_status()
             return True
         with endpoint_startup_lock(
             self.port,
             self.transport_mode,
             self.config,
         ):
-            self._connected_to_existing = False
-            self._connected_server_process_identity = None
+            self._reset_existing_endpoint_identity()
             if self._is_port_in_use(self.port):
-                if self._try_connect_to_existing(
-                    self.port,
-                    timeout_ms=self._existing_endpoint_probe_timeout_ms(timeout),
-                ):
-                    self._setup_client_sockets()
-                    self._connected = self._connected_to_existing = True
-                    self._emit_connection_status(
-                        EndpointStartupPhase.CONNECTED,
-                        f"Connected to server endpoint on port {self.port}",
-                    )
+                if self._attach_existing_endpoint(timeout):
                     return True
                 if self._should_preserve_unresponsive_endpoint(self.port):
                     self._emit_connection_status(
@@ -160,11 +215,29 @@ class ZMQClient(ABC):
                 self.server_process = None
                 raise
             self._connected = True
-            self._emit_connection_status(
-                EndpointStartupPhase.CONNECTED,
-                f"Connected to server endpoint on port {self.port}",
-            )
+            self._emit_connected_status()
             return True
+
+    def _attach_existing_endpoint(self, timeout: float) -> bool:
+        if not self._try_connect_to_existing(
+            self.port,
+            timeout_ms=self._existing_endpoint_probe_timeout_ms(timeout),
+        ):
+            return False
+        self._setup_client_sockets()
+        self._connected = self._connected_to_existing = True
+        self._emit_connected_status()
+        return True
+
+    def _reset_existing_endpoint_identity(self) -> None:
+        self._connected_to_existing = False
+        self._connected_server_process_identity = None
+
+    def _emit_connected_status(self) -> None:
+        self._emit_connection_status(
+            EndpointStartupPhase.CONNECTED,
+            f"Connected to server endpoint on port {self.port}",
+        )
 
     def disconnect(self):
         with self._lock:
