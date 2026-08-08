@@ -35,8 +35,16 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
     """Execution client with progress streaming."""
 
     def __init__(self, port: int, host: str = "localhost", persistent: bool = True,
-                 progress_callback=None, transport_mode=None, config=None):
-        super().__init__(port, host, persistent, transport_mode=transport_mode, config=config)
+                 progress_callback=None, transport_mode=None, config=None,
+                 connection_status_callback=None):
+        super().__init__(
+            port,
+            host,
+            persistent,
+            transport_mode=transport_mode,
+            config=config,
+            connection_status_callback=connection_status_callback,
+        )
         self.progress_callback = progress_callback
         self._progress_stream: ProgressStreamSubscriber | None = None
         self._progress_client_id = str(uuid.uuid4())

@@ -23,6 +23,11 @@ from zmqruntime.messages import (
     ProcessIdentity,
     ResponseType,
 )
+from zmqruntime.startup import (
+    EndpointStartupPhase,
+    EndpointStartupStatus,
+    EndpointStartupStatusCallback,
+)
 from zmqruntime.transport import (
     endpoint_startup_lock,
     get_control_port,
@@ -47,6 +52,7 @@ class ZMQClient(ABC):
         persistent: bool = True,
         transport_mode: TransportMode | None = None,
         config: ZMQConfig | None = None,
+        connection_status_callback: EndpointStartupStatusCallback | None = None,
     ):
         self.config = config or ZMQConfig()
         self.port = port
@@ -62,44 +68,103 @@ class ZMQClient(ABC):
         self._connected_to_existing = False
         self._connected_server_process_identity: ProcessIdentity | None = None
         self._lock = threading.Lock()
+        self._connection_status_callback = connection_status_callback
+        self._connection_status_sequence = 0
+
+    def _emit_connection_status(
+        self,
+        phase: EndpointStartupPhase,
+        message: str,
+    ) -> None:
+        """Publish one client-owned lifecycle transition."""
+
+        self._connection_status_sequence += 1
+        status = EndpointStartupStatus(
+            phase=phase,
+            message=message,
+            sequence=self._connection_status_sequence,
+            timestamp=time.time(),
+        )
+        if self._connection_status_callback is not None:
+            self._connection_status_callback(status)
 
     def connect(self, timeout: float = 10.0):
-        with self._lock:
-            if self._connected:
-                return True
-            with endpoint_startup_lock(
-                self.port,
-                self.transport_mode,
-                self.config,
-            ):
-                self._connected_to_existing = False
-                self._connected_server_process_identity = None
-                if self._is_port_in_use(self.port):
-                    if self._try_connect_to_existing(
-                        self.port,
-                        timeout_ms=self._existing_endpoint_probe_timeout_ms(timeout),
-                    ):
-                        self._setup_client_sockets()
-                        self._connected = self._connected_to_existing = True
-                        return True
-                    if self._should_preserve_unresponsive_endpoint(self.port):
-                        return False
-                    self._kill_processes_on_port(self.port)
-                    self._kill_processes_on_port(self.control_port)
-                    time.sleep(0.5)
-                self.server_process = self._spawn_server_process()
-                if not self._wait_for_server_ready(timeout):
-                    self._stop_owned_server_process(self.server_process)
-                    self.server_process = None
-                    return False
-                try:
+        self._emit_connection_status(
+            EndpointStartupPhase.CHECKING_ENDPOINT,
+            f"Checking server endpoint on port {self.port}",
+        )
+        try:
+            with self._lock:
+                return self._connect_locked(timeout)
+        except BaseException as error:
+            self._emit_connection_status(
+                EndpointStartupPhase.FAILED,
+                f"Server endpoint connection failed: {error}",
+            )
+            raise
+
+    def _connect_locked(self, timeout: float) -> bool:
+        """Connect while the caller owns the client lifecycle lock."""
+
+        if self._connected:
+            self._emit_connection_status(
+                EndpointStartupPhase.CONNECTED,
+                f"Connected to server endpoint on port {self.port}",
+            )
+            return True
+        with endpoint_startup_lock(
+            self.port,
+            self.transport_mode,
+            self.config,
+        ):
+            self._connected_to_existing = False
+            self._connected_server_process_identity = None
+            if self._is_port_in_use(self.port):
+                if self._try_connect_to_existing(
+                    self.port,
+                    timeout_ms=self._existing_endpoint_probe_timeout_ms(timeout),
+                ):
                     self._setup_client_sockets()
-                except Exception:
-                    self._stop_owned_server_process(self.server_process)
-                    self.server_process = None
-                    raise
-                self._connected = True
-                return True
+                    self._connected = self._connected_to_existing = True
+                    self._emit_connection_status(
+                        EndpointStartupPhase.CONNECTED,
+                        f"Connected to server endpoint on port {self.port}",
+                    )
+                    return True
+                if self._should_preserve_unresponsive_endpoint(self.port):
+                    self._emit_connection_status(
+                        EndpointStartupPhase.FAILED,
+                        f"Server endpoint on port {self.port} is unresponsive",
+                    )
+                    return False
+                self._kill_processes_on_port(self.port)
+                self._kill_processes_on_port(self.control_port)
+                time.sleep(0.5)
+            self._emit_connection_status(
+                EndpointStartupPhase.STARTING_PROCESS,
+                f"Starting server process for port {self.port}",
+            )
+            self.server_process = self._spawn_server_process()
+            if not self._wait_for_server_ready(timeout):
+                self._stop_owned_server_process(self.server_process)
+                self.server_process = None
+                self._emit_connection_status(
+                    EndpointStartupPhase.FAILED,
+                    f"Server endpoint on port {self.port} did not become ready",
+                )
+                return False
+            try:
+                self._setup_client_sockets()
+            except Exception:
+                self._stop_owned_server_process(self.server_process)
+                self.server_process = None
+                raise
+            self._connected = True
+            self._emit_connection_status(
+                EndpointStartupPhase.CONNECTED,
+                f"Connected to server endpoint on port {self.port}",
+            )
+            return True
 
     def disconnect(self):
         with self._lock:
@@ -120,6 +185,10 @@ class ZMQClient(ABC):
                 self._connected = False
                 self._connected_to_existing = False
                 self._connected_server_process_identity = None
+                self._emit_connection_status(
+                    EndpointStartupPhase.DISCONNECTED,
+                    f"Disconnected from server endpoint on port {self.port}",
+                )
 
     def is_connected(self):
         return self._connected

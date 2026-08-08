@@ -15,6 +15,10 @@ import zmq
 
 from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.messages import ControlMessageType, MessageFields, PongResponse
+from zmqruntime.startup import (
+    IDLE_ENDPOINT_STARTUP_OBSERVER,
+    EndpointStartupObserver,
+)
 
 _default_config = ZMQConfig()
 
@@ -317,13 +321,20 @@ def wait_for_server_ready(
     timeout: float = 10.0,
     require_ready: bool = True,
     poll_interval: float = 0.2,
+    startup_observer: EndpointStartupObserver = IDLE_ENDPOINT_STARTUP_OBSERVER,
 ) -> bool:
-    """Wait for a server to bind its data/control sockets and respond to ping."""
+    """Wait for readiness, optionally treating child updates as startup activity."""
     config = config or _default_config
     deadline = time.monotonic() + timeout
     control_port = get_control_port(port, config)
 
-    while time.monotonic() < deadline:
+    while True:
+        if startup_observer.poll_activity():
+            deadline = time.monotonic() + timeout
+        if startup_observer.should_abort():
+            return False
+        if time.monotonic() >= deadline:
+            return False
         if is_port_in_use(port, transport_mode, host=host, config=config) and is_port_in_use(
             control_port,
             transport_mode,
@@ -343,4 +354,3 @@ def wait_for_server_ready(
             ):
                 return True
         time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
-    return False
