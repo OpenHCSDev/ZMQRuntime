@@ -15,18 +15,17 @@ from metaclass_registry import AutoRegisterMeta
 
 from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.messages import (
+    ControlErrorResponse,
     ControlMessageType,
     ControlResponse,
     MessageFields,
     PongResponse,
     ProcessIdentity,
-    ResponseType,
     ServerRole,
     SocketType,
 )
 from zmqruntime.transport import (
     get_zmq_transport_url,
-    remove_ipc_socket,
     resolve_transport_mode,
 )
 
@@ -157,9 +156,11 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
             if self.zmq_context:
                 self.zmq_context.term()
                 self.zmq_context = None
-            if self.transport_mode == TransportMode.IPC:
-                remove_ipc_socket(self.port, self.config)
-                remove_ipc_socket(self.control_port, self.config)
+            self.transport_mode.cleanup_endpoint(self.port, self.config)
+            self.transport_mode.cleanup_endpoint(
+                self.control_port,
+                self.config,
+            )
             logger.info("ZMQ Server stopped")
 
     def is_running(self):
@@ -204,7 +205,7 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
             response = self.control_error_response(e)
         return response
 
-    def control_error_response(self, error: Exception) -> dict[str, object]:
+    def control_error_response(self, error: Exception) -> ControlErrorResponse:
         """Return the canonical control error reply for a dispatch failure."""
 
         logger.error(
@@ -212,7 +213,7 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
             error,
             exc_info=(type(error), error, error.__traceback__),
         )
-        return {"status": "error", "message": str(error), "type": "error"}
+        return ControlErrorResponse.from_exception(error)
 
     def serialize_control_response(self, response: object) -> bytes:
         """Serialize a control response with the canonical error fallback."""
@@ -229,11 +230,9 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
                 exc_info=True,
             )
             return pickle.dumps(
-                {
-                    MessageFields.STATUS: ResponseType.ERROR.value,
-                    MessageFields.TYPE: ResponseType.ERROR.value,
-                    MessageFields.MESSAGE: "Internal server serialization error",
-                }
+                ControlErrorResponse(
+                    message="Internal server serialization error",
+                ).to_dict()
             )
 
     def control_response_payload(

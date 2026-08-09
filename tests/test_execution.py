@@ -9,14 +9,28 @@ import time
 import pytest
 
 from zmqruntime import ProcessExit
-from zmqruntime.client import EndpointConnectionPolicy, ZMQClient
+from zmqruntime.client import (
+    AttachedEndpointConnection,
+    EndpointConnectionPolicy,
+    EndpointProcess,
+    EndpointShutdownMode,
+    EndpointShutdownResult,
+    OwnedEndpointConnection,
+    ZMQClient,
+    endpoint_process,
+)
 from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.execution.client import ExecutionClient
 from zmqruntime.execution.responses import ExecutionSubmissionResponse
 from zmqruntime.execution.server import ExecutionServer
+from zmqruntime.execution.status_poller import (
+    CallbackExecutionStatusPollPolicy,
+    ExecutionStatusPoller,
+)
 from zmqruntime.execution.wait_policy import ExecutionWaiter, WaitPolicy
 from zmqruntime.messages import (
     ControlMessageType,
+    EndpointControlCapability,
     ExecuteRequest,
     ExecutionStatus,
     MessageFields,
@@ -26,7 +40,12 @@ from zmqruntime.messages import (
     ServerRole,
     TaskProgress,
 )
-from zmqruntime.transport import get_ipc_socket_path
+from zmqruntime.transport import (
+    TcpDataControlPortPairAuthority,
+    TransportEndpoint,
+    get_ipc_socket_path,
+    ping_control_port,
+)
 
 
 class DummyExecutionServer(ExecutionServer):
@@ -39,10 +58,93 @@ class FailingExecutionServer(ExecutionServer):
         raise RuntimeError("boom")
 
 
+class StubEndpointProcess(EndpointProcess):
+    def __init__(self) -> None:
+        self.alive = True
+        self.stop_count = 0
+
+    def is_alive(self) -> bool:
+        return self.alive
+
+    def exit(self) -> ProcessExit | None:
+        return None if self.alive else ProcessExit(0)
+
+    def stop(self, timeout: float = 5.0) -> None:
+        self.stop_count += 1
+        self.alive = False
+
+
+def owned_connection(client, process) -> OwnedEndpointConnection:
+    return OwnedEndpointConnection(
+        process=endpoint_process(process),
+        target=TransportEndpoint(
+            host=client.host,
+            port=client.port,
+            transport_mode=client.transport_mode,
+        ),
+        config=client.config,
+    )
+
+
+def attached_connection(
+    client,
+    process_identity: ProcessIdentity | None = None,
+) -> AttachedEndpointConnection:
+    return AttachedEndpointConnection(
+        PongResponse(
+            port=client.port,
+            control_port=client.control_port,
+            ready=True,
+            server=type(client).__name__,
+            server_role=ServerRole.EXECUTION,
+            process_identity=process_identity,
+        )
+    )
+
+
 def test_execution_server_pong_projects_its_process_identity():
     pong = DummyExecutionServer(port=5555)._create_pong_response()
 
     assert pong.process_identity == ProcessIdentity.current()
+    assert EndpointControlCapability.FORCE_SHUTDOWN in pong.control_capabilities
+
+
+def test_shutdown_rejects_endpoint_without_advertised_capability(monkeypatch):
+    endpoint = PongResponse(
+        port=5555,
+        control_port=6555,
+        ready=True,
+        server="InProcessEndpoint",
+        server_role=ServerRole.GENERIC,
+        process_identity=ProcessIdentity.current(),
+    )
+    process_terminations = []
+    monkeypatch.setattr(
+        TransportEndpoint,
+        "ping",
+        lambda *_args, **_kwargs: endpoint,
+    )
+    monkeypatch.setattr(
+        TransportEndpoint,
+        "is_in_use",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        ProcessIdentity,
+        "terminate",
+        lambda *_args, **_kwargs: process_terminations.append(True) or True,
+    )
+
+    result = ZMQClient.shutdown_endpoint_on_port(
+        endpoint.port,
+        mode=EndpointShutdownMode.FORCE,
+    )
+
+    assert result == EndpointShutdownResult(
+        succeeded=False,
+        endpoint_terminated=False,
+    )
+    assert process_terminations == []
 
 
 def test_execution_server_handle_execute_and_run():
@@ -151,7 +253,7 @@ def test_task_progress_roundtrip_supports_execution_id_and_task_id():
 class DummyExecutionClient(ExecutionClient):
     def __init__(self):
         super().__init__(port=5555)
-        self._connected = True
+        self._connection = attached_connection(self)
 
     def _spawn_server_process(self):
         return None
@@ -163,7 +265,7 @@ class DummyExecutionClient(ExecutionClient):
         return {"task": task}
 
     def connect(self, timeout: float = 10.0):
-        self._connected = True
+        self._connection = attached_connection(self)
         return True
 
     def _send_control_request(self, request, timeout_ms=5000):
@@ -254,12 +356,18 @@ def test_execution_client_registers_progress_before_execute():
 
 
 class EndpointPolicyExecutionClient(ExecutionClient):
-    def __init__(self, *, transport_mode=TransportMode.IPC, endpoint_stale=False):
+    def __init__(
+        self,
+        *,
+        port=5555,
+        transport_mode=TransportMode.IPC,
+        config=None,
+    ):
         super().__init__(
-            port=5555,
+            port=port,
             transport_mode=transport_mode,
+            config=config,
         )
-        self.endpoint_stale = endpoint_stale
         self.killed_ports = []
         self.spawned = False
         self.setup_called = False
@@ -268,19 +376,20 @@ class EndpointPolicyExecutionClient(ExecutionClient):
         return True
 
     def _try_connect_to_existing(self, port: int, timeout_ms: int = 500):
-        return False
-
-    def _should_preserve_unresponsive_endpoint(self, port: int):
-        return self.transport_mode == TransportMode.IPC and not self.endpoint_stale
+        return None
 
     def _kill_processes_on_port(self, port: int):
         self.killed_ports.append(port)
 
     def _spawn_server_process(self):
         self.spawned = True
-        return object()
+        return StubEndpointProcess()
 
-    def _wait_for_server_ready(self, timeout: float = 10.0):
+    def _wait_for_server_ready(
+        self,
+        process: EndpointProcess,
+        timeout: float = 10.0,
+    ):
         return True
 
     def _setup_client_sockets(self):
@@ -293,8 +402,13 @@ class EndpointPolicyExecutionClient(ExecutionClient):
         return {"task": task}
 
 
-def test_ipc_connect_preserves_unresponsive_live_server_endpoint():
-    client = EndpointPolicyExecutionClient(endpoint_stale=False)
+def test_ipc_connect_preserves_unresponsive_live_server_endpoint(monkeypatch):
+    monkeypatch.setattr(
+        TransportMode.IPC,
+        "preserve_unresponsive_endpoint",
+        lambda _port, _config: True,
+    )
+    client = EndpointPolicyExecutionClient()
 
     connected = client.connect(timeout=1)
 
@@ -304,8 +418,13 @@ def test_ipc_connect_preserves_unresponsive_live_server_endpoint():
     assert client.setup_called is False
 
 
-def test_ipc_connect_removes_stale_endpoint_before_spawning():
-    client = EndpointPolicyExecutionClient(endpoint_stale=True)
+def test_ipc_connect_removes_stale_endpoint_before_spawning(monkeypatch):
+    monkeypatch.setattr(
+        TransportMode.IPC,
+        "preserve_unresponsive_endpoint",
+        lambda _port, _config: False,
+    )
+    client = EndpointPolicyExecutionClient()
 
     connected = client.connect(timeout=1)
 
@@ -318,7 +437,6 @@ def test_ipc_connect_removes_stale_endpoint_before_spawning():
 def test_tcp_connect_keeps_existing_spawn_cleanup_policy():
     client = EndpointPolicyExecutionClient(
         transport_mode=TransportMode.TCP,
-        endpoint_stale=False,
     )
 
     connected = client.connect(timeout=1)
@@ -332,7 +450,6 @@ def test_tcp_connect_keeps_existing_spawn_cleanup_policy():
 def test_attach_existing_never_replaces_an_unresponsive_endpoint():
     client = EndpointPolicyExecutionClient(
         transport_mode=TransportMode.TCP,
-        endpoint_stale=True,
     )
 
     connected = EndpointConnectionPolicy.ATTACH_EXISTING.connect(client, timeout=1)
@@ -345,16 +462,82 @@ def test_attach_existing_never_replaces_an_unresponsive_endpoint():
 
 def test_attach_existing_connects_a_ready_endpoint_without_spawning(monkeypatch):
     client = EndpointPolicyExecutionClient()
-    monkeypatch.setattr(client, "_try_connect_to_existing", lambda *_args, **_kwargs: True)
+    endpoint = PongResponse(
+        port=client.port,
+        control_port=client.control_port,
+        ready=True,
+        server="EndpointPolicyExecutionClient",
+        server_role=ServerRole.EXECUTION,
+    )
+    monkeypatch.setattr(
+        client,
+        "_try_connect_to_existing",
+        lambda *_args, **_kwargs: endpoint,
+    )
 
     connected = EndpointConnectionPolicy.ATTACH_EXISTING.connect(client, timeout=1)
 
     assert connected is True
     assert client.is_connected()
-    assert client._connected_to_existing is True
+    assert isinstance(client._connection, AttachedEndpointConnection)
     assert client.killed_ports == []
     assert client.spawned is False
     assert client.setup_called is True
+
+
+def test_shutdown_result_distinguishes_worker_stop_from_endpoint_termination():
+    config = ZMQConfig(default_port=47777, control_port_offset=1000)
+    endpoint = TcpDataControlPortPairAuthority.acquire(config)
+    server = DummyExecutionServer(
+        port=endpoint.data_port,
+        host="127.0.0.1",
+        transport_mode=TransportMode.TCP,
+        config=config,
+    )
+    started = threading.Event()
+
+    def serve() -> None:
+        server.start()
+        server._ready = True
+        started.set()
+        while server.is_running():
+            server.process_messages()
+            time.sleep(0.01)
+        server.stop()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    assert started.wait(timeout=2)
+
+    graceful = ZMQClient.shutdown_endpoint_on_port(
+        endpoint.data_port,
+        mode=EndpointShutdownMode.GRACEFUL,
+        transport_mode=TransportMode.TCP,
+        host="127.0.0.1",
+        config=config,
+    )
+
+    assert graceful.succeeded is True
+    assert graceful.endpoint_terminated is False
+    assert ping_control_port(
+        endpoint.data_port,
+        TransportMode.TCP,
+        host="127.0.0.1",
+        config=config,
+    )
+
+    forced = ZMQClient.shutdown_endpoint_on_port(
+        endpoint.data_port,
+        mode=EndpointShutdownMode.FORCE,
+        transport_mode=TransportMode.TCP,
+        host="127.0.0.1",
+        config=config,
+    )
+
+    thread.join(timeout=2)
+    assert forced.succeeded is True
+    assert forced.endpoint_terminated is True
+    assert not thread.is_alive()
 
 
 @pytest.mark.skipif(platform.system() == "Windows", reason="IPC is POSIX-only")
@@ -363,10 +546,7 @@ def test_owned_server_shutdown_removes_exact_ipc_endpoints():
         app_name="zmqruntime-owned-process-test",
         ipc_socket_prefix="owned",
     )
-    client = EndpointPolicyExecutionClient()
-    client.config = config
-    client.port = 45556
-    client.control_port = client.port + config.control_port_offset
+    client = EndpointPolicyExecutionClient(port=45556, config=config)
     paths = (
         get_ipc_socket_path(client.port, config),
         get_ipc_socket_path(client.control_port, config),
@@ -379,7 +559,7 @@ def test_owned_server_shutdown_removes_exact_ipc_endpoints():
     process = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(60)"],
     )
-    ZMQClient._stop_owned_server_process(client, process)
+    owned_connection(client, process).terminate_endpoint()
 
     assert process.poll() is not None
     assert all(not path.exists() for path in paths if path is not None)
@@ -390,13 +570,13 @@ def test_owned_server_process_liveness_distinguishes_process_ownership():
     process = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(60)"],
     )
-    client.server_process = process
+    client._connection = owned_connection(client, process)
     try:
         assert client.owned_server_process_is_alive() is True
 
-        client._connected_to_existing = True
+        client._connection = attached_connection(client)
         assert client.owned_server_process_is_alive() is None
-        client._connected_to_existing = False
+        client._connection = owned_connection(client, process)
 
         process.terminate()
         process.wait(timeout=5)
@@ -410,12 +590,12 @@ def test_owned_server_process_liveness_distinguishes_process_ownership():
 def test_owned_server_process_exit_retains_exact_terminal_status():
     client = EndpointPolicyExecutionClient()
     process = subprocess.Popen([sys.executable, "-c", "raise SystemExit(7)"])
-    client.server_process = process
+    client._connection = owned_connection(client, process)
 
     process.wait(timeout=5)
 
     assert client.owned_server_process_exit() == ProcessExit(7)
-    client._connected_to_existing = True
+    client._connection = attached_connection(client)
     assert client.owned_server_process_exit() is None
 
 
@@ -533,24 +713,29 @@ def test_process_exit_describes_exit_codes_and_signals():
 
 def test_known_server_process_liveness_includes_identified_local_server():
     client = EndpointPolicyExecutionClient(transport_mode=TransportMode.IPC)
-    client._connected_to_existing = True
     process_identity = ProcessIdentity.current()
-    client._connected_server_process_identity = process_identity
+    client._connection = attached_connection(client, process_identity)
 
     assert client.known_server_process_is_alive() is True
 
-    client._connected_server_process_identity = ProcessIdentity(
-        pid=process_identity.pid,
-        create_time=process_identity.create_time - 1,
+    client._connection = attached_connection(
+        client,
+        ProcessIdentity(
+            pid=process_identity.pid,
+            create_time=process_identity.create_time - 1,
+        ),
     )
     assert client.known_server_process_is_alive() is False
 
 
 def test_known_server_process_liveness_leaves_remote_identity_unknown(monkeypatch):
     client = EndpointPolicyExecutionClient(transport_mode=TransportMode.TCP)
-    client._connected_to_existing = True
-    client._connected_server_process_identity = ProcessIdentity.current()
-    monkeypatch.setattr(client, "_endpoint_is_local", lambda: False)
+    client._connection = attached_connection(client, ProcessIdentity.current())
+    monkeypatch.setattr(
+        TransportMode.TCP,
+        "endpoint_is_local",
+        lambda _host, _port: False,
+    )
 
     assert client.known_server_process_is_alive() is None
 
@@ -570,32 +755,26 @@ def test_existing_connection_retains_typed_server_process_identity(monkeypatch):
     )
     client = EndpointPolicyExecutionClient()
 
-    assert ZMQClient._try_connect_to_existing(client, 5555) is True
-    assert client._connected_server_process_identity == process_identity
+    endpoint = ZMQClient._try_connect_to_existing(client, 5555)
+    assert endpoint is not None
+    assert endpoint.process_identity == process_identity
 
 
 def test_disconnect_stops_owned_server_when_socket_cleanup_fails(monkeypatch):
     client = EndpointPolicyExecutionClient()
-    process = object()
-    stopped = []
-    client._connected = True
-    client._connected_to_existing = False
+    process = StubEndpointProcess()
+    client._connection = owned_connection(client, process)
     client.persistent = False
-    client.server_process = process
 
     def fail_cleanup():
         raise RuntimeError("socket cleanup failed")
 
     monkeypatch.setattr(client, "_cleanup_sockets", fail_cleanup)
-    monkeypatch.setattr(client, "_stop_owned_server_process", stopped.append)
-
     with pytest.raises(RuntimeError, match="socket cleanup failed"):
         client.disconnect()
 
-    assert stopped == [process]
-    assert client.server_process is None
-    assert client._connected is False
-    assert client._connected_to_existing is False
+    assert process.stop_count == 1
+    assert client._connection is None
 
 
 class ConcurrentStartupExecutionClient(ExecutionClient):
@@ -608,14 +787,26 @@ class ConcurrentStartupExecutionClient(ExecutionClient):
         self.state = state
 
     def _try_connect_to_existing(self, port: int, timeout_ms: int = 500):
-        return self.state["ready"].is_set()
+        if not self.state["ready"].is_set():
+            return None
+        return PongResponse(
+            port=self.port,
+            control_port=self.control_port,
+            ready=True,
+            server="ConcurrentStartupExecutionClient",
+            server_role=ServerRole.EXECUTION,
+        )
 
     def _spawn_server_process(self):
         with self.state["lock"]:
             self.state["spawn_count"] += 1
-        return object()
+        return StubEndpointProcess()
 
-    def _wait_for_server_ready(self, timeout: float = 10.0):
+    def _wait_for_server_ready(
+        self,
+        process: EndpointProcess,
+        timeout: float = 10.0,
+    ):
         for port in (self.port, self.control_port):
             path = get_ipc_socket_path(port, self.config)
             assert path is not None
@@ -665,7 +856,10 @@ def test_concurrent_clients_spawn_one_ipc_server():
     try:
         assert all(not thread.is_alive() for thread in threads)
         assert state["spawn_count"] == 1
-        assert sum(client._connected_to_existing for client in clients) == 1
+        assert (
+            sum(isinstance(client._connection, AttachedEndpointConnection) for client in clients)
+            == 1
+        )
     finally:
         for endpoint_port in (port, port + config.control_port_offset):
             path = get_ipc_socket_path(endpoint_port, config)
@@ -685,6 +879,45 @@ def test_execution_waiter_surfaces_error_field_when_message_absent():
 
     assert result[MessageFields.STATUS] == ResponseType.ERROR.value
     assert result[MessageFields.MESSAGE] == "Execution missing from restarted server"
+
+
+def test_execution_status_declaration_owns_polling_transitions(monkeypatch):
+    responses = iter(
+        (
+            {
+                "status": "ok",
+                "execution": {"status": "future-status"},
+            },
+            {
+                "status": "ok",
+                "execution": {"status": ExecutionStatus.RUNNING.value},
+            },
+            {
+                "status": "ok",
+                "execution": {"status": ExecutionStatus.COMPLETED.value},
+            },
+        )
+    )
+    transitions = []
+    monkeypatch.setattr("zmqruntime.execution.status_poller.time.sleep", lambda _delay: None)
+
+    ExecutionStatusPoller().run(
+        "execution-1",
+        CallbackExecutionStatusPollPolicy(
+            poll_status_fn=lambda _execution_id: next(responses),
+            on_running_fn=lambda execution_id, _payload: transitions.append(
+                ("running", execution_id)
+            ),
+            on_terminal_fn=lambda execution_id, status, _payload: transitions.append(
+                (status, execution_id)
+            ),
+        ),
+    )
+
+    assert transitions == [
+        ("running", "execution-1"),
+        ("completed", "execution-1"),
+    ]
 
 
 def test_execution_waiter_treats_progress_as_liveness_during_status_timeouts():

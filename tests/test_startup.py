@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from functools import partialmethod
 
-from zmqruntime.client import ZMQClient
+from zmqruntime.client import EndpointProcess, ZMQClient
+from zmqruntime.messages import ProcessExit
 from zmqruntime.startup import (
     EndpointStartupObserver,
     EndpointStartupPhase,
@@ -13,7 +14,7 @@ from zmqruntime.startup import (
     EndpointStartupStatusReader,
     EndpointStartupStatusWriter,
 )
-from zmqruntime.transport import wait_for_server_ready
+from zmqruntime.transport import get_default_transport_mode, wait_for_server_ready
 
 
 class _PresentationTarget(EndpointStartupPresentationTarget):
@@ -29,6 +30,17 @@ class _PresentationTarget(EndpointStartupPresentationTarget):
     present_warning = partialmethod(_present, "warning")
 
 
+class _EndpointProcess(EndpointProcess):
+    def is_alive(self) -> bool:
+        return True
+
+    def exit(self) -> ProcessExit | None:
+        return None
+
+    def stop(self, timeout: float = 5.0) -> None:
+        return None
+
+
 class _StartupClient(ZMQClient):
     def __init__(self, statuses, *, spawn_error: Exception | None = None) -> None:
         super().__init__(5555, connection_status_callback=statuses.append)
@@ -40,9 +52,9 @@ class _StartupClient(ZMQClient):
     def _spawn_server_process(self):
         if self._spawn_error is not None:
             raise self._spawn_error
-        return object()
+        return _EndpointProcess()
 
-    def _wait_for_server_ready(self, timeout: float = 10.0) -> bool:
+    def _wait_for_server_ready(self, process, timeout: float = 10.0) -> bool:
         return True
 
     def _setup_client_sockets(self) -> None:
@@ -70,15 +82,11 @@ def test_startup_status_channel_roundtrips_incremental_typed_events(tmp_path) ->
 
     reader = EndpointStartupStatusReader(path)
     first = reader.read()
-    assert [status.phase for status in first.statuses] == [
-        EndpointStartupPhase.IMPORTING_RUNTIME
-    ]
+    assert [status.phase for status in first.statuses] == [EndpointStartupPhase.IMPORTING_RUNTIME]
 
     writer.emit(EndpointStartupPhase.SERVER_READY, "Server ready")
     second = reader.read()
-    assert [status.phase for status in second.statuses] == [
-        EndpointStartupPhase.SERVER_READY
-    ]
+    assert [status.phase for status in second.statuses] == [EndpointStartupPhase.SERVER_READY]
     assert second.next_offset > first.next_offset
 
 
@@ -95,9 +103,7 @@ def test_startup_monitor_owns_relay_failure_and_process_exit_state(tmp_path) -> 
     )
 
     assert monitor.poll_activity() is True
-    assert relayed == [
-        (EndpointStartupPhase.IMPORTING_RUNTIME, "Importing runtime")
-    ]
+    assert relayed == [(EndpointStartupPhase.IMPORTING_RUNTIME, "Importing runtime")]
     assert monitor.should_abort() is False
     process_exited[0] = True
     assert monitor.should_abort() is True
@@ -138,6 +144,20 @@ def test_startup_failure_semantics_are_owned_by_phase_members() -> None:
         not phase.startup_failed
         for phase in EndpointStartupPhase
         if phase is not EndpointStartupPhase.FAILED
+    )
+
+
+def test_endpoint_presence_semantics_are_owned_by_phase_members() -> None:
+    assert not EndpointStartupPhase.DISCONNECTED.expects_endpoint_presence
+    assert not EndpointStartupPhase.FAILED.expects_endpoint_presence
+    assert all(
+        phase.expects_endpoint_presence
+        for phase in EndpointStartupPhase
+        if phase
+        not in {
+            EndpointStartupPhase.DISCONNECTED,
+            EndpointStartupPhase.FAILED,
+        }
     )
 
 
@@ -183,7 +203,11 @@ def test_readiness_timeout_is_an_inactivity_deadline(
         "sleep",
         lambda duration: now.__setitem__(0, now[0] + duration),
     )
-    monkeypatch.setattr(transport, "is_port_in_use", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        get_default_transport_mode(),
+        "endpoint_in_use",
+        lambda _port, _host, _config: False,
+    )
 
     ready = wait_for_server_ready(
         5555,

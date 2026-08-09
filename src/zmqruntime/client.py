@@ -1,28 +1,29 @@
 """ZMQ client base class."""
+
 from __future__ import annotations
 
-import ipaddress
 import logging
-import multiprocessing
 import pickle
-import platform
-import socket
 import subprocess
 import threading
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, wait
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from enum import Enum
+from functools import singledispatch
+from multiprocessing.process import BaseProcess
 
 import zmq
 
 from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.messages import (
+    ControlMessageType,
+    EndpointControlCapability,
     MessageFields,
+    PongResponse,
     ProcessExit,
-    ProcessIdentity,
     ResponseType,
 )
 from zmqruntime.startup import (
@@ -31,13 +32,10 @@ from zmqruntime.startup import (
     EndpointStartupStatusCallback,
 )
 from zmqruntime.transport import (
+    TransportEndpoint,
     endpoint_startup_lock,
     get_control_port,
-    get_ipc_socket_path,
-    get_zmq_transport_url,
-    ipc_socket_is_stale,
     is_port_in_use,
-    remove_ipc_socket,
     request_control_ping,
     resolve_transport_mode,
     wait_for_server_ready,
@@ -72,6 +70,262 @@ class EndpointConnectionPolicy(Enum):
         return self._connector(client, timeout)
 
 
+class ClientEndpointConnection(ABC):
+    """Single authoritative state for one established client connection."""
+
+    @abstractmethod
+    def close_client(self, persistent: bool) -> None:
+        """Release client ownership according to endpoint persistence policy."""
+
+    @abstractmethod
+    def owned_process_is_alive(self) -> bool | None:
+        """Return exact owned-process liveness, or unknown when not owned."""
+
+    @abstractmethod
+    def owned_process_exit(self) -> ProcessExit | None:
+        """Return an exact owned-process exit, or none when unavailable."""
+
+    @abstractmethod
+    def known_process_is_alive(self, endpoint_is_local: bool) -> bool | None:
+        """Return exact endpoint-process liveness when it can be proven."""
+
+
+class EndpointProcess(ABC):
+    """Nominal process operations required by an owned endpoint connection."""
+
+    @abstractmethod
+    def is_alive(self) -> bool:
+        """Return whether the exact spawned process remains alive."""
+
+    @abstractmethod
+    def exit(self) -> ProcessExit | None:
+        """Return the exact process exit when it has terminated."""
+
+    @abstractmethod
+    def stop(self, timeout: float = 5.0) -> None:
+        """Terminate the exact spawned process, escalating when necessary."""
+
+
+@dataclass(frozen=True, slots=True)
+class MultiprocessingEndpointProcess(EndpointProcess):
+    """Endpoint process backed by multiprocessing."""
+
+    process: BaseProcess
+
+    def is_alive(self) -> bool:
+        return self.process.is_alive()
+
+    def exit(self) -> ProcessExit | None:
+        returncode = self.process.exitcode
+        return None if returncode is None else ProcessExit(returncode)
+
+    def stop(self, timeout: float = 5.0) -> None:
+        if self.process.is_alive():
+            self.process.terminate()
+            self.process.join(timeout=timeout)
+        if self.process.is_alive():
+            self.process.kill()
+            self.process.join(timeout=timeout)
+        if self.process.is_alive():
+            raise TimeoutError("Multiprocessing endpoint process did not terminate")
+
+
+@dataclass(frozen=True, slots=True)
+class SubprocessEndpointProcess(EndpointProcess):
+    """Endpoint process backed by subprocess.Popen."""
+
+    process: subprocess.Popen
+
+    def is_alive(self) -> bool:
+        return self.process.poll() is None
+
+    def exit(self) -> ProcessExit | None:
+        returncode = self.process.poll()
+        return None if returncode is None else ProcessExit(returncode)
+
+    def stop(self, timeout: float = 5.0) -> None:
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=timeout)
+
+
+EndpointProcessSource = EndpointProcess | BaseProcess | subprocess.Popen
+
+
+@singledispatch
+def endpoint_process(source: EndpointProcessSource) -> EndpointProcess:
+    """Resolve external process handles at one nominal adapter boundary."""
+
+    raise TypeError(f"Unsupported ZMQ server process handle: {type(source).__name__}")
+
+
+@endpoint_process.register
+def _(source: EndpointProcess) -> EndpointProcess:
+    return source
+
+
+@endpoint_process.register
+def _(source: BaseProcess) -> EndpointProcess:
+    return MultiprocessingEndpointProcess(source)
+
+
+@endpoint_process.register
+def _(source: subprocess.Popen) -> EndpointProcess:
+    return SubprocessEndpointProcess(source)
+
+
+@dataclass(frozen=True, slots=True)
+class OwnedEndpointConnection(ClientEndpointConnection):
+    """Established connection to the endpoint process spawned by this client."""
+
+    process: EndpointProcess
+    target: TransportEndpoint
+    config: ZMQConfig
+
+    def close_client(self, persistent: bool) -> None:
+        if not persistent:
+            self.terminate_endpoint()
+
+    def terminate_endpoint(self) -> None:
+        self.process.stop()
+        self.target.cleanup(self.config)
+
+    def owned_process_is_alive(self) -> bool | None:
+        return self.process.is_alive()
+
+    def owned_process_exit(self) -> ProcessExit | None:
+        return self.process.exit()
+
+    def known_process_is_alive(self, endpoint_is_local: bool) -> bool | None:
+        return self.owned_process_is_alive()
+
+
+@dataclass(frozen=True, slots=True)
+class AttachedEndpointConnection(ClientEndpointConnection):
+    """Established connection to an endpoint owned outside this client."""
+
+    endpoint: PongResponse
+
+    def close_client(self, persistent: bool) -> None:
+        return None
+
+    def owned_process_is_alive(self) -> bool | None:
+        return None
+
+    def owned_process_exit(self) -> ProcessExit | None:
+        return None
+
+    def known_process_is_alive(self, endpoint_is_local: bool) -> bool | None:
+        if not endpoint_is_local or self.endpoint.process_identity is None:
+            return None
+        return self.endpoint.process_identity.is_alive()
+
+
+@dataclass(frozen=True, slots=True)
+class EndpointShutdownResult:
+    """Observed outcome of one endpoint shutdown operation."""
+
+    succeeded: bool
+    endpoint_terminated: bool
+
+
+@dataclass(slots=True)
+class _EndpointShutdownOperation:
+    """State and mechanics for one endpoint shutdown request."""
+
+    target: TransportEndpoint
+    timeout: float
+    config: ZMQConfig
+    endpoint: PongResponse | None
+    acknowledged: bool
+
+    def acknowledgement_result(self) -> EndpointShutdownResult:
+        """Report whether a non-terminating shutdown request was acknowledged."""
+
+        return EndpointShutdownResult(
+            succeeded=self.acknowledged,
+            endpoint_terminated=False,
+        )
+
+    def termination_result(self) -> EndpointShutdownResult:
+        """Prove endpoint termination, escalating through owned process identity."""
+
+        deadline = time.monotonic() + self.timeout
+        while time.monotonic() < deadline:
+            if not self._endpoint_responds():
+                return self._terminated_result()
+            time.sleep(0.05)
+
+        process_identity = None if self.endpoint is None else self.endpoint.process_identity
+        if (
+            process_identity is not None
+            and self.target.transport_mode.endpoint_is_local(
+                self.target.host,
+                self.target.control_port(self.config),
+            )
+            and process_identity.terminate(timeout=self.timeout)
+        ):
+            return self._terminated_result()
+
+        return EndpointShutdownResult(succeeded=False, endpoint_terminated=False)
+
+    def _endpoint_responds(self) -> bool:
+        return self.target.ping(self.config, timeout_ms=100) is not None
+
+    def _terminated_result(self) -> EndpointShutdownResult:
+        self.target.cleanup(self.config)
+        return EndpointShutdownResult(succeeded=True, endpoint_terminated=True)
+
+
+class EndpointShutdownMode(str, Enum):
+    """Endpoint shutdown modes with member-owned wire and completion leaves."""
+
+    def __new__(
+        cls,
+        value: str,
+        control_message_type: ControlMessageType,
+        required_capability: EndpointControlCapability,
+        completion: Callable[[_EndpointShutdownOperation], EndpointShutdownResult],
+    ) -> EndpointShutdownMode:
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member.control_message_type = control_message_type
+        member.required_capability = required_capability
+        member._completion = completion
+        return member
+
+    GRACEFUL = (
+        "graceful",
+        ControlMessageType.SHUTDOWN,
+        EndpointControlCapability.SHUTDOWN,
+        _EndpointShutdownOperation.acknowledgement_result,
+    )
+    FORCE = (
+        "force",
+        ControlMessageType.FORCE_SHUTDOWN,
+        EndpointControlCapability.FORCE_SHUTDOWN,
+        _EndpointShutdownOperation.termination_result,
+    )
+
+    @classmethod
+    def from_graceful(cls, graceful: bool) -> EndpointShutdownMode:
+        """Resolve a legacy Boolean only at the nominal declaration boundary."""
+
+        return cls.GRACEFUL if graceful else cls.FORCE
+
+    def complete(
+        self,
+        operation: _EndpointShutdownOperation,
+    ) -> EndpointShutdownResult:
+        """Execute this member's completion leaf."""
+
+        return self._completion(operation)
+
+
 class ZMQClient(ABC):
     """ABC for ZMQ clients - dual-channel pattern with auto-spawning."""
 
@@ -85,21 +339,35 @@ class ZMQClient(ABC):
         connection_status_callback: EndpointStartupStatusCallback | None = None,
     ):
         self.config = config or ZMQConfig()
-        self.port = port
-        self.host = host
-        self.control_port = port + self.config.control_port_offset
+        self.endpoint = TransportEndpoint(
+            host=host,
+            port=port,
+            transport_mode=resolve_transport_mode(transport_mode),
+        )
         self.persistent = persistent
-        self.transport_mode = resolve_transport_mode(transport_mode)
         self.zmq_context = None
         self.data_socket = None
         self.control_socket = None
-        self.server_process = None
-        self._connected = False
-        self._connected_to_existing = False
-        self._connected_server_process_identity: ProcessIdentity | None = None
+        self._connection: ClientEndpointConnection | None = None
         self._lock = threading.Lock()
         self._connection_status_callback = connection_status_callback
         self._connection_status_sequence = 0
+
+    @property
+    def port(self) -> int:
+        return self.endpoint.port
+
+    @property
+    def host(self) -> str:
+        return self.endpoint.host
+
+    @property
+    def control_port(self) -> int:
+        return self.endpoint.control_port(self.config)
+
+    @property
+    def transport_mode(self) -> TransportMode:
+        return self.endpoint.transport_mode
 
     def _emit_connection_status(
         self,
@@ -142,7 +410,7 @@ class ZMQClient(ABC):
         )
         try:
             with self._lock:
-                if self._connected:
+                if self.is_connected():
                     self._emit_connected_status()
                     return True
                 with endpoint_startup_lock(
@@ -150,7 +418,6 @@ class ZMQClient(ABC):
                     self.transport_mode,
                     self.config,
                 ):
-                    self._reset_existing_endpoint_identity()
                     if not self._is_port_in_use(self.port):
                         self._emit_connection_status(
                             EndpointStartupPhase.DISCONNECTED,
@@ -174,7 +441,7 @@ class ZMQClient(ABC):
     def _connect_locked(self, timeout: float) -> bool:
         """Connect while the caller owns the client lifecycle lock."""
 
-        if self._connected:
+        if self.is_connected():
             self._emit_connected_status()
             return True
         with endpoint_startup_lock(
@@ -182,11 +449,13 @@ class ZMQClient(ABC):
             self.transport_mode,
             self.config,
         ):
-            self._reset_existing_endpoint_identity()
             if self._is_port_in_use(self.port):
                 if self._attach_existing_endpoint(timeout):
                     return True
-                if self._should_preserve_unresponsive_endpoint(self.port):
+                if self.transport_mode.preserve_unresponsive_endpoint(
+                    self.port,
+                    self.config,
+                ):
                     self._emit_connection_status(
                         EndpointStartupPhase.FAILED,
                         f"Server endpoint on port {self.port} is unresponsive",
@@ -199,10 +468,16 @@ class ZMQClient(ABC):
                 EndpointStartupPhase.STARTING_PROCESS,
                 f"Starting server process for port {self.port}",
             )
-            self.server_process = self._spawn_server_process()
-            if not self._wait_for_server_ready(timeout):
-                self._stop_owned_server_process(self.server_process)
-                self.server_process = None
+            owned_connection = OwnedEndpointConnection(
+                process=endpoint_process(self._spawn_server_process()),
+                target=self.endpoint,
+                config=self.config,
+            )
+            if not self._wait_for_server_ready(
+                owned_connection.process,
+                timeout=timeout,
+            ):
+                owned_connection.terminate_endpoint()
                 self._emit_connection_status(
                     EndpointStartupPhase.FAILED,
                     f"Server endpoint on port {self.port} did not become ready",
@@ -211,27 +486,23 @@ class ZMQClient(ABC):
             try:
                 self._setup_client_sockets()
             except Exception:
-                self._stop_owned_server_process(self.server_process)
-                self.server_process = None
+                owned_connection.terminate_endpoint()
                 raise
-            self._connected = True
+            self._connection = owned_connection
             self._emit_connected_status()
             return True
 
     def _attach_existing_endpoint(self, timeout: float) -> bool:
-        if not self._try_connect_to_existing(
+        endpoint = self._try_connect_to_existing(
             self.port,
             timeout_ms=self._existing_endpoint_probe_timeout_ms(timeout),
-        ):
+        )
+        if endpoint is None:
             return False
         self._setup_client_sockets()
-        self._connected = self._connected_to_existing = True
+        self._connection = AttachedEndpointConnection(endpoint)
         self._emit_connected_status()
         return True
-
-    def _reset_existing_endpoint_identity(self) -> None:
-        self._connected_to_existing = False
-        self._connected_server_process_identity = None
 
     def _emit_connected_status(self) -> None:
         self._emit_connection_status(
@@ -241,123 +512,54 @@ class ZMQClient(ABC):
 
     def disconnect(self):
         with self._lock:
-            if not self._connected:
+            connection = self._connection
+            if connection is None:
                 return
             try:
                 try:
                     self._cleanup_sockets()
                 finally:
-                    if (
-                        not self._connected_to_existing
-                        and self.server_process
-                        and not self.persistent
-                    ):
-                        self._stop_owned_server_process(self.server_process)
+                    connection.close_client(self.persistent)
             finally:
-                self.server_process = None
-                self._connected = False
-                self._connected_to_existing = False
-                self._connected_server_process_identity = None
+                self._connection = None
                 self._emit_connection_status(
                     EndpointStartupPhase.DISCONNECTED,
                     f"Disconnected from server endpoint on port {self.port}",
                 )
 
     def is_connected(self):
-        return self._connected
+        return self._connection is not None
 
     def owned_server_process_is_alive(self) -> bool | None:
         """Return exact liveness when this client owns the server process."""
-        if self._connected_to_existing or self.server_process is None:
-            return None
-        if isinstance(self.server_process, multiprocessing.Process):
-            return self.server_process.is_alive()
-        if isinstance(self.server_process, subprocess.Popen):
-            return self.server_process.poll() is None
-        return None
+        connection = self._connection
+        return None if connection is None else connection.owned_process_is_alive()
 
     def owned_server_process_exit(self) -> ProcessExit | None:
         """Return an exact terminal status when this client owns the process."""
 
-        if self._connected_to_existing or self.server_process is None:
-            return None
-        if isinstance(self.server_process, multiprocessing.Process):
-            returncode = self.server_process.exitcode
-        elif isinstance(self.server_process, subprocess.Popen):
-            returncode = self.server_process.poll()
-        else:
-            return None
-        return None if returncode is None else ProcessExit(returncode)
+        connection = self._connection
+        return None if connection is None else connection.owned_process_exit()
 
     def known_server_process_is_alive(self) -> bool | None:
         """Return exact liveness for an owned or identified local server."""
 
-        owned_process_alive = self.owned_server_process_is_alive()
-        if owned_process_alive is not None:
-            return owned_process_alive
-        if (
-            not self._connected_to_existing
-            or self._connected_server_process_identity is None
-            or not self._endpoint_is_local()
-        ):
+        connection = self._connection
+        if connection is None:
             return None
-        return self._connected_server_process_identity.is_alive()
-
-    def _endpoint_is_local(self) -> bool:
-        if self.transport_mode == TransportMode.IPC:
-            return True
-        try:
-            addresses = socket.getaddrinfo(
+        return connection.known_process_is_alive(
+            self.transport_mode.endpoint_is_local(
                 self.host,
                 self.control_port,
-                type=socket.SOCK_STREAM,
             )
-        except OSError:
-            return False
-        return bool(addresses) and all(
-            ipaddress.ip_address(address[4][0]).is_loopback for address in addresses
         )
-
-    def _stop_owned_server_process(self, server_process):
-        stopped = False
-        if isinstance(server_process, multiprocessing.Process):
-            if server_process.is_alive():
-                server_process.terminate()
-                server_process.join(timeout=5)
-                if server_process.is_alive():
-                    server_process.kill()
-                    server_process.join(timeout=5)
-            stopped = not server_process.is_alive()
-        elif isinstance(server_process, subprocess.Popen):
-            if server_process.poll() is None:
-                server_process.terminate()
-                try:
-                    server_process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    server_process.kill()
-                    server_process.wait(timeout=5)
-            stopped = server_process.poll() is not None
-        else:
-            raise TypeError(
-                "Unsupported ZMQ server process handle: "
-                f"{type(server_process).__name__}"
-            )
-
-        if stopped and self.transport_mode == TransportMode.IPC:
-            remove_ipc_socket(self.port, self.config)
-            remove_ipc_socket(self.control_port, self.config)
 
     def _setup_client_sockets(self):
         import zmq
 
         logger = logging.getLogger(__name__)
         self.zmq_context = zmq.Context()
-        data_url = get_zmq_transport_url(
-            self.port,
-            host=self.host,
-            mode=self.transport_mode,
-            config=self.config,
-        )
+        data_url = self.endpoint.data_url(self.config)
 
         self.data_socket = self.zmq_context.socket(zmq.SUB)
         self.data_socket.setsockopt(zmq.LINGER, 0)
@@ -378,7 +580,11 @@ class ZMQClient(ABC):
             self.zmq_context.term()
             self.zmq_context = None
 
-    def _try_connect_to_existing(self, port: int, timeout_ms: int = 500) -> bool:
+    def _try_connect_to_existing(
+        self,
+        port: int,
+        timeout_ms: int = 500,
+    ) -> PongResponse | None:
         response = request_control_ping(
             port,
             self.transport_mode,
@@ -387,20 +593,18 @@ class ZMQClient(ABC):
             timeout_ms=timeout_ms,
         )
         if response is None or not response.ready:
-            return False
-        self._connected_server_process_identity = response.process_identity
-        return True
+            return None
+        return response
 
     @staticmethod
     def _existing_endpoint_probe_timeout_ms(timeout: float) -> int:
         return max(500, min(int(timeout * 1000), 5000))
 
-    def _should_preserve_unresponsive_endpoint(self, port: int) -> bool:
-        if self.transport_mode != TransportMode.IPC:
-            return False
-        return not ipc_socket_is_stale(port, self.config)
-
-    def _wait_for_server_ready(self, timeout: float = 10.0) -> bool:
+    def _wait_for_server_ready(
+        self,
+        process: EndpointProcess,
+        timeout: float = 10.0,
+    ) -> bool:
         return wait_for_server_ready(
             self.port,
             self.transport_mode,
@@ -417,43 +621,8 @@ class ZMQClient(ABC):
             config=self.config,
         )
 
-    def _find_free_port(self):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("", 0))
-            return s.getsockname()[1]
-
     def _kill_processes_on_port(self, port: int):
-        try:
-            if self.transport_mode == TransportMode.IPC:
-                remove_ipc_socket(port, self.config)
-                return
-
-            system = platform.system()
-            if system in ["Linux", "Darwin"]:
-                result = subprocess.run(
-                    ["lsof", "-ti", f"TCP:{port}", "-sTCP:LISTEN"],
-                    capture_output=True,
-                    text=True,
-                    timeout=2,
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    for pid in result.stdout.strip().split("\n"):
-                        try:
-                            subprocess.run(["kill", "-9", pid], timeout=1)
-                        except Exception:
-                            pass
-            elif system == "Windows":
-                result = subprocess.run(
-                    ["netstat", "-ano"], capture_output=True, text=True, timeout=2
-                )
-                for line in result.stdout.split("\n"):
-                    if f":{port}" in line and "LISTENING" in line:
-                        try:
-                            subprocess.run(["taskkill", "/PID", line.split()[-1]], timeout=1)
-                        except Exception:
-                            pass
-        except Exception:
-            pass
+        self.transport_mode.kill_processes_on_port(port, self.config)
 
     @staticmethod
     def scan_servers(
@@ -500,6 +669,87 @@ class ZMQClient(ABC):
         return sorted(servers, key=lambda server: ports.index(server.port))
 
     @staticmethod
+    def shutdown_endpoint_on_port(
+        port: int,
+        mode: EndpointShutdownMode,
+        timeout: float = 5.0,
+        transport_mode: TransportMode | None = None,
+        host: str = "localhost",
+        config: ZMQConfig | None = None,
+    ) -> EndpointShutdownResult:
+        config = config or ZMQConfig()
+        transport_mode = resolve_transport_mode(transport_mode)
+        if not isinstance(mode, EndpointShutdownMode):
+            raise TypeError("Shutdown mode must be an EndpointShutdownMode instance.")
+        target = TransportEndpoint(
+            host=host,
+            port=port,
+            transport_mode=transport_mode,
+        )
+        endpoint = target.ping(
+            config,
+            timeout_ms=min(max(int(timeout * 1000), 100), 1000),
+        )
+        if endpoint is None and not target.is_in_use(config):
+            return EndpointShutdownResult(succeeded=True, endpoint_terminated=True)
+        if endpoint is None or mode.required_capability not in endpoint.control_capabilities:
+            return EndpointShutdownResult(succeeded=False, endpoint_terminated=False)
+
+        acknowledged = False
+        sock = None
+        try:
+            control_url = target.control_url(config)
+
+            ctx = zmq.Context.instance()
+            sock = ctx.socket(zmq.REQ)
+            sock.setsockopt(zmq.LINGER, 0)
+            sock.connect(control_url)
+            sock.setsockopt(zmq.SNDTIMEO, min(int(timeout * 1000), 1000))
+            sock.setsockopt(zmq.RCVTIMEO, min(int(timeout * 1000), 1000))
+            sock.send(
+                pickle.dumps(
+                    {MessageFields.TYPE: mode.control_message_type.value},
+                )
+            )
+            ack = pickle.loads(sock.recv())
+            acknowledged = ack.get(MessageFields.TYPE) == ResponseType.SHUTDOWN_ACK.value
+        except (EOFError, KeyError, OSError, TypeError, pickle.PickleError, zmq.ZMQError):
+            acknowledged = False
+        finally:
+            if sock is not None:
+                sock.close(linger=0)
+
+        return mode.complete(
+            _EndpointShutdownOperation(
+                target=target,
+                timeout=timeout,
+                config=config,
+                endpoint=endpoint,
+                acknowledged=acknowledged,
+            )
+        )
+
+    @staticmethod
+    def shutdown_server_on_port(
+        port: int,
+        graceful: bool = True,
+        timeout: float = 5.0,
+        transport_mode: TransportMode | None = None,
+        host: str = "localhost",
+        config: ZMQConfig | None = None,
+    ) -> EndpointShutdownResult:
+        """Compatibility boundary for callers still supplying a Boolean mode."""
+
+        return ZMQClient.shutdown_endpoint_on_port(
+            port=port,
+            mode=EndpointShutdownMode.from_graceful(graceful),
+            timeout=timeout,
+            transport_mode=transport_mode,
+            host=host,
+            config=config,
+        )
+
+    @staticmethod
     def kill_server_on_port(
         port: int,
         graceful: bool = True,
@@ -507,111 +757,17 @@ class ZMQClient(ABC):
         transport_mode: TransportMode | None = None,
         host: str = "localhost",
         config: ZMQConfig | None = None,
-    ):
-        config = config or ZMQConfig()
-        transport_mode = resolve_transport_mode(transport_mode)
-        msg_type = "shutdown" if graceful else "force_shutdown"
+    ) -> bool:
+        """Compatibility wrapper for callers that only consume success."""
 
-        def kill_ipc_server_processes(port: int) -> int:
-            """Kill server processes in IPC mode by finding them via command line."""
-            import psutil
-            killed = 0
-            try:
-                for proc in psutil.process_iter(['pid', 'cmdline']):
-                    try:
-                        cmdline = proc.cmdline()
-                        if not cmdline:
-                            continue
-                        cmdline_str = ' '.join(cmdline)
-                        # Look for server process with this port
-                        if f"--port {port}" in cmdline_str or f"--port={port}" in cmdline_str:
-                            proc.kill()
-                            killed += 1
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        pass
-            except Exception:
-                pass
-            return killed
-
-        def is_port_free(port: int) -> bool:
-            if transport_mode == TransportMode.IPC:
-                socket_path = get_ipc_socket_path(port, config)
-                return not (socket_path and socket_path.exists())
-            sock_test = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock_test.settimeout(0.1)
-            try:
-                sock_test.bind(("localhost", port))
-                sock_test.close()
-                return True
-            except OSError:
-                return False
-            finally:
-                try:
-                    sock_test.close()
-                except Exception:
-                    pass
-
-        try:
-            control_port = port + config.control_port_offset
-            control_url = get_zmq_transport_url(
-                control_port,
-                host=host,
-                mode=transport_mode,
-                config=config,
-            )
-
-            ctx = zmq.Context.instance()
-            sock = ctx.socket(zmq.REQ)
-            sock.setsockopt(zmq.LINGER, 0)
-            sock.connect(control_url)
-
-            if graceful:
-                sock.setsockopt(zmq.RCVTIMEO, int(timeout * 1000))
-                sock.send(pickle.dumps({MessageFields.TYPE: msg_type}))
-                ack = pickle.loads(sock.recv())
-                if ack[MessageFields.TYPE] == ResponseType.SHUTDOWN_ACK.value:
-                    return True
-            else:
-                sock.setsockopt(zmq.SNDTIMEO, 1000)
-                try:
-                    sock.send(pickle.dumps({MessageFields.TYPE: msg_type}))
-                except Exception:
-                    pass
-
-                if transport_mode == TransportMode.IPC:
-                    # Kill the actual server processes, not just the socket files
-                    killed = kill_ipc_server_processes(port)
-                    # Also clean up socket files
-                    remove_ipc_socket(port, config)
-                    remove_ipc_socket(control_port, config)
-                    return killed > 0
-
-                from zmqruntime.server import ZMQServer
-
-                killed = sum(ZMQServer.kill_processes_on_port(p) for p in [port, control_port])
-                return killed > 0
-
-        except Exception:
-            if not graceful:
-                if transport_mode == TransportMode.IPC:
-                    # Kill the actual server processes, not just the socket files
-                    killed = kill_ipc_server_processes(port)
-                    # Also clean up socket files
-                    remove_ipc_socket(port, config)
-                    remove_ipc_socket(control_port, config)
-                    return killed > 0
-                from zmqruntime.server import ZMQServer
-
-                killed = sum(ZMQServer.kill_processes_on_port(p) for p in [port, control_port])
-                return killed > 0
-            return False
-        finally:
-            try:
-                sock.close(linger=0)
-            except Exception:
-                pass
-
-        return False
+        return ZMQClient.shutdown_server_on_port(
+            port=port,
+            graceful=graceful,
+            timeout=timeout,
+            transport_mode=transport_mode,
+            host=host,
+            config=config,
+        ).succeeded
 
     @abstractmethod
     def _spawn_server_process(self):

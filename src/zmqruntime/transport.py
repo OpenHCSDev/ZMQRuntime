@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pickle
-import platform
 import socket
 import time
 from collections.abc import Collection
@@ -34,6 +33,113 @@ class TcpDataControlPortPair:
     def ports(self) -> frozenset[int]:
         """Return both ports for subsequent allocation exclusion."""
         return frozenset((self.data_port, self.control_port))
+
+
+@dataclass(frozen=True, slots=True)
+class TransportEndpoint:
+    """Nominal address authority for one ZMQ data/control endpoint pair."""
+
+    host: str
+    port: int
+    transport_mode: TransportMode
+
+    def data_url(self, config: ZMQConfig | None = None) -> str:
+        """Return this endpoint's data socket URL."""
+
+        return get_zmq_transport_url(
+            self.port,
+            host=self.host,
+            mode=self.transport_mode,
+            config=config,
+        )
+
+    def control_port(self, config: ZMQConfig) -> int:
+        """Return this endpoint's derived control port."""
+
+        return get_control_port(self.port, config)
+
+    def control_url(self, config: ZMQConfig) -> str:
+        """Return this endpoint's control socket URL."""
+
+        return get_zmq_transport_url(
+            self.control_port(config),
+            host=self.host,
+            mode=self.transport_mode,
+            config=config,
+        )
+
+    def is_in_use(self, config: ZMQConfig) -> bool:
+        """Return whether this endpoint's data address is occupied."""
+
+        return self.transport_mode.endpoint_in_use(
+            self.port,
+            self.host,
+            config,
+        )
+
+    def ping(
+        self,
+        config: ZMQConfig,
+        *,
+        timeout_ms: int = 500,
+    ) -> PongResponse | None:
+        """Return this endpoint's typed control heartbeat."""
+
+        return request_control_ping(
+            self.port,
+            self.transport_mode,
+            host=self.host,
+            config=config,
+            timeout_ms=timeout_ms,
+        )
+
+    def cleanup(self, config: ZMQConfig) -> None:
+        """Remove residue for both addresses owned by this endpoint."""
+
+        self.transport_mode.cleanup_endpoint(self.port, config)
+        self.transport_mode.cleanup_endpoint(
+            self.control_port(config),
+            config,
+        )
+
+    def wait_until_ready(
+        self,
+        config: ZMQConfig,
+        *,
+        timeout: float,
+        require_ready: bool,
+        poll_interval: float,
+        startup_observer: EndpointStartupObserver,
+    ) -> bool:
+        """Wait for this endpoint's declared addresses and heartbeat readiness."""
+
+        deadline = time.monotonic() + timeout
+        control_port = self.control_port(config)
+        while True:
+            if startup_observer.poll_activity():
+                deadline = time.monotonic() + timeout
+            if startup_observer.should_abort() or time.monotonic() >= deadline:
+                return False
+            addresses_ready = self.transport_mode.endpoint_in_use(
+                self.port,
+                self.host,
+                config,
+            ) and self.transport_mode.endpoint_in_use(
+                control_port,
+                self.host,
+                config,
+            )
+            if addresses_ready:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                response = self.ping(
+                    config,
+                    timeout_ms=max(1, int(remaining * 1000)),
+                )
+                if response is not None and (response.ready or not require_ready):
+                    return True
+            time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
 
 
 class TcpDataControlPortPairAuthority:
@@ -74,30 +180,19 @@ class TcpDataControlPortPairAuthority:
 
 def get_default_transport_mode() -> TransportMode:
     """Get platform-appropriate transport mode."""
-    return TransportMode.TCP if platform.system() == "Windows" else TransportMode.IPC
+    return TransportMode.default()
 
 
 def resolve_transport_mode(mode: TransportMode | None) -> TransportMode:
     """Resolve an omitted mode without accepting alternate representations."""
 
-    if mode is None:
-        return get_default_transport_mode()
-    if not isinstance(mode, TransportMode):
-        raise TypeError(
-            "Transport mode must be a TransportMode instance or None, "
-            f"not {type(mode).__name__}."
-        )
-    return mode
+    return TransportMode.resolve(mode)
 
 
 def get_ipc_socket_path(port: int, config: ZMQConfig | None = None) -> Path | None:
     """Get IPC socket path for a given port (Unix/Mac only)."""
     config = config or _default_config
-    if platform.system() == "Windows":
-        return None
-    ipc_dir = Path.home() / f".{config.app_name}" / config.ipc_socket_dir
-    socket_name = f"{config.ipc_socket_prefix}-{port}{config.ipc_socket_extension}"
-    return ipc_dir / socket_name
+    return TransportMode.IPC.socket_path(port, config)
 
 
 def get_zmq_transport_url(
@@ -109,20 +204,7 @@ def get_zmq_transport_url(
     """Get ZMQ transport URL for given port/host/mode."""
     config = config or _default_config
     mode = resolve_transport_mode(mode)
-    if mode == TransportMode.IPC:
-        if platform.system() == "Windows":
-            raise ValueError(
-                "IPC transport mode is not supported on Windows. "
-                "Use TransportMode.TCP instead, or use get_default_transport_mode()."
-            )
-        socket_path = get_ipc_socket_path(port, config)
-        if socket_path is None:
-            raise ValueError("IPC socket path could not be determined.")
-        socket_path.parent.mkdir(parents=True, exist_ok=True)
-        return f"ipc://{socket_path}"
-    if mode == TransportMode.TCP:
-        return f"tcp://{host}:{port}"
-    raise ValueError(f"Invalid transport mode: {mode}")
+    return mode.endpoint_url(port, host, config)
 
 
 def get_control_port(port: int, config: ZMQConfig | None = None) -> int:
@@ -158,52 +240,21 @@ def endpoint_startup_lock(
 
     config = config or _default_config
     mode = resolve_transport_mode(transport_mode)
-    if mode != TransportMode.IPC:
+    with mode.startup_lock(port, config):
         yield
-        return
-
-    import fcntl
-
-    socket_path = get_ipc_socket_path(port, config)
-    if socket_path is None:
-        raise ValueError("IPC endpoint lock requires an IPC socket path")
-    lock_path = socket_path.with_name(f"{socket_path.name}.startup.lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+b") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def remove_ipc_socket(port: int, config: ZMQConfig | None = None) -> bool:
     """Remove stale IPC socket file."""
-    socket_path = get_ipc_socket_path(port, config)
-    if socket_path and socket_path.exists():
-        socket_path.unlink()
-        return True
-    return False
+    return TransportMode.IPC.cleanup_endpoint(port, config or _default_config)
 
 
 def ipc_socket_is_stale(port: int, config: ZMQConfig | None = None) -> bool:
     """Return whether an IPC path exists without a kernel-owned Unix socket."""
-
-    socket_path = get_ipc_socket_path(port, config)
-    if socket_path is None or not socket_path.exists():
-        return False
-
-    try:
-        import psutil
-
-        connections = psutil.net_connections(kind="unix")
-    except (ImportError, OSError):
-        return False
-    except psutil.Error:
-        return False
-
-    path = str(socket_path)
-    return all(connection.laddr != path for connection in connections)
+    return TransportMode.IPC.endpoint_is_stale(
+        port,
+        config or _default_config,
+    )
 
 
 def is_port_in_use(
@@ -215,23 +266,7 @@ def is_port_in_use(
     """Check whether the given port is in use for the chosen transport."""
     config = config or _default_config
     mode = resolve_transport_mode(transport_mode)
-    if mode == TransportMode.IPC:
-        socket_path = get_ipc_socket_path(port, config)
-        return socket_path.exists() if socket_path else False
-
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(0.1)
-    try:
-        return sock.connect_ex((host, port)) == 0
-    except OSError:
-        return False
-    except Exception:
-        return False
-    finally:
-        try:
-            sock.close()
-        except Exception:
-            pass
+    return mode.endpoint_in_use(port, host, config)
 
 
 def ping_control_port(
@@ -325,32 +360,15 @@ def wait_for_server_ready(
 ) -> bool:
     """Wait for readiness, optionally treating child updates as startup activity."""
     config = config or _default_config
-    deadline = time.monotonic() + timeout
-    control_port = get_control_port(port, config)
-
-    while True:
-        if startup_observer.poll_activity():
-            deadline = time.monotonic() + timeout
-        if startup_observer.should_abort():
-            return False
-        if time.monotonic() >= deadline:
-            return False
-        if is_port_in_use(port, transport_mode, host=host, config=config) and is_port_in_use(
-            control_port,
-            transport_mode,
-            host=host,
-            config=config,
-        ):
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return False
-            if ping_control_port(
-                port,
-                transport_mode,
-                host=host,
-                config=config,
-                timeout_ms=max(1, int(remaining * 1000)),
-                require_ready=require_ready,
-            ):
-                return True
-        time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
+    endpoint = TransportEndpoint(
+        host=host,
+        port=port,
+        transport_mode=resolve_transport_mode(transport_mode),
+    )
+    return endpoint.wait_until_ready(
+        config,
+        timeout=timeout,
+        require_ready=require_ready,
+        poll_interval=poll_interval,
+        startup_observer=startup_observer,
+    )

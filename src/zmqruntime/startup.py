@@ -41,32 +41,26 @@ EndpointStartupPresenter = Callable[
 class EndpointStartupPhase(str, Enum):
     """Closed lifecycle vocabulary for a client-managed endpoint."""
 
-    _present_checking = nonmember(
-        lambda target, message: target.present_checking(message)
-    )
-    _present_connected = nonmember(
-        lambda target, message: target.present_connected(message)
-    )
-    _present_disconnected = nonmember(
-        lambda target, message: target.present_disconnected(message)
-    )
-    _present_warning = nonmember(
-        lambda target, message: target.present_warning(message)
-    )
+    _present_checking = nonmember(lambda target, message: target.present_checking(message))
+    _present_connected = nonmember(lambda target, message: target.present_connected(message))
+    _present_disconnected = nonmember(lambda target, message: target.present_disconnected(message))
+    _present_warning = nonmember(lambda target, message: target.present_warning(message))
 
     def __new__(
         cls,
         value: str,
         presenter: EndpointStartupPresenter,
+        expects_endpoint_presence: bool = True,
         startup_failure: bool = False,
     ) -> EndpointStartupPhase:
         member = str.__new__(cls, value)
         member._value_ = value
         member._presenter = presenter
+        member._expects_endpoint_presence = expects_endpoint_presence
         member._startup_failure = startup_failure
         return member
 
-    DISCONNECTED = ("disconnected", _present_disconnected)
+    DISCONNECTED = ("disconnected", _present_disconnected, False)
     CHECKING_ENDPOINT = ("checking_endpoint", _present_checking)
     STARTING_PROCESS = ("starting_process", _present_checking)
     LOADING_CONFIG = ("loading_config", _present_checking)
@@ -79,8 +73,15 @@ class EndpointStartupPhase(str, Enum):
     FAILED = (
         "failed",
         _present_disconnected,
+        False,
         True,
     )
+
+    @property
+    def expects_endpoint_presence(self) -> bool:
+        """Whether this phase proves an endpoint attempt should remain observable."""
+
+        return self._expects_endpoint_presence
 
     @property
     def startup_failed(self) -> bool:
@@ -190,11 +191,7 @@ class EndpointStartupStatusReader:
             lines = stream.readlines()
             self._offset = stream.tell()
         return EndpointStartupStatusRead(
-            statuses=tuple(
-                EndpointStartupStatus.from_json(line)
-                for line in lines
-                if line.strip()
-            ),
+            statuses=tuple(EndpointStartupStatus.from_json(line) for line in lines if line.strip()),
             next_offset=self._offset,
         )
 

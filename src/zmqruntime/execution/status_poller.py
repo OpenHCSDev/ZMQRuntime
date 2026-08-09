@@ -7,6 +7,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Callable, Dict
 
+from zmqruntime.messages import ExecutionStatus
+
 
 class ExecutionStatusPollPolicyABC(ABC):
     """Policy boundary for execution status polling behavior."""
@@ -81,10 +83,8 @@ class CallbackExecutionStatusPollPolicy(ExecutionStatusPollPolicyABC):
 class ExecutionStatusPoller:
     """Polling engine for queued/running/terminal execution statuses."""
 
-    TERMINAL_STATUSES = {"complete", "failed", "cancelled"}
-
     def run(self, execution_id: str, policy: ExecutionStatusPollPolicyABC) -> None:
-        previous_status = "queued"
+        previous_status = ExecutionStatus.QUEUED
         while True:
             time.sleep(policy.poll_interval_seconds)
             try:
@@ -96,19 +96,19 @@ class ExecutionStatusPoller:
                 continue
 
             if status_response.get("status") != "ok":
-                message = str(
-                    status_response.get("error", "Execution status unavailable")
-                )
+                message = str(status_response.get("error", "Execution status unavailable"))
                 policy.on_status_error(execution_id, message)
                 return
 
             execution_payload = status_response["execution"]
-            status = execution_payload["status"]
+            status = ExecutionStatus.from_wire(execution_payload["status"])
+            if status is None:
+                continue
 
-            if status == "running" and previous_status == "queued":
+            if status.reports_running_transition_from(previous_status):
                 policy.on_running(execution_id, execution_payload)
-                previous_status = "running"
+                previous_status = status
 
-            if status in self.TERMINAL_STATUSES:
-                policy.on_terminal(execution_id, status, execution_payload)
+            if status.is_terminal:
+                policy.on_terminal(execution_id, status.value, execution_payload)
                 return

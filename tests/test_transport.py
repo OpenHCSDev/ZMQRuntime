@@ -10,6 +10,7 @@ import zmq
 
 from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.messages import (
+    ControlErrorResponse,
     ControlMessageType,
     MessageFields,
     PongResponse,
@@ -19,6 +20,7 @@ from zmqruntime.messages import (
 from zmqruntime.server import ZMQServer
 from zmqruntime.transport import (
     TcpDataControlPortPairAuthority,
+    TransportEndpoint,
     get_default_transport_mode,
     get_ipc_socket_path,
     get_zmq_transport_url,
@@ -98,6 +100,14 @@ def test_get_default_transport_mode():
     assert mode in (TransportMode.TCP, TransportMode.IPC)
 
 
+def test_transport_declarations_own_platform_support_and_default(monkeypatch):
+    monkeypatch.setattr("zmqruntime.transport_modes.platform.system", lambda: "Windows")
+
+    assert TransportMode.TCP.is_supported() is True
+    assert TransportMode.IPC.is_supported() is False
+    assert get_default_transport_mode() is TransportMode.TCP
+
+
 def test_resolve_transport_mode_preserves_exact_enum_or_uses_default():
     assert resolve_transport_mode(TransportMode.TCP) is TransportMode.TCP
     assert resolve_transport_mode(None) is get_default_transport_mode()
@@ -155,6 +165,38 @@ def test_control_response_payload_serializes_nominal_ping_response():
     )
 
     assert PongResponse.from_dict(payload).server_role is ServerRole.GENERIC
+
+
+def test_control_failure_is_owned_by_nominal_wire_response():
+    class TestServer(ZMQServer):
+        def handle_control_message(self, message):
+            raise RuntimeError("broken control request")
+
+        def handle_data_message(self, message):
+            raise AssertionError(message)
+
+    server = TestServer(5555)
+    response = server.control_response({MessageFields.TYPE: "unknown"})
+
+    assert isinstance(response, ControlErrorResponse)
+    assert pickle.loads(server.serialize_control_response(response)) == {
+        MessageFields.STATUS: "error",
+        MessageFields.TYPE: "error",
+        MessageFields.MESSAGE: "broken control request",
+    }
+
+
+def test_serialization_failure_uses_the_same_nominal_error_projection():
+    class TestServer(ZMQServer):
+        def handle_control_message(self, message):
+            raise AssertionError(message)
+
+        def handle_data_message(self, message):
+            raise AssertionError(message)
+
+    payload = pickle.loads(TestServer(5555).serialize_control_response(lambda: None))
+
+    assert payload == ControlErrorResponse(message="Internal server serialization error").to_dict()
 
 
 def test_get_zmq_transport_url_tcp():
@@ -227,15 +269,24 @@ def test_wait_for_server_ready_retries_until_server_reports_ready(
     ping_calls = []
 
     monkeypatch.setattr(
-        "zmqruntime.transport.is_port_in_use",
-        lambda *args, **kwargs: True,
+        TransportMode.IPC,
+        "endpoint_in_use",
+        lambda _port, _host, _config: True,
     )
 
-    def ping(*args, **kwargs):
-        ping_calls.append((args, kwargs))
-        return len(ping_calls) == 3
+    def ping(endpoint, config, *, timeout_ms):
+        ping_calls.append((endpoint, config, timeout_ms))
+        if len(ping_calls) < 3:
+            return None
+        return PongResponse(
+            port=endpoint.port,
+            control_port=endpoint.control_port(config),
+            ready=True,
+            server="ReadinessTestServer",
+            server_role=ServerRole.GENERIC,
+        )
 
-    monkeypatch.setattr("zmqruntime.transport.ping_control_port", ping)
+    monkeypatch.setattr(TransportEndpoint, "ping", ping)
 
     assert wait_for_server_ready(
         5555,
@@ -244,9 +295,8 @@ def test_wait_for_server_ready_retries_until_server_reports_ready(
         poll_interval=0.001,
     )
     assert len(ping_calls) == 3
-    assert all(1 <= call[1]["timeout_ms"] <= 2500 for call in ping_calls)
-    assert ping_calls[0][1]["timeout_ms"] > 250
-    assert all(call[1]["require_ready"] is True for call in ping_calls)
+    assert all(1 <= call[2] <= 2500 for call in ping_calls)
+    assert ping_calls[0][2] > 250
 
 
 @pytest.mark.skipif(platform.system() == "Windows", reason="IPC is POSIX-only")

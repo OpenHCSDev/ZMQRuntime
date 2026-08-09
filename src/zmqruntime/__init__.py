@@ -7,7 +7,12 @@ from importlib.metadata import version as _distribution_version
 __version__ = _distribution_version("zmqruntime")
 
 from zmqruntime.ack_listener import GlobalAckListener
-from zmqruntime.client import EndpointConnectionPolicy, ZMQClient
+from zmqruntime.client import (
+    EndpointConnectionPolicy,
+    EndpointShutdownMode,
+    EndpointShutdownResult,
+    ZMQClient,
+)
 from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.execution import (
     ExecutionLifecycleEngineABC,
@@ -21,8 +26,10 @@ from zmqruntime.execution import (
 )
 from zmqruntime.messages import (
     CancelRequest,
+    ControlErrorResponse,
     ControlMessageType,
     ControlResponse,
+    EndpointControlCapability,
     ExecuteRequest,
     ExecuteResponse,
     ExecutionRecord,
@@ -79,6 +86,7 @@ from zmqruntime.startup import (
 from zmqruntime.transport import (
     TcpDataControlPortPair,
     TcpDataControlPortPairAuthority,
+    TransportEndpoint,
     get_control_port,
     get_control_url,
     get_default_transport_mode,
@@ -130,12 +138,16 @@ from zmqruntime.viewer_state import (
 __all__ = [
     "GlobalAckListener",
     "EndpointConnectionPolicy",
+    "EndpointShutdownMode",
+    "EndpointShutdownResult",
     "ZMQClient",
     "TransportMode",
     "ZMQConfig",
     "CancelRequest",
+    "ControlErrorResponse",
     "ControlResponse",
     "ControlMessageType",
+    "EndpointControlCapability",
     "ExecuteRequest",
     "ExecuteResponse",
     "ExecutionRecord",
@@ -178,6 +190,7 @@ __all__ = [
     "EndpointStartupStatusWriter",
     "TcpDataControlPortPair",
     "TcpDataControlPortPairAuthority",
+    "TransportEndpoint",
     "get_control_port",
     "get_control_url",
     "get_default_transport_mode",

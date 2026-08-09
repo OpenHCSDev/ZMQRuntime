@@ -1,4 +1,5 @@
 """Execution client with submit/poll/wait and progress streaming."""
+
 from __future__ import annotations
 
 import logging
@@ -34,9 +35,16 @@ ConfigT = TypeVar("ConfigT")
 class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
     """Execution client with progress streaming."""
 
-    def __init__(self, port: int, host: str = "localhost", persistent: bool = True,
-                 progress_callback=None, transport_mode=None, config=None,
-                 connection_status_callback=None):
+    def __init__(
+        self,
+        port: int,
+        host: str = "localhost",
+        persistent: bool = True,
+        progress_callback=None,
+        transport_mode=None,
+        config=None,
+        connection_status_callback=None,
+    ):
         super().__init__(
             port,
             host,
@@ -73,7 +81,7 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
         *,
         timeout_ms: int = 5000,
     ) -> WireResponse:
-        if not self._connected and not self.connect():
+        if not self.is_connected() and not self.connect():
             raise RuntimeError("Failed to connect to execution server")
         self._ensure_progress_subscription(timeout_ms=timeout_ms)
         request = self.serialize_task(task, config)
@@ -155,16 +163,14 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
             TypeError: if payload type is invalid.
             KeyError/ValueError: if pong payload is malformed.
         """
-        if not self._connected and not self.connect():
+        if not self.is_connected() and not self.connect():
             raise RuntimeError("Not connected")
         response = self._send_control_request(
             {MessageFields.TYPE: ControlMessageType.PING.value},
             timeout_ms=1000,
         )
         if not isinstance(response, dict):
-            raise TypeError(
-                f"Expected ping response dict, got {type(response).__name__}"
-            )
+            raise TypeError(f"Expected ping response dict, got {type(response).__name__}")
         return PongResponse.from_dict(response)
 
     def _send_control_request(self, request, timeout_ms=5000):
@@ -195,7 +201,7 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
                 ctx.term()
 
     def disconnect(self):
-        if self._connected and self._progress_registered:
+        if self.is_connected() and self._progress_registered:
             try:
                 self._send_control_request(
                     {
@@ -228,7 +234,7 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
 
     def enable_progress_stream(self) -> None:
         """Explicitly register and start progress streaming for this client."""
-        if not self._connected and not self.connect():
+        if not self.is_connected() and not self.connect():
             raise RuntimeError("Failed to connect to execution server")
         self._ensure_progress_subscription()
 

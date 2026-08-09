@@ -10,8 +10,8 @@ from typing import TypeAlias, Union
 
 import zmq
 
-from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.messages import MessageFields
+from zmqruntime.transport import TransportEndpoint
 
 ViewerWireScalar: TypeAlias = str | int | float | bool | None
 ViewerWireValue: TypeAlias = (
@@ -118,12 +118,10 @@ class ViewerWirePayload:
             return cls.mapping(value, context=context)
         if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
             return [
-                cls.value(item, context=f"{context}[{index}]")
-                for index, item in enumerate(value)
+                cls.value(item, context=f"{context}[{index}]") for index, item in enumerate(value)
             ]
         raise TypeError(
-            f"Viewer wire payload field {context!r} cannot serialize "
-            f"{type(value).__name__}."
+            f"Viewer wire payload field {context!r} cannot serialize {type(value).__name__}."
         )
 
     @staticmethod
@@ -167,9 +165,7 @@ class ViewerComponentModeGroups:
     ) -> tuple[str, ...]:
         mode_value = viewer_component_mode_value(mode)
         if mode_value not in self.components_by_mode:
-            raise ValueError(
-                f"Viewer component mode groups missing mode {mode_value!r}."
-            )
+            raise ValueError(f"Viewer component mode groups missing mode {mode_value!r}.")
         return self.components_by_mode[mode_value]
 
     def require_all_supported(self, context: str) -> None:
@@ -191,10 +187,13 @@ ViewerBatchItemWireMapping: TypeAlias = Mapping[
 ViewerBatchMessageImages: TypeAlias = Sequence[
     Union["ViewerBatchItemPayload", ViewerWireRawMapping]
 ]
-ViewerBatchMessageExtraInput: TypeAlias = Mapping[
-    str | ViewerBatchWireField | ViewerBatchContextWireField,
-    ViewerWireRawValue,
-] | None
+ViewerBatchMessageExtraInput: TypeAlias = (
+    Mapping[
+        str | ViewerBatchWireField | ViewerBatchContextWireField,
+        ViewerWireRawValue,
+    ]
+    | None
+)
 
 
 class ViewerBatchMessageExtraPayload(dict[str, ViewerWireValue]):
@@ -281,8 +280,7 @@ class ViewerSourceSpatialDomainPayload:
             )
         if len(value) != 2:
             raise ValueError(
-                f"{source_label} field {field_name!r} must have exactly two values, "
-                f"got {value!r}."
+                f"{source_label} field {field_name!r} must have exactly two values, got {value!r}."
             )
         return int(value[0]), int(value[1])
 
@@ -328,13 +326,8 @@ class ViewerBatchDisplayPayload:
         self,
         supported_modes: Sequence[ViewerComponentMode | str | Enum],
     ) -> ViewerComponentModeGroups:
-        supported_mode_values = tuple(
-            viewer_component_mode_value(mode)
-            for mode in supported_modes
-        )
-        components_by_mode: dict[str, list[str]] = {
-            mode: [] for mode in supported_mode_values
-        }
+        supported_mode_values = tuple(viewer_component_mode_value(mode) for mode in supported_modes)
+        components_by_mode: dict[str, list[str]] = {mode: [] for mode in supported_mode_values}
         unsupported_component_modes: dict[str, str] = {}
         for component in self.component_order:
             if component not in self.component_modes:
@@ -348,8 +341,7 @@ class ViewerBatchDisplayPayload:
                 unsupported_component_modes[component] = mode_value
         return ViewerComponentModeGroups(
             components_by_mode={
-                mode: tuple(components)
-                for mode, components in components_by_mode.items()
+                mode: tuple(components) for mode, components in components_by_mode.items()
             },
             unsupported_component_modes=unsupported_component_modes,
         )
@@ -500,9 +492,7 @@ class ViewerComponentMetadataPayload:
     ) -> ViewerWireMapping:
         field_name = field.value
         if field_name not in payload:
-            raise ValueError(
-                f"Viewer component metadata payload missing {field_name!r}."
-            )
+            raise ValueError(f"Viewer component metadata payload missing {field_name!r}.")
         value = payload[field_name]
         if not isinstance(value, Mapping):
             raise TypeError(
@@ -570,30 +560,7 @@ class ViewerBatchMessagePayload(ViewerBatchMessageWirePayload):
         )
 
 
-@dataclass(frozen=True)
-class ViewerTransportEndpoint:
-    """Nominal viewer transport endpoint supplied by an application layer."""
-
-    host: str
-    port: int
-    transport_mode: TransportMode
-
-    def resolved_transport_mode(self) -> TransportMode:
-        """Return this endpoint's zmqruntime transport mode."""
-        from zmqruntime.transport import resolve_transport_mode
-
-        return resolve_transport_mode(self.transport_mode)
-
-    def data_url(self, config: ZMQConfig | None) -> str:
-        """Return the viewer data socket URL for this endpoint."""
-        from zmqruntime.transport import get_zmq_transport_url
-
-        return get_zmq_transport_url(
-            self.port,
-            host=self.host,
-            mode=self.resolved_transport_mode(),
-            config=config,
-        )
+ViewerTransportEndpoint = TransportEndpoint
 
 
 @dataclass(frozen=True)
@@ -645,10 +612,7 @@ class ViewerAckResponsePayload:
     @classmethod
     def from_wire(cls, payload) -> "ViewerAckResponsePayload":
         if not isinstance(payload, Mapping):
-            raise TypeError(
-                "Viewer ack response must be a mapping, "
-                f"got {type(payload).__name__}."
-            )
+            raise TypeError(f"Viewer ack response must be a mapping, got {type(payload).__name__}.")
         return cls(payload)
 
     def to_wire_mapping(self) -> dict[str, ViewerWireValue]:
@@ -705,8 +669,7 @@ class ViewerAckPolicy:
             return
         if status != ViewerProtocolStatus.ERROR.value:
             raise ValueError(
-                f"{self.viewer_name} ack response has unknown status {status!r}: "
-                f"{ack_response}"
+                f"{self.viewer_name} ack response has unknown status {status!r}: {ack_response}"
             )
 
         if ViewerControlResponseField.MESSAGE.value in ack_response:

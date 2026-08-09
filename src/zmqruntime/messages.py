@@ -79,10 +79,7 @@ class WorkerState:
         known_fields = {"pid", "status", "cpu_percent", "memory_mb", "create_time"}
         unexpected_fields = set(data).difference(known_fields)
         if unexpected_fields:
-            raise ValueError(
-                "WorkerState received unknown fields: "
-                f"{sorted(unexpected_fields)!r}"
-            )
+            raise ValueError(f"WorkerState received unknown fields: {sorted(unexpected_fields)!r}")
 
         return cls(
             pid=data["pid"],
@@ -296,6 +293,7 @@ class MessageFields:
     CLIENT_ID = "client_id"
     PROGRESS_SUBSCRIBERS = "progress_subscribers"
     PROCESS_IDENTITY = "process_identity"
+    CONTROL_CAPABILITIES = "control_capabilities"
 
 
 @dataclass(frozen=True)
@@ -329,6 +327,25 @@ class ProcessIdentity:
             return False
         except psutil.AccessDenied:
             return None
+
+    def terminate(self, timeout: float = 5.0) -> bool:
+        """Terminate this exact local process without crossing PID reuse."""
+
+        try:
+            process = psutil.Process(self.pid)
+            if process.create_time() != self.create_time:
+                return True
+            process.terminate()
+            try:
+                process.wait(timeout=timeout)
+            except psutil.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=timeout)
+            return True
+        except psutil.NoSuchProcess:
+            return True
+        except (psutil.AccessDenied, psutil.TimeoutExpired):
+            return False
 
 
 @dataclass(frozen=True)
@@ -375,13 +392,47 @@ class ResponseType(Enum):
 
 
 class ExecutionStatus(Enum):
-    QUEUED = "queued"
-    RUNNING = "running"
-    COMPLETE = "complete"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-    ACCEPTED = "accepted"
+    """Execution lifecycle declaration with behavior owned by each phase."""
+
+    QUEUED = ("queued", False, False)
+    RUNNING = ("running", False, True)
+    COMPLETE = ("complete", True, False)
+    COMPLETED = ("completed", True, False)
+    FAILED = ("failed", True, False)
+    CANCELLED = ("cancelled", True, False)
+    ACCEPTED = ("accepted", False, False)
+
+    def __new__(
+        cls,
+        value: str,
+        is_terminal: bool,
+        reports_running_transition: bool,
+    ) -> "ExecutionStatus":
+        member = object.__new__(cls)
+        member._value_ = value
+        member._is_terminal = is_terminal
+        member._reports_running_transition = reports_running_transition
+        return member
+
+    @property
+    def is_terminal(self) -> bool:
+        """Whether observing this phase completes status polling."""
+
+        return self._is_terminal
+
+    def reports_running_transition_from(self, previous: "ExecutionStatus") -> bool:
+        """Whether entering this phase should emit the running transition."""
+
+        return self._reports_running_transition and previous is type(self).QUEUED
+
+    @classmethod
+    def from_wire(cls, value: object) -> Optional["ExecutionStatus"]:
+        """Resolve a known wire value while preserving forward compatibility."""
+
+        try:
+            return cls(value)
+        except (TypeError, ValueError):
+            return None
 
 
 class SocketType(Enum):
@@ -477,6 +528,28 @@ class ControlResponse(ABC):
     @abstractmethod
     def to_dict(self) -> Dict[str, Any]:
         """Project this response to its control-wire representation."""
+
+
+@dataclass(frozen=True)
+class ControlErrorResponse(ControlResponse):
+    """Canonical control error and its wire projection."""
+
+    message: str
+    response_type: ResponseType = ResponseType.ERROR
+
+    @classmethod
+    def from_exception(cls, error: Exception) -> "ControlErrorResponse":
+        """Create a control failure from the exception owned by dispatch."""
+
+        return cls(message=str(error))
+
+    def to_dict(self) -> Dict[str, Any]:
+        response_type = self.response_type.value
+        return {
+            MessageFields.STATUS: response_type,
+            MessageFields.TYPE: response_type,
+            MessageFields.MESSAGE: self.message,
+        }
 
 
 @dataclass(frozen=True)
@@ -799,6 +872,14 @@ class ServerRole(str, Enum):
     VIEWER = "viewer"
 
 
+class EndpointControlCapability(str, Enum):
+    """Control operations explicitly advertised by a live endpoint."""
+
+    PING = "ping"
+    SHUTDOWN = "shutdown"
+    FORCE_SHUTDOWN = "force_shutdown"
+
+
 @dataclass(frozen=True)
 class PongResponse(ControlResponse):
     """Complete typed server-heartbeat response."""
@@ -808,6 +889,9 @@ class PongResponse(ControlResponse):
     ready: bool
     server: str
     server_role: ServerRole
+    control_capabilities: frozenset[EndpointControlCapability] = frozenset(
+        {EndpointControlCapability.PING}
+    )
     server_type: Optional[str] = None
     log_file_path: Optional[str] = None
     active_executions: Optional[int] = None
@@ -833,6 +917,9 @@ class PongResponse(ControlResponse):
         if self.server_type is not None:
             result[MessageFields.SERVER_TYPE] = self.server_type
         result[MessageFields.SERVER_ROLE] = self.server_role.value
+        result[MessageFields.CONTROL_CAPABILITIES] = sorted(
+            capability.value for capability in self.control_capabilities
+        )
         if self.log_file_path is not None:
             result[MessageFields.LOG_FILE_PATH] = self.log_file_path
         if self.active_executions is not None:
@@ -867,8 +954,7 @@ class PongResponse(ControlResponse):
         """Parse from transport."""
         if data[MessageFields.TYPE] != ResponseType.PONG.value:
             raise ValueError(
-                "PongResponse requires "
-                f"{MessageFields.TYPE}={ResponseType.PONG.value!r}."
+                f"PongResponse requires {MessageFields.TYPE}={ResponseType.PONG.value!r}."
             )
 
         workers_data = data.get(MessageFields.WORKERS)
@@ -877,18 +963,14 @@ class PongResponse(ControlResponse):
             if not isinstance(workers_data, list) or not all(
                 isinstance(entry, dict) for entry in workers_data
             ):
-                raise TypeError(
-                    "PongResponse.workers must be a list of dict entries"
-                )
+                raise TypeError("PongResponse.workers must be a list of dict entries")
             workers = tuple(WorkerState.from_dict(w) for w in workers_data)
 
         running_executions_data = data.get(MessageFields.RUNNING_EXECUTIONS)
         running_executions = None
         if running_executions_data is not None:
             if not isinstance(running_executions_data, list):
-                raise TypeError(
-                    "PongResponse.running_executions must be a list of dict entries"
-                )
+                raise TypeError("PongResponse.running_executions must be a list of dict entries")
             if not all(isinstance(entry, dict) for entry in running_executions_data):
                 raise TypeError("PongResponse.running_executions must be a list of dict entries")
             running_executions = tuple(
@@ -899,9 +981,7 @@ class PongResponse(ControlResponse):
         queued_executions = None
         if queued_executions_data is not None:
             if not isinstance(queued_executions_data, list):
-                raise TypeError(
-                    "PongResponse.queued_executions must be a list of dict entries"
-                )
+                raise TypeError("PongResponse.queued_executions must be a list of dict entries")
             if not all(isinstance(entry, dict) for entry in queued_executions_data):
                 raise TypeError("PongResponse.queued_executions must be a list of dict entries")
             queued_executions = tuple(
@@ -914,6 +994,18 @@ class PongResponse(ControlResponse):
             if not isinstance(process_identity_data, dict):
                 raise TypeError("PongResponse.process_identity must be a dict")
             process_identity = ProcessIdentity.from_dict(process_identity_data)
+
+        control_capabilities_data = data.get(
+            MessageFields.CONTROL_CAPABILITIES,
+            [EndpointControlCapability.PING.value],
+        )
+        if not isinstance(control_capabilities_data, list) or not all(
+            isinstance(capability, str) for capability in control_capabilities_data
+        ):
+            raise TypeError("PongResponse.control_capabilities must be a list of strings")
+        control_capabilities = frozenset(
+            EndpointControlCapability(capability) for capability in control_capabilities_data
+        )
 
         memory_mb = data.get(MessageFields.MEMORY_MB)
         cpu_percent = data.get(MessageFields.CPU_PERCENT)
@@ -935,6 +1027,7 @@ class PongResponse(ControlResponse):
             server=data[MessageFields.SERVER],
             server_type=data.get(MessageFields.SERVER_TYPE),
             server_role=ServerRole(data[MessageFields.SERVER_ROLE]),
+            control_capabilities=control_capabilities,
             log_file_path=data.get(MessageFields.LOG_FILE_PATH),
             active_executions=data.get(MessageFields.ACTIVE_EXECUTIONS),
             running_executions=running_executions,

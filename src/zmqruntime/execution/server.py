@@ -10,14 +10,16 @@ import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from concurrent.futures.process import BrokenProcessPool
-from typing import Any, Callable
+from typing import Any
 
 from zmqruntime.config import ZMQConfig
 from zmqruntime.execution.lifecycle import InMemoryExecutionLifecycleEngine
 from zmqruntime.messages import (
     CancelRequest,
     ControlMessageType,
+    EndpointControlCapability,
     ExecuteRequest,
     ExecuteResponse,
     ExecutionRecord,
@@ -103,6 +105,13 @@ class ExecutionServer(ZMQServer, ABC):
             server=self.__class__.__name__,
             server_type=self.__class__.server_type(),
             server_role=self.__class__.server_role(),
+            control_capabilities=frozenset(
+                {
+                    EndpointControlCapability.PING,
+                    EndpointControlCapability.SHUTDOWN,
+                    EndpointControlCapability.FORCE_SHUTDOWN,
+                }
+            ),
             log_file_path=self.log_file_path,
             active_executions=snapshot.active_executions,
             running_executions=tuple(

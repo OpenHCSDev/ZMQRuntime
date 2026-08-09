@@ -4,36 +4,149 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Annotated, TypeVar
+from typing import Annotated
 
 from annotated_types import Ge, Gt, Le, MinLen, Predicate
 from python_introspect import validate_annotated_dataclass
 
-TransportModeT = TypeVar("TransportModeT", bound="TransportMode")
+from zmqruntime.transport_modes import (
+    TransportEndpointCleanup,
+    TransportLocalityProbe,
+    TransportOccupancyProbe,
+    TransportPreservationPolicy,
+    TransportProcessTerminator,
+    TransportSocketPathBuilder,
+    TransportStalenessProbe,
+    TransportStartupLockFactory,
+    TransportSupport,
+    TransportUrlBuilder,
+    _ipc_cleanup_endpoint,
+    _ipc_endpoint_in_use,
+    _ipc_endpoint_is_local,
+    _ipc_endpoint_is_stale,
+    _ipc_endpoint_url,
+    _ipc_is_supported,
+    _ipc_kill_processes_on_port,
+    _ipc_preserve_unresponsive_endpoint,
+    _ipc_socket_path,
+    _ipc_startup_lock,
+    _tcp_cleanup_endpoint,
+    _tcp_endpoint_in_use,
+    _tcp_endpoint_is_local,
+    _tcp_endpoint_is_stale,
+    _tcp_endpoint_url,
+    _tcp_is_supported,
+    _tcp_kill_processes_on_port,
+    _tcp_preserve_unresponsive_endpoint,
+    _tcp_socket_path,
+    _tcp_startup_lock,
+    _TransportConfigBase,
+)
 
 
 class TransportMode(Enum):
-    """Transport mode for ZMQ communication."""
+    """Canonical transport declarations with member-owned leaf behavior."""
 
-    TCP = "tcp"
-    IPC = "ipc"
+    is_supported: TransportSupport
+    endpoint_url: TransportUrlBuilder
+    endpoint_in_use: TransportOccupancyProbe
+    endpoint_is_local: TransportLocalityProbe
+    cleanup_endpoint: TransportEndpointCleanup
+    preserve_unresponsive_endpoint: TransportPreservationPolicy
+    kill_processes_on_port: TransportProcessTerminator
+    socket_path: TransportSocketPathBuilder
+    endpoint_is_stale: TransportStalenessProbe
+    startup_lock: TransportStartupLockFactory
+
+    def __new__(
+        cls,
+        value: str,
+        default_priority: int,
+        is_supported: TransportSupport,
+        endpoint_url: TransportUrlBuilder,
+        endpoint_in_use: TransportOccupancyProbe,
+        endpoint_is_local: TransportLocalityProbe,
+        cleanup_endpoint: TransportEndpointCleanup,
+        preserve_unresponsive_endpoint: TransportPreservationPolicy,
+        kill_processes_on_port: TransportProcessTerminator,
+        socket_path: TransportSocketPathBuilder,
+        endpoint_is_stale: TransportStalenessProbe,
+        startup_lock: TransportStartupLockFactory,
+    ) -> TransportMode:
+        member = object.__new__(cls)
+        member._value_ = value
+        member.default_priority = default_priority
+        member.is_supported = is_supported
+        member.endpoint_url = endpoint_url
+        member.endpoint_in_use = endpoint_in_use
+        member.endpoint_is_local = endpoint_is_local
+        member.cleanup_endpoint = cleanup_endpoint
+        member.preserve_unresponsive_endpoint = preserve_unresponsive_endpoint
+        member.kill_processes_on_port = kill_processes_on_port
+        member.socket_path = socket_path
+        member.endpoint_is_stale = endpoint_is_stale
+        member.startup_lock = startup_lock
+        return member
+
+    TCP = (
+        "tcp",
+        1,
+        _tcp_is_supported,
+        _tcp_endpoint_url,
+        _tcp_endpoint_in_use,
+        _tcp_endpoint_is_local,
+        _tcp_cleanup_endpoint,
+        _tcp_preserve_unresponsive_endpoint,
+        _tcp_kill_processes_on_port,
+        _tcp_socket_path,
+        _tcp_endpoint_is_stale,
+        _tcp_startup_lock,
+    )
+    IPC = (
+        "ipc",
+        0,
+        _ipc_is_supported,
+        _ipc_endpoint_url,
+        _ipc_endpoint_in_use,
+        _ipc_endpoint_is_local,
+        _ipc_cleanup_endpoint,
+        _ipc_preserve_unresponsive_endpoint,
+        _ipc_kill_processes_on_port,
+        _ipc_socket_path,
+        _ipc_endpoint_is_stale,
+        _ipc_startup_lock,
+    )
 
     @classmethod
-    def optional_from_text(
-        cls: type[TransportModeT],
-        value: str | None,
-    ) -> TransportModeT | None:
-        """Parse an optional value at a text serialization boundary."""
+    def default(cls) -> TransportMode:
+        """Select the highest-priority supported transport declaration."""
+
+        return min(
+            (mode for mode in cls if mode.is_supported()),
+            key=lambda mode: mode.default_priority,
+        )
+
+    @classmethod
+    def resolve(cls, value: TransportMode | None) -> TransportMode:
+        """Resolve an omitted declaration and reject alternate representations."""
 
         if value is None:
-            return None
-        return cls(value)
+            return cls.default()
+        if not isinstance(value, cls):
+            raise TypeError(
+                "Transport mode must be a TransportMode instance or None, "
+                f"not {type(value).__name__}."
+            )
+        return value
 
     @classmethod
-    def optional_to_text(
-        cls: type[TransportModeT],
-        value: TransportModeT | None,
-    ) -> str | None:
+    def optional_from_text(cls, value: str | None) -> TransportMode | None:
+        """Parse an optional value at a text serialization boundary."""
+
+        return None if value is None else cls(value)
+
+    @classmethod
+    def optional_to_text(cls, value: TransportMode | None) -> str | None:
         """Project an optional mode at a text serialization boundary."""
 
         if value is None:
@@ -51,7 +164,7 @@ TcpPort = Annotated[int, Ge(1), Le(65535)]
 
 
 @dataclass(frozen=True, slots=True)
-class ZMQConfig:
+class ZMQConfig(_TransportConfigBase):
     """Configuration for ZMQ transport."""
 
     control_port_offset: PositiveInteger = 1000
