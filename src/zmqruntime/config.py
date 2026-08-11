@@ -165,15 +165,40 @@ TcpPort = Annotated[int, Ge(1), Le(65535)]
 
 @dataclass(frozen=True, slots=True)
 class ZMQConfig(_TransportConfigBase):
-    """Configuration for ZMQ transport."""
+    """Shared ZMQ data/control endpoint topology and IPC naming policy."""
 
     control_port_offset: PositiveInteger = 1000
+    """Positive offset added to a data port to derive its paired control port.
+
+    The resulting control port must remain within the TCP port range. Port-pair
+    allocation and endpoint discovery both use this same relationship.
+    """
+
     default_port: TcpPort = 7777
+    """First data port used when a caller does not provide an explicit endpoint.
+
+    Discovery and allocation may inspect subsequent ports, but every paired
+    control port is still derived through ``control_port_offset``.
+    """
+
     ipc_socket_dir: NonBlankString = "ipc"
+    """Directory containing IPC socket files.
+
+    Relative values are resolved beneath the runtime socket root; absolute
+    values select an explicit directory. TCP transport ignores this field.
+    """
+
     ipc_socket_prefix: NonBlankString = "zmq"
+    """Filename prefix used to namespace generated IPC data and control sockets."""
+
     ipc_socket_extension: NonBlankString = ".sock"
+    """Filename suffix appended to generated IPC data and control socket paths."""
+
     shared_ack_port: TcpPort = 7555
+    """Data port reserved for the shared acknowledgement endpoint used by streamers."""
+
     app_name: NonBlankString = "zmqruntime"
+    """Application namespace included in generated transport identities and paths."""
 
     def __post_init__(self) -> None:
         """Reject invalid transport topology at its declaration boundary."""
