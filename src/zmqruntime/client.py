@@ -38,7 +38,7 @@ from zmqruntime.transport import (
     is_port_in_use,
     request_control_ping,
     resolve_transport_mode,
-    wait_for_endpoint_ready,
+    wait_for_server_ready,
 )
 
 
@@ -627,7 +627,29 @@ class ZMQClient(ABC):
         process: EndpointProcess,
         timeout: float = 10.0,
     ) -> PongResponse | None:
-        return wait_for_endpoint_ready(
+        """Return the handshake after the established readiness extension point.
+
+        ``_wait_for_server_ready`` remains the lifecycle hook so clients built
+        against earlier zmqruntime releases keep their startup observers.  New
+        clients that need the first typed PONG can override this adapter
+        directly.
+        """
+
+        if not self._wait_for_server_ready(process, timeout=timeout):
+            return None
+        return self._try_connect_to_existing(
+            self.port,
+            timeout_ms=self._existing_endpoint_probe_timeout_ms(timeout),
+        )
+
+    def _wait_for_server_ready(
+        self,
+        process: EndpointProcess,
+        timeout: float = 10.0,
+    ) -> bool:
+        """Wait for readiness through the stable client extension point."""
+
+        return wait_for_server_ready(
             self.port,
             self.transport_mode,
             host=self.host,
