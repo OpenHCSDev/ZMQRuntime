@@ -5,6 +5,7 @@ API Reference
    :maxdepth: 1
    :caption: Protocol APIs
 
+   endpoint_handshake
    viewer_protocol
 
 zmqruntime exposes a small, focused surface area for ZMQ-based execution

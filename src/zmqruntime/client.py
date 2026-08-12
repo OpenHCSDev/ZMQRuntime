@@ -38,7 +38,7 @@ from zmqruntime.transport import (
     is_port_in_use,
     request_control_ping,
     resolve_transport_mode,
-    wait_for_server_ready,
+    wait_for_endpoint_ready,
 )
 
 
@@ -88,6 +88,10 @@ class ClientEndpointConnection(ABC):
     @abstractmethod
     def known_process_is_alive(self, endpoint_is_local: bool) -> bool | None:
         """Return exact endpoint-process liveness when it can be proven."""
+
+    @abstractmethod
+    def handshake_response(self) -> PongResponse:
+        """Return the handshake that established this connection."""
 
 
 class EndpointProcess(ABC):
@@ -185,6 +189,7 @@ class OwnedEndpointConnection(ClientEndpointConnection):
     process: EndpointProcess
     target: TransportEndpoint
     config: ZMQConfig
+    endpoint: PongResponse
 
     def close_client(self, persistent: bool) -> None:
         if not persistent:
@@ -202,6 +207,9 @@ class OwnedEndpointConnection(ClientEndpointConnection):
 
     def known_process_is_alive(self, endpoint_is_local: bool) -> bool | None:
         return self.owned_process_is_alive()
+
+    def handshake_response(self) -> PongResponse:
+        return self.endpoint
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,6 +231,9 @@ class AttachedEndpointConnection(ClientEndpointConnection):
         if not endpoint_is_local or self.endpoint.process_identity is None:
             return None
         return self.endpoint.process_identity.is_alive()
+
+    def handshake_response(self) -> PongResponse:
+        return self.endpoint
 
 
 @dataclass(frozen=True, slots=True)
@@ -468,21 +479,25 @@ class ZMQClient(ABC):
                 EndpointStartupPhase.STARTING_PROCESS,
                 f"Starting server process for port {self.port}",
             )
-            owned_connection = OwnedEndpointConnection(
-                process=endpoint_process(self._spawn_server_process()),
-                target=self.endpoint,
-                config=self.config,
-            )
-            if not self._wait_for_server_ready(
-                owned_connection.process,
+            process = endpoint_process(self._spawn_server_process())
+            endpoint = self._wait_for_endpoint_ready(
+                process,
                 timeout=timeout,
-            ):
-                owned_connection.terminate_endpoint()
+            )
+            if endpoint is None:
+                process.stop()
+                self.endpoint.cleanup(self.config)
                 self._emit_connection_status(
                     EndpointStartupPhase.FAILED,
                     f"Server endpoint on port {self.port} did not become ready",
                 )
                 return False
+            owned_connection = OwnedEndpointConnection(
+                process=process,
+                target=self.endpoint,
+                config=self.config,
+                endpoint=endpoint,
+            )
             try:
                 self._setup_client_sockets()
             except Exception:
@@ -529,6 +544,13 @@ class ZMQClient(ABC):
 
     def is_connected(self):
         return self._connection is not None
+
+    @property
+    def connected_endpoint(self) -> PongResponse | None:
+        """Return the handshake owned by the established connection, if any."""
+
+        connection = self._connection
+        return None if connection is None else connection.handshake_response()
 
     def owned_server_process_is_alive(self) -> bool | None:
         """Return exact liveness when this client owns the server process."""
@@ -600,12 +622,12 @@ class ZMQClient(ABC):
     def _existing_endpoint_probe_timeout_ms(timeout: float) -> int:
         return max(500, min(int(timeout * 1000), 5000))
 
-    def _wait_for_server_ready(
+    def _wait_for_endpoint_ready(
         self,
         process: EndpointProcess,
         timeout: float = 10.0,
-    ) -> bool:
-        return wait_for_server_ready(
+    ) -> PongResponse | None:
+        return wait_for_endpoint_ready(
             self.port,
             self.transport_mode,
             host=self.host,

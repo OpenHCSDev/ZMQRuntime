@@ -29,6 +29,7 @@ from zmqruntime.messages import (
     ControlErrorResponse,
     ControlMessageType,
     ControlResponse,
+    EndpointApplication,
     EndpointControlCapability,
     ExecuteRequest,
     ExecuteResponse,
@@ -96,6 +97,7 @@ from zmqruntime.transport import (
     ping_control_port,
     remove_ipc_socket,
     resolve_transport_mode,
+    wait_for_endpoint_ready,
     wait_for_server_ready,
 )
 from zmqruntime.viewer_protocol import (
@@ -148,6 +150,7 @@ __all__ = [
     "ControlResponse",
     "ControlMessageType",
     "EndpointControlCapability",
+    "EndpointApplication",
     "ExecuteRequest",
     "ExecuteResponse",
     "ExecutionRecord",
@@ -201,6 +204,7 @@ __all__ = [
     "remove_ipc_socket",
     "resolve_transport_mode",
     "wait_for_server_ready",
+    "wait_for_endpoint_ready",
     "ViewerState",
     "ViewerStateManager",
     "ViewerInstance",

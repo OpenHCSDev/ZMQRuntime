@@ -18,6 +18,7 @@ from zmqruntime.messages import (
     ControlErrorResponse,
     ControlMessageType,
     ControlResponse,
+    EndpointApplication,
     MessageFields,
     PongResponse,
     ProcessIdentity,
@@ -64,6 +65,7 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
         data_socket_type=None,
         transport_mode: TransportMode | None = None,
         config: ZMQConfig | None = None,
+        application: EndpointApplication | None = None,
     ):
         import zmq
 
@@ -74,6 +76,7 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
         self.log_file_path = log_file_path
         self.data_socket_type = data_socket_type if data_socket_type is not None else zmq.PUB
         self.transport_mode = resolve_transport_mode(transport_mode)
+        self.application = application
         self.zmq_context = None
         self.data_socket = None
         self.control_socket = None
@@ -260,6 +263,7 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
             server=self.__class__.__name__,
             server_type=self.__class__.server_type(),
             server_role=self.__class__.server_role(),
+            application=self.application,
             log_file_path=self.log_file_path,
             process_identity=ProcessIdentity.current(),
         )

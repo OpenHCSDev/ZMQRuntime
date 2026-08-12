@@ -30,6 +30,7 @@ from zmqruntime.execution.status_poller import (
 from zmqruntime.execution.wait_policy import ExecutionWaiter, WaitPolicy
 from zmqruntime.messages import (
     ControlMessageType,
+    EndpointApplication,
     EndpointControlCapability,
     ExecuteRequest,
     ExecutionStatus,
@@ -75,6 +76,13 @@ class StubEndpointProcess(EndpointProcess):
 
 
 def owned_connection(client, process) -> OwnedEndpointConnection:
+    endpoint = PongResponse(
+        port=client.port,
+        control_port=client.control_port,
+        ready=True,
+        server=type(client).__name__,
+        server_role=ServerRole.EXECUTION,
+    )
     return OwnedEndpointConnection(
         process=endpoint_process(process),
         target=TransportEndpoint(
@@ -83,6 +91,7 @@ def owned_connection(client, process) -> OwnedEndpointConnection:
             transport_mode=client.transport_mode,
         ),
         config=client.config,
+        endpoint=endpoint,
     )
 
 
@@ -107,6 +116,17 @@ def test_execution_server_pong_projects_its_process_identity():
 
     assert pong.process_identity == ProcessIdentity.current()
     assert EndpointControlCapability.FORCE_SHUTDOWN in pong.control_capabilities
+
+
+def test_execution_server_pong_preserves_base_application_identity():
+    application = EndpointApplication(identifier="example", version="2.0")
+
+    pong = DummyExecutionServer(
+        port=5555,
+        application=application,
+    )._create_pong_response()
+
+    assert pong.application == application
 
 
 def test_shutdown_rejects_endpoint_without_advertised_capability(monkeypatch):
@@ -376,7 +396,15 @@ class EndpointPolicyExecutionClient(ExecutionClient):
         return True
 
     def _try_connect_to_existing(self, port: int, timeout_ms: int = 500):
-        return None
+        if not self.spawned:
+            return None
+        return PongResponse(
+            port=self.port,
+            control_port=self.control_port,
+            ready=True,
+            server=type(self).__name__,
+            server_role=ServerRole.EXECUTION,
+        )
 
     def _kill_processes_on_port(self, port: int):
         self.killed_ports.append(port)
@@ -385,12 +413,12 @@ class EndpointPolicyExecutionClient(ExecutionClient):
         self.spawned = True
         return StubEndpointProcess()
 
-    def _wait_for_server_ready(
+    def _wait_for_endpoint_ready(
         self,
         process: EndpointProcess,
         timeout: float = 10.0,
     ):
-        return True
+        return self._try_connect_to_existing(self.port)
 
     def _setup_client_sockets(self):
         self.setup_called = True
@@ -480,6 +508,7 @@ def test_attach_existing_connects_a_ready_endpoint_without_spawning(monkeypatch)
     assert connected is True
     assert client.is_connected()
     assert isinstance(client._connection, AttachedEndpointConnection)
+    assert client.connected_endpoint is endpoint
     assert client.killed_ports == []
     assert client.spawned is False
     assert client.setup_called is True
@@ -802,7 +831,7 @@ class ConcurrentStartupExecutionClient(ExecutionClient):
             self.state["spawn_count"] += 1
         return StubEndpointProcess()
 
-    def _wait_for_server_ready(
+    def _wait_for_endpoint_ready(
         self,
         process: EndpointProcess,
         timeout: float = 10.0,
@@ -814,7 +843,7 @@ class ConcurrentStartupExecutionClient(ExecutionClient):
             path.touch()
         self.state["ready"].set()
         time.sleep(0.1)
-        return True
+        return self._try_connect_to_existing(self.port)
 
     def _setup_client_sockets(self):
         return None

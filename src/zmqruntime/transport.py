@@ -113,13 +113,32 @@ class TransportEndpoint:
     ) -> bool:
         """Wait for this endpoint's declared addresses and heartbeat readiness."""
 
+        return self.wait_for_ready_response(
+            config,
+            timeout=timeout,
+            require_ready=require_ready,
+            poll_interval=poll_interval,
+            startup_observer=startup_observer,
+        ) is not None
+
+    def wait_for_ready_response(
+        self,
+        config: ZMQConfig,
+        *,
+        timeout: float,
+        require_ready: bool,
+        poll_interval: float,
+        startup_observer: EndpointStartupObserver,
+    ) -> PongResponse | None:
+        """Return the first heartbeat that proves this endpoint is ready."""
+
         deadline = time.monotonic() + timeout
         control_port = self.control_port(config)
         while True:
             if startup_observer.poll_activity():
                 deadline = time.monotonic() + timeout
             if startup_observer.should_abort() or time.monotonic() >= deadline:
-                return False
+                return None
             addresses_ready = self.transport_mode.endpoint_in_use(
                 self.port,
                 self.host,
@@ -132,13 +151,13 @@ class TransportEndpoint:
             if addresses_ready:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    return False
+                    return None
                 response = self.ping(
                     config,
                     timeout_ms=max(1, int(remaining * 1000)),
                 )
                 if response is not None and (response.ready or not require_ready):
-                    return True
+                    return response
             time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
 
 
@@ -359,13 +378,37 @@ def wait_for_server_ready(
     startup_observer: EndpointStartupObserver = IDLE_ENDPOINT_STARTUP_OBSERVER,
 ) -> bool:
     """Wait for readiness, optionally treating child updates as startup activity."""
+    return wait_for_endpoint_ready(
+        port,
+        transport_mode,
+        host=host,
+        config=config,
+        timeout=timeout,
+        require_ready=require_ready,
+        poll_interval=poll_interval,
+        startup_observer=startup_observer,
+    ) is not None
+
+
+def wait_for_endpoint_ready(
+    port: int,
+    transport_mode: TransportMode | None,
+    host: str = "localhost",
+    config: ZMQConfig | None = None,
+    timeout: float = 10.0,
+    require_ready: bool = True,
+    poll_interval: float = 0.2,
+    startup_observer: EndpointStartupObserver = IDLE_ENDPOINT_STARTUP_OBSERVER,
+) -> PongResponse | None:
+    """Return the first typed heartbeat that proves endpoint readiness."""
+
     config = config or _default_config
     endpoint = TransportEndpoint(
         host=host,
         port=port,
         transport_mode=resolve_transport_mode(transport_mode),
     )
-    return endpoint.wait_until_ready(
+    return endpoint.wait_for_ready_response(
         config,
         timeout=timeout,
         require_ready=require_ready,

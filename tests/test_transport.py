@@ -28,6 +28,7 @@ from zmqruntime.transport import (
     is_port_in_use,
     remove_ipc_socket,
     resolve_transport_mode,
+    wait_for_endpoint_ready,
     wait_for_server_ready,
 )
 
@@ -297,6 +298,33 @@ def test_wait_for_server_ready_retries_until_server_reports_ready(
     assert len(ping_calls) == 3
     assert all(1 <= call[2] <= 2500 for call in ping_calls)
     assert ping_calls[0][2] > 250
+
+
+def test_wait_for_endpoint_ready_returns_the_authoritative_handshake(monkeypatch):
+    endpoint_response = PongResponse(
+        port=5555,
+        control_port=6555,
+        ready=True,
+        server="ReadinessTestServer",
+        server_role=ServerRole.GENERIC,
+    )
+    monkeypatch.setattr(
+        TransportMode.IPC,
+        "endpoint_in_use",
+        lambda _port, _host, _config: True,
+    )
+    monkeypatch.setattr(
+        TransportEndpoint,
+        "ping",
+        lambda _endpoint, _config, *, timeout_ms: endpoint_response,
+    )
+
+    assert wait_for_endpoint_ready(
+        5555,
+        TransportMode.IPC,
+        timeout=1.0,
+        poll_interval=0.001,
+    ) is endpoint_response
 
 
 @pytest.mark.skipif(platform.system() == "Windows", reason="IPC is POSIX-only")

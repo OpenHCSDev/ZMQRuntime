@@ -2,6 +2,7 @@ import pytest
 
 from zmqruntime.messages import (
     CancelRequest,
+    EndpointApplication,
     ExecuteRequest,
     MessageFields,
     PongResponse,
@@ -47,6 +48,7 @@ def test_pong_response_dict():
         progress_subscribers=2,
         process_identity=process_identity,
         process_usage=ProcessResourceUsage(memory_mb=12.5, cpu_percent=3.0),
+        application=EndpointApplication(identifier="test-app", version="1.2.3"),
     )
     data = pong.to_dict()
     assert data[MessageFields.TYPE] == ResponseType.PONG.value
@@ -61,6 +63,10 @@ def test_pong_response_dict():
         cpu_percent=3.0,
     )
     assert parsed.process_identity == process_identity
+    assert parsed.application == EndpointApplication(
+        identifier="test-app",
+        version="1.2.3",
+    )
     assert process_identity.is_alive() is True
 
 

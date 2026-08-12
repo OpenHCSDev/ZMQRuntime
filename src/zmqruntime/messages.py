@@ -8,6 +8,7 @@ at the application layer, not in this runtime library.
 import logging
 import signal
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Optional, Tuple
@@ -294,6 +295,9 @@ class MessageFields:
     PROGRESS_SUBSCRIBERS = "progress_subscribers"
     PROCESS_IDENTITY = "process_identity"
     CONTROL_CAPABILITIES = "control_capabilities"
+    APPLICATION = "application"
+    APPLICATION_ID = "application_id"
+    APPLICATION_VERSION = "application_version"
 
 
 @dataclass(frozen=True)
@@ -881,6 +885,34 @@ class EndpointControlCapability(str, Enum):
 
 
 @dataclass(frozen=True)
+class EndpointApplication:
+    """Application identity declared by an endpoint owner."""
+
+    identifier: str
+    version: str
+
+    def __post_init__(self) -> None:
+        if not self.identifier:
+            raise ValueError("Endpoint application identifier cannot be empty")
+        if not self.version:
+            raise ValueError("Endpoint application version cannot be empty")
+
+    def to_dict(self) -> Dict[str, str]:
+        return {
+            MessageFields.APPLICATION_ID: self.identifier,
+            MessageFields.APPLICATION_VERSION: self.version,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "EndpointApplication":
+        identifier = data[MessageFields.APPLICATION_ID]
+        version = data[MessageFields.APPLICATION_VERSION]
+        if not isinstance(identifier, str) or not isinstance(version, str):
+            raise TypeError("Endpoint application identity fields must be strings")
+        return cls(identifier=identifier, version=version)
+
+
+@dataclass(frozen=True)
 class PongResponse(ControlResponse):
     """Complete typed server-heartbeat response."""
 
@@ -904,6 +936,7 @@ class PongResponse(ControlResponse):
     compile_status: Optional[str] = None
     compile_message: Optional[str] = None
     process_usage: Optional[ProcessResourceUsage] = None
+    application: Optional[EndpointApplication] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for transport."""
@@ -920,6 +953,8 @@ class PongResponse(ControlResponse):
         result[MessageFields.CONTROL_CAPABILITIES] = sorted(
             capability.value for capability in self.control_capabilities
         )
+        if self.application is not None:
+            result[MessageFields.APPLICATION] = self.application.to_dict()
         if self.log_file_path is not None:
             result[MessageFields.LOG_FILE_PATH] = self.log_file_path
         if self.active_executions is not None:
@@ -1007,6 +1042,13 @@ class PongResponse(ControlResponse):
             EndpointControlCapability(capability) for capability in control_capabilities_data
         )
 
+        application_data = data.get(MessageFields.APPLICATION)
+        application = None
+        if application_data is not None:
+            if not isinstance(application_data, dict):
+                raise TypeError("PongResponse.application must be a dict")
+            application = EndpointApplication.from_dict(application_data)
+
         memory_mb = data.get(MessageFields.MEMORY_MB)
         cpu_percent = data.get(MessageFields.CPU_PERCENT)
         process_usage = None
@@ -1028,6 +1070,7 @@ class PongResponse(ControlResponse):
             server_type=data.get(MessageFields.SERVER_TYPE),
             server_role=ServerRole(data[MessageFields.SERVER_ROLE]),
             control_capabilities=control_capabilities,
+            application=application,
             log_file_path=data.get(MessageFields.LOG_FILE_PATH),
             active_executions=data.get(MessageFields.ACTIVE_EXECUTIONS),
             running_executions=running_executions,

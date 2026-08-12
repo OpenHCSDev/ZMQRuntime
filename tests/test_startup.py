@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import partialmethod
 
 from zmqruntime.client import EndpointProcess, ZMQClient
-from zmqruntime.messages import ProcessExit
+from zmqruntime.messages import PongResponse, ProcessExit, ServerRole
 from zmqruntime.startup import (
     EndpointStartupObserver,
     EndpointStartupPhase,
@@ -54,8 +54,18 @@ class _StartupClient(ZMQClient):
             raise self._spawn_error
         return _EndpointProcess()
 
-    def _wait_for_server_ready(self, process, timeout: float = 10.0) -> bool:
-        return True
+    def _wait_for_endpoint_ready(
+        self,
+        process,
+        timeout: float = 10.0,
+    ) -> PongResponse:
+        return PongResponse(
+            port=self.port,
+            control_port=self.control_port,
+            ready=True,
+            server=type(self).__name__,
+            server_role=ServerRole.GENERIC,
+        )
 
     def _setup_client_sockets(self) -> None:
         return None

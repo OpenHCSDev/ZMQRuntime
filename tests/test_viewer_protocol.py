@@ -46,6 +46,7 @@ def test_streaming_server_inheritance_owns_viewer_process_usage(monkeypatch):
     server.control_port = 6555
     server._ready = True
     server.log_file_path = None
+    server.application = None
 
     pong = server._create_pong_response()
 

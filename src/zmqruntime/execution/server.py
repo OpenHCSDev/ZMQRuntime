@@ -12,6 +12,7 @@ import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from concurrent.futures.process import BrokenProcessPool
+from dataclasses import replace
 from typing import Any
 
 from zmqruntime.config import ZMQConfig
@@ -19,6 +20,7 @@ from zmqruntime.execution.lifecycle import InMemoryExecutionLifecycleEngine
 from zmqruntime.messages import (
     CancelRequest,
     ControlMessageType,
+    EndpointApplication,
     EndpointControlCapability,
     ExecuteRequest,
     ExecuteResponse,
@@ -26,7 +28,6 @@ from zmqruntime.messages import (
     ExecutionStatus,
     MessageFields,
     PongResponse,
-    ProcessIdentity,
     ProgressRegistrationRequest,
     ProgressUnregistrationRequest,
     QueuedExecutionInfo,
@@ -63,11 +64,19 @@ class ExecutionServer(ZMQServer, ABC):
         log_file_path: str | None = None,
         transport_mode=None,
         config: ZMQConfig | None = None,
+        application: EndpointApplication | None = None,
     ):
         config = config or ZMQConfig()
         if port is None:
             port = config.default_port
-        super().__init__(port, host, log_file_path, transport_mode=transport_mode, config=config)
+        super().__init__(
+            port,
+            host,
+            log_file_path,
+            transport_mode=transport_mode,
+            config=config,
+            application=application,
+        )
         self._lifecycle = InMemoryExecutionLifecycleEngine()
         self.active_executions: dict[str, ExecutionRecord] = self._lifecycle.records()
         self.start_time = None
@@ -98,13 +107,8 @@ class ExecutionServer(ZMQServer, ABC):
         )
         running = snapshot.running_executions or tuple()
         queued = snapshot.queued_executions or tuple()
-        return PongResponse(
-            port=self.port,
-            control_port=self.control_port,
-            ready=self._ready,
-            server=self.__class__.__name__,
-            server_type=self.__class__.server_type(),
-            server_role=self.__class__.server_role(),
+        return replace(
+            super()._create_pong_response(),
             control_capabilities=frozenset(
                 {
                     EndpointControlCapability.PING,
@@ -112,7 +116,6 @@ class ExecutionServer(ZMQServer, ABC):
                     EndpointControlCapability.FORCE_SHUTDOWN,
                 }
             ),
-            log_file_path=self.log_file_path,
             active_executions=snapshot.active_executions,
             running_executions=tuple(
                 RunningExecutionInfo(
@@ -135,7 +138,6 @@ class ExecutionServer(ZMQServer, ABC):
             workers=self._get_worker_info(),
             uptime=time.time() - self.start_time if self.start_time else 0,
             progress_subscribers=len(self._progress_subscribers),
-            process_identity=ProcessIdentity.current(),
         )
 
     def process_messages(self):
