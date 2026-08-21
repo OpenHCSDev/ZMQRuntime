@@ -25,6 +25,7 @@ from zmqruntime.messages import (
     PongResponse,
     ResponseType,
 )
+from zmqruntime.timeouts import OperationDeadline
 from zmqruntime.transport import get_zmq_transport_url
 
 logger = logging.getLogger(__name__)
@@ -174,10 +175,17 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
         return PongResponse.from_dict(response)
 
     def _send_control_request(self, request, timeout_ms=5000):
+        request_type = request.get(MessageFields.TYPE, "control")
+        deadline = OperationDeadline.after_milliseconds(
+            timeout_ms,
+            operation=f"{request_type} control request",
+        )
         owns_context = self.zmq_context is None
         ctx = zmq.Context() if owns_context else self.zmq_context
         sock = ctx.socket(zmq.REQ)
         sock.setsockopt(zmq.LINGER, 0)
+        sock.setsockopt(zmq.IMMEDIATE, 1)
+        sock.setsockopt(zmq.SNDTIMEO, timeout_ms)
         sock.setsockopt(zmq.RCVTIMEO, timeout_ms)
         control_url = get_zmq_transport_url(
             self.control_port,
@@ -186,16 +194,32 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
             config=self.config,
         )
         sock.connect(control_url)
+        poller = zmq.Poller()
         try:
-            sock.send(pickle.dumps(request))
-            response = sock.recv()
-            return pickle.loads(response)
-        except zmq.Again:
+            poller.register(sock, zmq.POLLOUT)
+            writable = dict(poller.poll(deadline.remaining_milliseconds()))
+            if not writable.get(sock):
+                raise TimeoutError(
+                    f"Server was not writable for {request_type} request within {timeout_ms}ms"
+                )
+            sock.send(pickle.dumps(request), flags=zmq.NOBLOCK)
+            poller.unregister(sock)
+            poller.register(sock, zmq.POLLIN)
+            readable = dict(poller.poll(deadline.remaining_milliseconds()))
+            if not readable.get(sock):
+                raise TimeoutError(
+                    f"Server did not respond to {request_type} request within {timeout_ms}ms"
+                )
+            return pickle.loads(sock.recv(flags=zmq.NOBLOCK))
+        except zmq.Again as exc:
             raise TimeoutError(
-                f"Server did not respond to {request[MessageFields.TYPE]} request "
-                f"within {timeout_ms}ms"
-            )
+                f"Server did not complete {request_type} request within {timeout_ms}ms"
+            ) from exc
         finally:
+            try:
+                poller.unregister(sock)
+            except (KeyError, zmq.ZMQError):
+                pass
             sock.close(linger=0)
             if owns_context:
                 ctx.term()

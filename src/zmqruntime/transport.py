@@ -18,6 +18,7 @@ from zmqruntime.startup import (
     IDLE_ENDPOINT_STARTUP_OBSERVER,
     EndpointStartupObserver,
 )
+from zmqruntime.timeouts import OperationDeadline
 
 _default_config = ZMQConfig()
 
@@ -113,13 +114,16 @@ class TransportEndpoint:
     ) -> bool:
         """Wait for this endpoint's declared addresses and heartbeat readiness."""
 
-        return self.wait_for_ready_response(
-            config,
-            timeout=timeout,
-            require_ready=require_ready,
-            poll_interval=poll_interval,
-            startup_observer=startup_observer,
-        ) is not None
+        return (
+            self.wait_for_ready_response(
+                config,
+                timeout=timeout,
+                require_ready=require_ready,
+                poll_interval=poll_interval,
+                startup_observer=startup_observer,
+            )
+            is not None
+        )
 
     def wait_for_ready_response(
         self,
@@ -129,15 +133,21 @@ class TransportEndpoint:
         require_ready: bool,
         poll_interval: float,
         startup_observer: EndpointStartupObserver,
+        operation_deadline: OperationDeadline | None = None,
     ) -> PongResponse | None:
         """Return the first heartbeat that proves this endpoint is ready."""
 
-        deadline = time.monotonic() + timeout
+        inactivity_deadline = time.monotonic() + timeout
         control_port = self.control_port(config)
         while True:
             if startup_observer.poll_activity():
-                deadline = time.monotonic() + timeout
-            if startup_observer.should_abort() or time.monotonic() >= deadline:
+                inactivity_deadline = time.monotonic() + timeout
+            now = time.monotonic()
+            if (
+                startup_observer.should_abort()
+                or now >= inactivity_deadline
+                or (operation_deadline is not None and operation_deadline.expired())
+            ):
                 return None
             addresses_ready = self.transport_mode.endpoint_in_use(
                 self.port,
@@ -149,7 +159,12 @@ class TransportEndpoint:
                 config,
             )
             if addresses_ready:
-                remaining = deadline - time.monotonic()
+                remaining = inactivity_deadline - time.monotonic()
+                if operation_deadline is not None:
+                    remaining = min(
+                        remaining,
+                        operation_deadline.remaining_seconds_or_zero(),
+                    )
                 if remaining <= 0:
                     return None
                 response = self.ping(
@@ -158,7 +173,10 @@ class TransportEndpoint:
                 )
                 if response is not None and (response.ready or not require_ready):
                     return response
-            time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
+            sleep_deadline = inactivity_deadline
+            if operation_deadline is not None:
+                sleep_deadline = min(sleep_deadline, operation_deadline.expires_at)
+            time.sleep(min(poll_interval, max(0.0, sleep_deadline - time.monotonic())))
 
 
 class TcpDataControlPortPairAuthority:
@@ -254,12 +272,14 @@ def endpoint_startup_lock(
     port: int,
     transport_mode: TransportMode | None,
     config: ZMQConfig | None = None,
+    *,
+    operation_deadline: OperationDeadline | None = None,
 ):
     """Serialize discovery and startup for one IPC endpoint across clients."""
 
     config = config or _default_config
     mode = resolve_transport_mode(transport_mode)
-    with mode.startup_lock(port, config):
+    with mode.startup_lock(port, config, operation_deadline):
         yield
 
 
@@ -376,18 +396,23 @@ def wait_for_server_ready(
     require_ready: bool = True,
     poll_interval: float = 0.2,
     startup_observer: EndpointStartupObserver = IDLE_ENDPOINT_STARTUP_OBSERVER,
+    operation_deadline: OperationDeadline | None = None,
 ) -> bool:
     """Wait for readiness, optionally treating child updates as startup activity."""
-    return wait_for_endpoint_ready(
-        port,
-        transport_mode,
-        host=host,
-        config=config,
-        timeout=timeout,
-        require_ready=require_ready,
-        poll_interval=poll_interval,
-        startup_observer=startup_observer,
-    ) is not None
+    return (
+        wait_for_endpoint_ready(
+            port,
+            transport_mode,
+            host=host,
+            config=config,
+            timeout=timeout,
+            require_ready=require_ready,
+            poll_interval=poll_interval,
+            startup_observer=startup_observer,
+            operation_deadline=operation_deadline,
+        )
+        is not None
+    )
 
 
 def wait_for_endpoint_ready(
@@ -399,6 +424,7 @@ def wait_for_endpoint_ready(
     require_ready: bool = True,
     poll_interval: float = 0.2,
     startup_observer: EndpointStartupObserver = IDLE_ENDPOINT_STARTUP_OBSERVER,
+    operation_deadline: OperationDeadline | None = None,
 ) -> PongResponse | None:
     """Return the first typed heartbeat that proves endpoint readiness."""
 
@@ -414,4 +440,5 @@ def wait_for_endpoint_ready(
         require_ready=require_ready,
         poll_interval=poll_interval,
         startup_observer=startup_observer,
+        operation_deadline=operation_deadline,
     )

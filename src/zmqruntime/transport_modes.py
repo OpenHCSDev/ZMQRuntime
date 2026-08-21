@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import platform
 import socket
+import time
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from ipaddress import ip_address
 from pathlib import Path
+
+from .timeouts import OperationDeadline
 
 
 class _TransportConfigBase:
@@ -29,7 +32,7 @@ TransportProcessTerminator = Callable[[int, _TransportConfigBase], int]
 TransportSocketPathBuilder = Callable[[int, _TransportConfigBase], Path | None]
 TransportStalenessProbe = Callable[[int, _TransportConfigBase], bool]
 TransportStartupLockFactory = Callable[
-    [int, _TransportConfigBase],
+    [int, _TransportConfigBase, OperationDeadline | None],
     AbstractContextManager[None],
 ]
 
@@ -117,8 +120,12 @@ def _tcp_endpoint_is_stale(port: int, config: _TransportConfigBase) -> bool:
 
 
 @contextmanager
-def _tcp_startup_lock(port: int, config: _TransportConfigBase) -> Iterator[None]:
-    del port, config
+def _tcp_startup_lock(
+    port: int,
+    config: _TransportConfigBase,
+    operation_deadline: OperationDeadline | None = None,
+) -> Iterator[None]:
+    del port, config, operation_deadline
     yield
 
 
@@ -212,7 +219,11 @@ def _ipc_kill_processes_on_port(port: int, config: _TransportConfigBase) -> int:
 
 
 @contextmanager
-def _ipc_startup_lock(port: int, config: _TransportConfigBase) -> Iterator[None]:
+def _ipc_startup_lock(
+    port: int,
+    config: _TransportConfigBase,
+    operation_deadline: OperationDeadline | None = None,
+) -> Iterator[None]:
     import fcntl
 
     socket_path = _ipc_socket_path(port, config)
@@ -221,7 +232,20 @@ def _ipc_startup_lock(port: int, config: _TransportConfigBase) -> Iterator[None]
     lock_path = socket_path.with_name(f"{socket_path.name}.startup.lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+b") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        if operation_deadline is None:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        else:
+            while True:
+                try:
+                    fcntl.flock(
+                        lock_file.fileno(),
+                        fcntl.LOCK_EX | fcntl.LOCK_NB,
+                    )
+                    break
+                except BlockingIOError:
+                    time.sleep(
+                        min(0.05, operation_deadline.remaining_seconds())
+                    )
         try:
             yield
         finally:

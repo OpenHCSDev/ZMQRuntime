@@ -88,6 +88,22 @@ Viewer readiness adds a stricter application-level handshake on top of this
 transport lifecycle. See :doc:`viewer_streaming_architecture`; it does not
 replace startup serialization or owned-process cleanup.
 
+Timeout ownership
+-----------------
+
+``OperationDeadline`` represents one monotonic budget across a multi-phase
+operation. It is distinct from the endpoint startup inactivity timeout:
+reported startup activity may refresh the inactivity deadline, but cannot
+extend an operation deadline supplied by the caller. Readiness failure still
+stops and cleans up a child process owned by the client before returning.
+For IPC endpoints, the same deadline also bounds acquisition of the
+per-endpoint startup lock.
+
+Control requests apply one deadline across socket writability, request send,
+and response receipt. Applications can reuse the remaining operation budget
+for connection, progress registration, serialisation, and submission instead
+of layering an uncancellable thread timeout around those operations.
+
 ExecutionServer Responsibilities
 --------------------------------
 

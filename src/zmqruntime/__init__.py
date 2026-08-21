@@ -84,6 +84,7 @@ from zmqruntime.startup import (
     EndpointStartupStatusReader,
     EndpointStartupStatusWriter,
 )
+from zmqruntime.timeouts import OperationDeadline, OperationTimeoutError
 from zmqruntime.transport import (
     TcpDataControlPortPair,
     TcpDataControlPortPairAuthority,
@@ -191,6 +192,8 @@ __all__ = [
     "EndpointStartupStatusMonitor",
     "EndpointStartupStatusReader",
     "EndpointStartupStatusWriter",
+    "OperationDeadline",
+    "OperationTimeoutError",
     "TcpDataControlPortPair",
     "TcpDataControlPortPairAuthority",
     "TransportEndpoint",

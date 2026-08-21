@@ -31,6 +31,7 @@ from zmqruntime.startup import (
     EndpointStartupStatus,
     EndpointStartupStatusCallback,
 )
+from zmqruntime.timeouts import OperationDeadline
 from zmqruntime.transport import (
     TransportEndpoint,
     endpoint_startup_lock,
@@ -397,14 +398,22 @@ class ZMQClient(ABC):
         if self._connection_status_callback is not None:
             self._connection_status_callback(status)
 
-    def connect(self, timeout: float = 10.0):
+    def connect(
+        self,
+        timeout: float = 10.0,
+        *,
+        operation_deadline: OperationDeadline | None = None,
+    ):
         self._emit_connection_status(
             EndpointStartupPhase.CHECKING_ENDPOINT,
             f"Checking server endpoint on port {self.port}",
         )
         try:
             with self._lock:
-                return self._connect_locked(timeout)
+                return self._connect_locked(
+                    timeout,
+                    operation_deadline=operation_deadline,
+                )
         except BaseException as error:
             self._emit_connection_status(
                 EndpointStartupPhase.FAILED,
@@ -449,7 +458,12 @@ class ZMQClient(ABC):
             )
             raise
 
-    def _connect_locked(self, timeout: float) -> bool:
+    def _connect_locked(
+        self,
+        timeout: float,
+        *,
+        operation_deadline: OperationDeadline | None = None,
+    ) -> bool:
         """Connect while the caller owns the client lifecycle lock."""
 
         if self.is_connected():
@@ -459,9 +473,15 @@ class ZMQClient(ABC):
             self.port,
             self.transport_mode,
             self.config,
+            operation_deadline=operation_deadline,
         ):
             if self._is_port_in_use(self.port):
-                if self._attach_existing_endpoint(timeout):
+                attach_timeout = (
+                    timeout
+                    if operation_deadline is None
+                    else operation_deadline.cap_seconds(timeout)
+                )
+                if self._attach_existing_endpoint(attach_timeout):
                     return True
                 if self.transport_mode.preserve_unresponsive_endpoint(
                     self.port,
@@ -474,16 +494,31 @@ class ZMQClient(ABC):
                     return False
                 self._kill_processes_on_port(self.port)
                 self._kill_processes_on_port(self.control_port)
-                time.sleep(0.5)
+                if operation_deadline is None:
+                    time.sleep(0.5)
+                else:
+                    time.sleep(min(0.5, operation_deadline.remaining_seconds()))
             self._emit_connection_status(
                 EndpointStartupPhase.STARTING_PROCESS,
                 f"Starting server process for port {self.port}",
             )
             process = endpoint_process(self._spawn_server_process())
-            endpoint = self._wait_for_endpoint_ready(
-                process,
-                timeout=timeout,
-            )
+            try:
+                if operation_deadline is None:
+                    endpoint = self._wait_for_endpoint_ready(
+                        process,
+                        timeout=timeout,
+                    )
+                else:
+                    endpoint = self._wait_for_endpoint_ready_before_deadline(
+                        process,
+                        timeout=timeout,
+                        operation_deadline=operation_deadline,
+                    )
+            except BaseException:
+                process.stop()
+                self.endpoint.cleanup(self.config)
+                raise
             if endpoint is None:
                 process.stop()
                 self.endpoint.cleanup(self.config)
@@ -620,7 +655,21 @@ class ZMQClient(ABC):
 
     @staticmethod
     def _existing_endpoint_probe_timeout_ms(timeout: float) -> int:
-        return max(500, min(int(timeout * 1000), 5000))
+        return max(1, min(int(timeout * 1000), 5000))
+
+    def _wait_for_endpoint_ready_before_deadline(
+        self,
+        process: EndpointProcess,
+        *,
+        timeout: float,
+        operation_deadline: OperationDeadline,
+    ) -> PongResponse | None:
+        """Preserve the readiness hook while applying a total caller deadline."""
+
+        return self._wait_for_endpoint_ready(
+            process,
+            timeout=operation_deadline.cap_seconds(timeout),
+        )
 
     def _wait_for_endpoint_ready(
         self,

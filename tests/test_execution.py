@@ -572,6 +572,35 @@ def test_tcp_connect_keeps_existing_spawn_cleanup_policy():
     assert client.setup_called is True
 
 
+def test_connect_cleans_owned_process_when_readiness_hook_raises():
+    class FailingReadinessClient(EndpointPolicyExecutionClient):
+        def __init__(self) -> None:
+            super().__init__(transport_mode=TransportMode.TCP)
+            self.spawned_process: StubEndpointProcess | None = None
+
+        def _spawn_server_process(self):
+            self.spawned = True
+            self.spawned_process = StubEndpointProcess()
+            return self.spawned_process
+
+        def _wait_for_endpoint_ready(
+            self,
+            process: EndpointProcess,
+            timeout: float = 10.0,
+        ):
+            del process, timeout
+            raise RuntimeError("readiness hook failed")
+
+    client = FailingReadinessClient()
+
+    with pytest.raises(RuntimeError, match="readiness hook failed"):
+        client.connect(timeout=1)
+
+    assert client.spawned_process is not None
+    assert client.spawned_process.stop_count == 1
+    assert client.is_connected() is False
+
+
 def test_attach_existing_never_replaces_an_unresponsive_endpoint():
     client = EndpointPolicyExecutionClient(
         transport_mode=TransportMode.TCP,

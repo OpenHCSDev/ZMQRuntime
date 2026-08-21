@@ -18,9 +18,11 @@ from zmqruntime.messages import (
     SocketType,
 )
 from zmqruntime.server import ZMQServer
+from zmqruntime.timeouts import OperationDeadline, OperationTimeoutError
 from zmqruntime.transport import (
     TcpDataControlPortPairAuthority,
     TransportEndpoint,
+    endpoint_startup_lock,
     get_default_transport_mode,
     get_ipc_socket_path,
     get_zmq_transport_url,
@@ -31,6 +33,47 @@ from zmqruntime.transport import (
     wait_for_endpoint_ready,
     wait_for_server_ready,
 )
+
+
+@pytest.mark.skipif(platform.system() == "Windows", reason="IPC is POSIX-only")
+def test_ipc_startup_lock_obeys_total_operation_deadline() -> None:
+    config = ZMQConfig(
+        app_name=f"zmqruntime-lock-{uuid.uuid4().hex}",
+        ipc_socket_prefix="test",
+    )
+    port = 45554
+    lock_entered = threading.Event()
+    release_lock = threading.Event()
+
+    def hold_lock() -> None:
+        with endpoint_startup_lock(port, TransportMode.IPC, config):
+            lock_entered.set()
+            release_lock.wait(timeout=5.0)
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    assert lock_entered.wait(timeout=1.0)
+    try:
+        deadline = OperationDeadline.after_milliseconds(
+            20,
+            operation="IPC startup lock",
+        )
+        with pytest.raises(OperationTimeoutError, match="IPC startup lock"):
+            with endpoint_startup_lock(
+                port,
+                TransportMode.IPC,
+                config,
+                operation_deadline=deadline,
+            ):
+                raise AssertionError("contended lock must not be entered")
+    finally:
+        release_lock.set()
+        holder.join(timeout=1.0)
+        assert not holder.is_alive()
+        socket_path = get_ipc_socket_path(port, config)
+        assert socket_path is not None
+        socket_path.with_name(f"{socket_path.name}.startup.lock").unlink()
+        socket_path.parent.rmdir()
 
 
 def test_tcp_port_pair_authority_returns_free_configured_pair():
@@ -300,6 +343,39 @@ def test_wait_for_server_ready_retries_until_server_reports_ready(
     assert ping_calls[0][2] > 250
 
 
+def test_startup_activity_cannot_extend_an_operation_deadline(monkeypatch):
+    class AlwaysActiveObserver:
+        def poll_activity(self) -> bool:
+            return True
+
+        def should_abort(self) -> bool:
+            return False
+
+    monkeypatch.setattr(
+        TransportMode.TCP,
+        "endpoint_in_use",
+        lambda _port, _host, _config: False,
+    )
+    observer = AlwaysActiveObserver()
+    operation_deadline = OperationDeadline.after_milliseconds(
+        20,
+        operation="endpoint startup",
+    )
+    started = time.monotonic()
+
+    ready = wait_for_server_ready(
+        5555,
+        TransportMode.TCP,
+        timeout=1.0,
+        poll_interval=0.001,
+        startup_observer=observer,
+        operation_deadline=operation_deadline,
+    )
+
+    assert ready is False
+    assert time.monotonic() - started < 0.2
+
+
 def test_wait_for_endpoint_ready_returns_the_authoritative_handshake(monkeypatch):
     endpoint_response = PongResponse(
         port=5555,
@@ -319,12 +395,15 @@ def test_wait_for_endpoint_ready_returns_the_authoritative_handshake(monkeypatch
         lambda _endpoint, _config, *, timeout_ms: endpoint_response,
     )
 
-    assert wait_for_endpoint_ready(
-        5555,
-        TransportMode.IPC,
-        timeout=1.0,
-        poll_interval=0.001,
-    ) is endpoint_response
+    assert (
+        wait_for_endpoint_ready(
+            5555,
+            TransportMode.IPC,
+            timeout=1.0,
+            poll_interval=0.001,
+        )
+        is endpoint_response
+    )
 
 
 @pytest.mark.skipif(platform.system() == "Windows", reason="IPC is POSIX-only")
