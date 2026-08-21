@@ -29,8 +29,11 @@ def test_visualizer_process_manager_requires_concrete_launch_authority() -> None
     with pytest.raises(RuntimeError, match="test launch authority"):
         manager.start()
 
-    with pytest.raises(TypeError, match="abstract method 'start'"):
+    with pytest.raises(TypeError) as exc_info:
         MissingStartVisualizerProcessManager()
+    message = str(exc_info.value)
+    assert "MissingStartVisualizerProcessManager" in message
+    assert "start" in message
 
 
 def test_visualizer_process_manager_has_no_parallel_command_or_environment_hooks() -> None:

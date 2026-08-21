@@ -8,7 +8,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from enum import Enum, nonmember
+from enum import Enum
 from pathlib import Path
 
 
@@ -38,13 +38,36 @@ EndpointStartupPresenter = Callable[
 ]
 
 
+def _present_checking(
+    target: EndpointStartupPresentationTarget,
+    message: str,
+) -> None:
+    target.present_checking(message)
+
+
+def _present_connected(
+    target: EndpointStartupPresentationTarget,
+    message: str,
+) -> None:
+    target.present_connected(message)
+
+
+def _present_disconnected(
+    target: EndpointStartupPresentationTarget,
+    message: str,
+) -> None:
+    target.present_disconnected(message)
+
+
+def _present_warning(
+    target: EndpointStartupPresentationTarget,
+    message: str,
+) -> None:
+    target.present_warning(message)
+
+
 class EndpointStartupPhase(str, Enum):
     """Closed lifecycle vocabulary for a client-managed endpoint."""
-
-    _present_checking = nonmember(lambda target, message: target.present_checking(message))
-    _present_connected = nonmember(lambda target, message: target.present_connected(message))
-    _present_disconnected = nonmember(lambda target, message: target.present_disconnected(message))
-    _present_warning = nonmember(lambda target, message: target.present_warning(message))
 
     def __new__(
         cls,
@@ -60,16 +83,47 @@ class EndpointStartupPhase(str, Enum):
         member._startup_failure = startup_failure
         return member
 
-    DISCONNECTED = ("disconnected", _present_disconnected, False)
-    CHECKING_ENDPOINT = ("checking_endpoint", _present_checking)
-    STARTING_PROCESS = ("starting_process", _present_checking)
-    LOADING_CONFIG = ("loading_config", _present_checking)
-    IMPORTING_RUNTIME = ("importing_runtime", _present_checking)
-    CREATING_SERVER = ("creating_server", _present_checking)
-    BINDING_ENDPOINT = ("binding_endpoint", _present_checking)
-    SERVER_READY = ("server_ready", _present_checking)
-    CONNECTED = ("connected", _present_connected)
-    PREPARING_CAPABILITIES = ("preparing_capabilities", _present_warning)
+    DISCONNECTED = (
+        "disconnected",
+        _present_disconnected,
+        False,
+    )
+    CHECKING_ENDPOINT = (
+        "checking_endpoint",
+        _present_checking,
+    )
+    STARTING_PROCESS = (
+        "starting_process",
+        _present_checking,
+    )
+    LOADING_CONFIG = (
+        "loading_config",
+        _present_checking,
+    )
+    IMPORTING_RUNTIME = (
+        "importing_runtime",
+        _present_checking,
+    )
+    CREATING_SERVER = (
+        "creating_server",
+        _present_checking,
+    )
+    BINDING_ENDPOINT = (
+        "binding_endpoint",
+        _present_checking,
+    )
+    SERVER_READY = (
+        "server_ready",
+        _present_checking,
+    )
+    CONNECTED = (
+        "connected",
+        _present_connected,
+    )
+    PREPARING_CAPABILITIES = (
+        "preparing_capabilities",
+        _present_warning,
+    )
     FAILED = (
         "failed",
         _present_disconnected,
