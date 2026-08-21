@@ -1,4 +1,5 @@
 """Execution pattern APIs."""
+
 from __future__ import annotations
 
 from zmqruntime.execution.batch_submit_wait import (
@@ -9,7 +10,9 @@ from zmqruntime.execution.batch_submit_wait import (
 )
 from zmqruntime.execution.client import ExecutionClient
 from zmqruntime.execution.lifecycle import (
+    ExecutionCancellationResult,
     ExecutionLifecycleEngineABC,
+    ExecutionLifecycleTransition,
     InMemoryExecutionLifecycleEngine,
 )
 from zmqruntime.execution.logs import (
@@ -43,6 +46,8 @@ __all__ = [
     "CallbackExecutionStatusPollPolicy",
     "ExecutionStatusPoller",
     "ExecutionLifecycleEngineABC",
+    "ExecutionLifecycleTransition",
+    "ExecutionCancellationResult",
     "InMemoryExecutionLifecycleEngine",
     "ProgressStreamSubscriber",
     "ExecutionWaiter",

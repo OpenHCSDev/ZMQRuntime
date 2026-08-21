@@ -11,7 +11,6 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from concurrent.futures.process import BrokenProcessPool
 from dataclasses import replace
 from typing import Any
 
@@ -266,12 +265,25 @@ class ExecutionServer(ZMQServer, ABC):
 
     def run_execution(self, execution_id, request, record):
         try:
-            self._lifecycle.mark_running(execution_id)
+            running_transition = self._lifecycle.mark_running(execution_id)
+            if not running_transition.applied:
+                logger.info(
+                    "[%s] Skipping execution because lifecycle is already %s",
+                    execution_id,
+                    running_transition.current.value,
+                )
+                return
             logger.info("[%s] Starting execution (was queued)", execution_id)
 
             results = self.execute_task(execution_id, request)
-            logger.info("[%s] Execution returned, updating status to COMPLETE", execution_id)
-            self._lifecycle.mark_complete(execution_id)
+            complete_transition = self._lifecycle.mark_complete(execution_id)
+            if not complete_transition.applied:
+                logger.info(
+                    "[%s] Execution returned after lifecycle reached %s; discarding completion",
+                    execution_id,
+                    complete_transition.current.value,
+                )
+                return
             record = self.active_executions[execution_id]
             record.results_summary = {
                 MessageFields.WELL_COUNT: len(results) if isinstance(results, dict) else 0,
@@ -283,19 +295,20 @@ class ExecutionServer(ZMQServer, ABC):
                 (record.end_time or 0.0) - (record.start_time or 0.0),
             )
         except Exception as e:
-            if (
-                isinstance(e, BrokenProcessPool)
-                and record.status == ExecutionStatus.CANCELLED.value
-            ):
-                logger.info("[%s] Cancelled", execution_id)
-            else:
+            failed_transition = self._lifecycle.mark_failed(execution_id, str(e))
+            if failed_transition.applied:
                 import traceback
 
                 full_traceback = traceback.format_exc()
-                self._lifecycle.mark_failed(execution_id, str(e))
                 record = self.active_executions[execution_id]
                 record.traceback = full_traceback
                 logger.error("[%s] ✗ Failed: %s", execution_id, e, exc_info=True)
+            else:
+                logger.info(
+                    "[%s] Execution stopped after lifecycle reached %s",
+                    execution_id,
+                    failed_transition.current.value,
+                )
         finally:
             record.pop_extra("orchestrator", None)
             killed = self._kill_worker_processes()
@@ -339,20 +352,34 @@ class ExecutionServer(ZMQServer, ABC):
                 error=f"Execution {request.execution_id} not found",
             ).to_dict()
 
-        self._cancel_all_executions()
-        killed = self._kill_worker_processes()
-        logger.info("[%s] Cancelled - killed %s workers", request.execution_id, killed)
-        return {
-            MessageFields.STATUS: ResponseType.OK.value,
-            MessageFields.MESSAGE: f"Cancelled - killed {killed} workers",
-            MessageFields.WORKERS_KILLED: killed,
-        }
+        cancellation = self._lifecycle.cancel(
+            request.execution_id,
+            end_time=time.time(),
+        )
+        killed = 0
+        if cancellation.should_interrupt_active_work:
+            killed = self._interrupt_execution(request.execution_id)
+        logger.info(
+            "[%s] Cancellation applied=%s - killed %s workers",
+            request.execution_id,
+            cancellation.transition.applied,
+            killed,
+        )
+        return cancellation.to_response(workers_killed=killed)
 
     def _cancel_all_executions(self):
-        self._lifecycle.cancel_all_active(end_time=time.time())
-        for execution_id, record in self.active_executions.items():
-            if record.status == ExecutionStatus.CANCELLED.value:
-                logger.info("[%s] Cancelled", execution_id)
+        cancellations = self._lifecycle.cancel_all_active(end_time=time.time())
+        for cancellation in cancellations:
+            if cancellation.transition.applied:
+                logger.info(
+                    "[%s] Cancelled",
+                    cancellation.transition.execution_id,
+                )
+
+    def _interrupt_execution(self, execution_id: str) -> int:
+        """Interrupt worker resources owned by one running execution."""
+
+        return self._kill_worker_processes()
 
     def _shutdown_workers(self, force=False):
         self._cancel_all_executions()

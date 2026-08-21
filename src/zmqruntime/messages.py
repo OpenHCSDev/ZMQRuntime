@@ -398,24 +398,28 @@ class ResponseType(Enum):
 class ExecutionStatus(Enum):
     """Execution lifecycle declaration with behavior owned by each phase."""
 
-    QUEUED = ("queued", False, False)
-    RUNNING = ("running", False, True)
-    COMPLETE = ("complete", True, False)
-    COMPLETED = ("completed", True, False)
-    FAILED = ("failed", True, False)
-    CANCELLED = ("cancelled", True, False)
-    ACCEPTED = ("accepted", False, False)
+    QUEUED = ("queued", False, False, False, False)
+    RUNNING = ("running", False, True, True, True)
+    COMPLETE = ("complete", True, False, False, False)
+    COMPLETED = ("completed", True, False, False, False)
+    FAILED = ("failed", True, False, False, False)
+    CANCELLED = ("cancelled", True, False, False, False)
+    ACCEPTED = ("accepted", False, False, False, False)
 
     def __new__(
         cls,
         value: str,
         is_terminal: bool,
         reports_running_transition: bool,
+        records_start_time: bool,
+        owns_active_work: bool,
     ) -> "ExecutionStatus":
         member = object.__new__(cls)
         member._value_ = value
         member._is_terminal = is_terminal
         member._reports_running_transition = reports_running_transition
+        member._records_start_time = records_start_time
+        member._owns_active_work = owns_active_work
         return member
 
     @property
@@ -428,6 +432,21 @@ class ExecutionStatus(Enum):
         """Whether entering this phase should emit the running transition."""
 
         return self._reports_running_transition and previous is type(self).QUEUED
+
+    @property
+    def owns_active_work(self) -> bool:
+        """Whether this phase can have work that requires interruption."""
+
+        return self._owns_active_work
+
+    def apply_to_record(self, record: "ExecutionRecord", *, timestamp: float) -> None:
+        """Apply phase-owned lifecycle fields to an execution record."""
+
+        record.status = self.value
+        if self._records_start_time:
+            record.start_time = timestamp
+        if self.is_terminal:
+            record.end_time = timestamp
 
     @classmethod
     def from_wire(cls, value: object) -> Optional["ExecutionStatus"]:

@@ -59,6 +59,23 @@ class FailingExecutionServer(ExecutionServer):
         raise RuntimeError("boom")
 
 
+class BlockingExecutionServer(ExecutionServer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.interrupted_execution_ids = []
+
+    def execute_task(self, execution_id: str, request: ExecuteRequest):
+        self.started.set()
+        assert self.release.wait(timeout=5)
+        return {"late": 1}
+
+    def _interrupt_execution(self, execution_id: str) -> int:
+        self.interrupted_execution_ids.append(execution_id)
+        return 0
+
+
 class StubEndpointProcess(EndpointProcess):
     def __init__(self) -> None:
         self.alive = True
@@ -247,6 +264,86 @@ def test_failed_execution_exposes_traceback_field():
     execution = status_response[MessageFields.EXECUTION]
     assert execution[MessageFields.STATUS] == ExecutionStatus.FAILED.value
     assert "RuntimeError: boom" in execution[MessageFields.TRACEBACK]
+
+
+def test_cancelled_execution_is_terminal_when_running_task_returns():
+    server = BlockingExecutionServer(port=5555)
+    request = ExecuteRequest(
+        plate_id="plate-1",
+        pipeline_code="print('hi')",
+        config_params={"x": 1},
+    )
+    response = server._handle_execute(request.to_dict())
+    execution_id = response[MessageFields.EXECUTION_ID]
+    record = server.active_executions[execution_id]
+    execution_thread = threading.Thread(
+        target=server.run_execution,
+        args=(execution_id, request, record),
+    )
+    execution_thread.start()
+    assert server.started.wait(timeout=5)
+
+    cancellation = server._handle_cancel(
+        {
+            MessageFields.TYPE: ControlMessageType.CANCEL.value,
+            MessageFields.EXECUTION_ID: execution_id,
+        }
+    )
+    server.release.set()
+    execution_thread.join(timeout=5)
+
+    assert not execution_thread.is_alive()
+    assert cancellation[MessageFields.STATUS] == ResponseType.OK.value
+    assert record.status == ExecutionStatus.CANCELLED.value
+    assert record.results_summary is None
+    assert server.interrupted_execution_ids == [execution_id]
+
+
+def test_cancel_targets_queued_execution_without_interrupting_running_execution():
+    server = BlockingExecutionServer(port=5555)
+    request = ExecuteRequest(
+        plate_id="plate-1",
+        pipeline_code="print('hi')",
+        config_params={"x": 1},
+    )
+    running_id = server._handle_execute(request.to_dict())[MessageFields.EXECUTION_ID]
+    queued_id = server._handle_execute(request.to_dict())[MessageFields.EXECUTION_ID]
+    server._lifecycle.mark_running(running_id)
+
+    cancellation = server._handle_cancel(
+        {
+            MessageFields.TYPE: ControlMessageType.CANCEL.value,
+            MessageFields.EXECUTION_ID: queued_id,
+        }
+    )
+
+    assert cancellation[MessageFields.STATUS] == ResponseType.OK.value
+    assert server.active_executions[running_id].status == ExecutionStatus.RUNNING.value
+    assert server.active_executions[queued_id].status == ExecutionStatus.CANCELLED.value
+    assert server.interrupted_execution_ids == []
+
+
+def test_cancel_rejects_terminal_execution_without_rewriting_status():
+    server = DummyExecutionServer(port=5555)
+    request = ExecuteRequest(
+        plate_id="plate-1",
+        pipeline_code="print('hi')",
+        config_params={"x": 1},
+    )
+    response = server._handle_execute(request.to_dict())
+    execution_id = response[MessageFields.EXECUTION_ID]
+    record = server.active_executions[execution_id]
+    server.run_execution(execution_id, request, record)
+
+    cancellation = server._handle_cancel(
+        {
+            MessageFields.TYPE: ControlMessageType.CANCEL.value,
+            MessageFields.EXECUTION_ID: execution_id,
+        }
+    )
+
+    assert cancellation[MessageFields.STATUS] == ResponseType.ERROR.value
+    assert record.status == ExecutionStatus.COMPLETE.value
 
 
 def test_task_progress_roundtrip_supports_execution_id_and_task_id():
