@@ -26,7 +26,7 @@ from zmqruntime.messages import (
     SocketType,
 )
 from zmqruntime.transport import (
-    get_zmq_transport_url,
+    TransportEndpoint,
     resolve_transport_mode,
 )
 
@@ -70,12 +70,14 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
         import zmq
 
         self.config = config or ZMQConfig()
-        self.port = port
-        self.host = host
-        self.control_port = port + self.config.control_port_offset
+        self.transport_mode = resolve_transport_mode(transport_mode)
+        self.endpoint = TransportEndpoint(
+            host=host,
+            port=port,
+            transport_mode=self.transport_mode,
+        )
         self.log_file_path = log_file_path
         self.data_socket_type = data_socket_type if data_socket_type is not None else zmq.PUB
-        self.transport_mode = resolve_transport_mode(transport_mode)
         self.application = application
         self.zmq_context = None
         self.data_socket = None
@@ -83,6 +85,24 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
         self._running = False
         self._ready = False
         self._lock = threading.Lock()
+
+    @property
+    def port(self) -> int:
+        """Return the endpoint-owned data port."""
+
+        return self.endpoint.port
+
+    @property
+    def host(self) -> str:
+        """Return the endpoint-owned bind host."""
+
+        return self.endpoint.host
+
+    @property
+    def control_port(self) -> int:
+        """Return the endpoint-owned configured control port."""
+
+        return self.endpoint.control_port(self.config)
 
     def start(self):
         with self._lock:
@@ -102,22 +122,12 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
     def data_transport_url(self) -> str:
         """Return the configured data endpoint for this server."""
 
-        return get_zmq_transport_url(
-            self.port,
-            host=self.host,
-            mode=self.transport_mode,
-            config=self.config,
-        )
+        return self.endpoint.data_url(self.config)
 
     def control_transport_url(self) -> str:
         """Return the configured control endpoint for this server."""
 
-        return get_zmq_transport_url(
-            self.control_port,
-            host=self.host,
-            mode=self.transport_mode,
-            config=self.config,
-        )
+        return self.endpoint.control_url(self.config)
 
     def bind_data_socket(self, context: zmq.Context) -> zmq.Socket:
         """Create and bind the data socket in its calling thread."""
@@ -159,11 +169,7 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
             if self.zmq_context:
                 self.zmq_context.term()
                 self.zmq_context = None
-            self.transport_mode.cleanup_endpoint(self.port, self.config)
-            self.transport_mode.cleanup_endpoint(
-                self.control_port,
-                self.config,
-            )
+            self.endpoint.cleanup(self.config)
             logger.info("ZMQ Server stopped")
 
     def is_running(self):

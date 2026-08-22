@@ -10,6 +10,7 @@ from annotated_types import Ge, Gt, Le, MinLen, Predicate
 from python_introspect import validate_annotated_dataclass
 
 from zmqruntime.transport_modes import (
+    TransportDataControlPairAvailabilityProbe,
     TransportEndpointCleanup,
     TransportLocalityProbe,
     TransportOccupancyProbe,
@@ -21,6 +22,7 @@ from zmqruntime.transport_modes import (
     TransportSupport,
     TransportUrlBuilder,
     _ipc_cleanup_endpoint,
+    _ipc_data_control_pair_is_available,
     _ipc_endpoint_in_use,
     _ipc_endpoint_is_local,
     _ipc_endpoint_is_stale,
@@ -31,6 +33,7 @@ from zmqruntime.transport_modes import (
     _ipc_socket_path,
     _ipc_startup_lock,
     _tcp_cleanup_endpoint,
+    _tcp_data_control_pair_is_available,
     _tcp_endpoint_in_use,
     _tcp_endpoint_is_local,
     _tcp_endpoint_is_stale,
@@ -57,6 +60,7 @@ class TransportMode(Enum):
     socket_path: TransportSocketPathBuilder
     endpoint_is_stale: TransportStalenessProbe
     startup_lock: TransportStartupLockFactory
+    data_control_pair_is_available: TransportDataControlPairAvailabilityProbe
 
     def __new__(
         cls,
@@ -72,6 +76,7 @@ class TransportMode(Enum):
         socket_path: TransportSocketPathBuilder,
         endpoint_is_stale: TransportStalenessProbe,
         startup_lock: TransportStartupLockFactory,
+        data_control_pair_is_available: TransportDataControlPairAvailabilityProbe,
     ) -> TransportMode:
         member = object.__new__(cls)
         member._value_ = value
@@ -86,6 +91,7 @@ class TransportMode(Enum):
         member.socket_path = socket_path
         member.endpoint_is_stale = endpoint_is_stale
         member.startup_lock = startup_lock
+        member.data_control_pair_is_available = data_control_pair_is_available
         return member
 
     TCP = (
@@ -101,6 +107,7 @@ class TransportMode(Enum):
         _tcp_socket_path,
         _tcp_endpoint_is_stale,
         _tcp_startup_lock,
+        _tcp_data_control_pair_is_available,
     )
     IPC = (
         "ipc",
@@ -115,6 +122,7 @@ class TransportMode(Enum):
         _ipc_socket_path,
         _ipc_endpoint_is_stale,
         _ipc_startup_lock,
+        _ipc_data_control_pair_is_available,
     )
 
     @classmethod

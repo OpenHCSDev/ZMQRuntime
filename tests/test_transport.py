@@ -20,6 +20,7 @@ from zmqruntime.messages import (
 from zmqruntime.server import ZMQServer
 from zmqruntime.timeouts import OperationDeadline, OperationTimeoutError
 from zmqruntime.transport import (
+    DataControlPortPairAuthority,
     TcpDataControlPortPairAuthority,
     TransportEndpoint,
     endpoint_startup_lock,
@@ -106,7 +107,10 @@ def test_tcp_port_pair_authority_scans_both_ports_together(monkeypatch):
             if port == config.default_port + config.control_port_offset:
                 raise OSError("simulated reserved control port")
 
-    monkeypatch.setattr("zmqruntime.transport.socket.socket", lambda *_args: FakeSocket())
+    monkeypatch.setattr(
+        "zmqruntime.transport_modes.socket.socket",
+        lambda *_args: FakeSocket(),
+    )
 
     pair = TcpDataControlPortPairAuthority.acquire(config)
 
@@ -118,6 +122,30 @@ def test_tcp_port_pair_authority_scans_both_ports_together(monkeypatch):
         config.default_port + 1,
         config.default_port + 1 + config.control_port_offset,
     ]
+
+
+@pytest.mark.skipif(platform.system() == "Windows", reason="IPC is POSIX-only")
+def test_data_control_port_pair_authority_uses_ipc_path_occupancy() -> None:
+    config = ZMQConfig(
+        default_port=47777,
+        control_port_offset=1000,
+        app_name=f"zmqruntime-pair-{uuid.uuid4().hex}",
+    )
+    occupied_path = TransportMode.IPC.socket_path(config.default_port, config)
+    assert occupied_path is not None
+    occupied_path.parent.mkdir(parents=True)
+    occupied_path.touch()
+    try:
+        pair = DataControlPortPairAuthority.acquire(
+            config,
+            transport_mode=TransportMode.IPC,
+        )
+
+        assert pair.data_port == config.default_port + 1
+        assert pair.control_port == (config.default_port + 1 + config.control_port_offset)
+    finally:
+        occupied_path.unlink()
+        occupied_path.parent.rmdir()
 
 
 def test_tcp_port_probe_reports_active_listener_then_ignores_time_wait() -> None:
@@ -179,6 +207,34 @@ def test_transport_endpoint_reports_exact_occupied_pair_ports() -> None:
         control_socket.listen()
 
         assert endpoint.occupied_ports(config) == frozenset((pair.control_port,))
+
+
+def test_server_projects_topology_from_its_single_endpoint_owner() -> None:
+    class TestServer(ZMQServer):
+        def handle_control_message(self, message):
+            raise AssertionError(message)
+
+        def handle_data_message(self, message):
+            raise AssertionError(message)
+
+    config = ZMQConfig(default_port=23000, control_port_offset=321)
+    server = TestServer(
+        config.default_port,
+        host="127.0.0.1",
+        config=config,
+        transport_mode=TransportMode.TCP,
+    )
+
+    assert server.endpoint == TransportEndpoint(
+        host="127.0.0.1",
+        port=23000,
+        transport_mode=TransportMode.TCP,
+    )
+    assert server.port == server.endpoint.port
+    assert server.host == server.endpoint.host
+    assert server.control_port == server.endpoint.control_port(config)
+    assert server.data_transport_url() == "tcp://127.0.0.1:23000"
+    assert server.control_transport_url() == "tcp://127.0.0.1:23321"
 
 
 def test_socket_type_rejects_unknown_zmq_constant():

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pickle
-import socket
 import time
 from collections.abc import Collection
 from contextlib import contextmanager
@@ -24,8 +23,8 @@ _default_config = ZMQConfig()
 
 
 @dataclass(frozen=True, slots=True)
-class TcpDataControlPortPair:
-    """One loopback TCP endpoint pair derived from a ZMQ configuration."""
+class DataControlPortPair:
+    """One transport data/control port pair derived from a ZMQ configuration."""
 
     data_port: int
     control_port: int
@@ -59,10 +58,10 @@ class TransportEndpoint:
 
         return get_control_port(self.port, config)
 
-    def port_pair(self, config: ZMQConfig) -> TcpDataControlPortPair:
+    def port_pair(self, config: ZMQConfig) -> DataControlPortPair:
         """Return the configured data/control pair owned by this endpoint."""
 
-        return TcpDataControlPortPair(
+        return DataControlPortPair(
             data_port=self.port,
             control_port=self.control_port(config),
         )
@@ -196,8 +195,46 @@ class TransportEndpoint:
             time.sleep(min(poll_interval, max(0.0, sleep_deadline - time.monotonic())))
 
 
+class DataControlPortPairAuthority:
+    """Acquire free data/control pairs through the selected transport owner."""
+
+    @staticmethod
+    def acquire(
+        config: ZMQConfig,
+        *,
+        transport_mode: TransportMode,
+        excluded: Collection[int] = (),
+        host: str = "127.0.0.1",
+    ) -> DataControlPortPair:
+        """Return the first available configured data/control endpoint pair."""
+
+        mode = resolve_transport_mode(transport_mode)
+        if not mode.is_supported():
+            raise ValueError(f"Transport mode {mode.value!r} is not supported.")
+        first_port = config.default_port
+        last_port = 65535 - config.control_port_offset
+        for data_port in range(first_port, last_port + 1):
+            control_port = get_control_port(data_port, config)
+            if data_port in excluded or control_port in excluded:
+                continue
+            if not mode.data_control_pair_is_available(
+                data_port,
+                control_port,
+                host,
+                config,
+            ):
+                continue
+            return DataControlPortPair(
+                data_port=data_port,
+                control_port=control_port,
+            )
+        raise RuntimeError(
+            f"Could not allocate a free {mode.value.upper()} data/control port pair."
+        )
+
+
 class TcpDataControlPortPairAuthority:
-    """Acquire free loopback TCP pairs without assuming ephemeral adjacency."""
+    """Compatibility declaration for acquiring loopback TCP endpoint pairs."""
 
     @staticmethod
     def acquire(
@@ -205,31 +242,16 @@ class TcpDataControlPortPairAuthority:
         *,
         excluded: Collection[int] = (),
         host: str = "127.0.0.1",
-    ) -> TcpDataControlPortPair:
-        """Return the first bindable configured data/control TCP pair."""
-        first_port = config.default_port
-        last_port = 65535 - config.control_port_offset
-        for data_port in range(first_port, last_port + 1):
-            control_port = get_control_port(data_port, config)
-            if data_port in excluded or control_port in excluded:
-                continue
-            try:
-                with (
-                    socket.socket(socket.AF_INET, socket.SOCK_STREAM) as data_socket,
-                    socket.socket(
-                        socket.AF_INET,
-                        socket.SOCK_STREAM,
-                    ) as control_socket,
-                ):
-                    data_socket.bind((host, data_port))
-                    control_socket.bind((host, control_port))
-            except OSError:
-                continue
-            return TcpDataControlPortPair(
-                data_port=data_port,
-                control_port=control_port,
-            )
-        raise RuntimeError("Could not allocate a free TCP data/control port pair.")
+    ) -> DataControlPortPair:
+        return DataControlPortPairAuthority.acquire(
+            config,
+            transport_mode=TransportMode.TCP,
+            excluded=excluded,
+            host=host,
+        )
+
+
+TcpDataControlPortPair = DataControlPortPair
 
 
 def get_default_transport_mode() -> TransportMode:

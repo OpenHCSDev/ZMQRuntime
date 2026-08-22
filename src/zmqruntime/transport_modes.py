@@ -35,6 +35,10 @@ TransportStartupLockFactory = Callable[
     [int, _TransportConfigBase, OperationDeadline | None],
     AbstractContextManager[None],
 ]
+TransportDataControlPairAvailabilityProbe = Callable[
+    [int, int, str, _TransportConfigBase],
+    bool,
+]
 
 
 def _tcp_is_supported() -> bool:
@@ -119,6 +123,27 @@ def _tcp_endpoint_is_stale(port: int, config: _TransportConfigBase) -> bool:
     return False
 
 
+def _tcp_data_control_pair_is_available(
+    data_port: int,
+    control_port: int,
+    host: str,
+    config: _TransportConfigBase,
+) -> bool:
+    """Return whether both TCP addresses can be bound together."""
+
+    del config
+    try:
+        with (
+            socket.socket(socket.AF_INET, socket.SOCK_STREAM) as data_socket,
+            socket.socket(socket.AF_INET, socket.SOCK_STREAM) as control_socket,
+        ):
+            data_socket.bind((host, data_port))
+            control_socket.bind((host, control_port))
+    except OSError:
+        return False
+    return True
+
+
 @contextmanager
 def _tcp_startup_lock(
     port: int,
@@ -189,6 +214,17 @@ def _ipc_endpoint_is_stale(port: int, config: _TransportConfigBase) -> bool:
     return all(connection.laddr != path for connection in connections)
 
 
+def _ipc_data_control_pair_is_available(
+    data_port: int,
+    control_port: int,
+    host: str,
+    config: _TransportConfigBase,
+) -> bool:
+    """Return whether neither IPC address has an owning filesystem path."""
+
+    return not any(_ipc_endpoint_in_use(port, host, config) for port in (data_port, control_port))
+
+
 def _ipc_preserve_unresponsive_endpoint(
     port: int,
     config: _TransportConfigBase,
@@ -243,9 +279,7 @@ def _ipc_startup_lock(
                     )
                     break
                 except BlockingIOError:
-                    time.sleep(
-                        min(0.05, operation_deadline.remaining_seconds())
-                    )
+                    time.sleep(min(0.05, operation_deadline.remaining_seconds()))
         try:
             yield
         finally:

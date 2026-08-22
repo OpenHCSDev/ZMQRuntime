@@ -3,6 +3,7 @@ from types import MappingProxyType
 
 import pytest
 
+from zmqruntime import TransportEndpoint, TransportMode, ZMQConfig
 from zmqruntime.messages import ProcessResourceUsage, ServerRole
 from zmqruntime.streaming import StreamingVisualizerServer
 from zmqruntime.viewer_protocol import (
@@ -42,8 +43,13 @@ def test_streaming_server_inheritance_owns_viewer_process_usage(monkeypatch):
         classmethod(lambda cls: usage),
     )
     server = object.__new__(_TestStreamingVisualizerServer)
-    server.port = 5555
-    server.control_port = 6555
+    server.config = ZMQConfig(default_port=5555, control_port_offset=1000)
+    server.transport_mode = TransportMode.TCP
+    server.endpoint = TransportEndpoint(
+        host="127.0.0.1",
+        port=5555,
+        transport_mode=server.transport_mode,
+    )
     server._ready = True
     server.log_file_path = None
     server.application = None
@@ -65,9 +71,7 @@ def test_viewer_batch_message_normalizes_nested_mapping_proxy_to_json_wire():
         data_type="image",
         metadata={
             "channel": "1",
-            "OpenHCSOriginalSourceMetadata": MappingProxyType(
-                {"FrameNumber": "0011"}
-            ),
+            "OpenHCSOriginalSourceMetadata": MappingProxyType({"FrameNumber": "0011"}),
         },
         producer_identity={"producer": "TrackObjects"},
         image_id="image-1",
