@@ -3,6 +3,7 @@ import pytest
 from zmqruntime.messages import (
     CancelRequest,
     EndpointApplication,
+    EndpointApplicationCompatibilityError,
     ExecuteRequest,
     MessageFields,
     PongResponse,
@@ -12,6 +13,29 @@ from zmqruntime.messages import (
     ServerRole,
     WorkerState,
 )
+
+
+def test_endpoint_application_owns_exact_compatibility() -> None:
+    expected = EndpointApplication(identifier="test-app", version="1.2.3")
+
+    compatible = expected.compatibility_with(
+        EndpointApplication(identifier="test-app", version="1.2.3")
+    )
+    incompatible = expected.compatibility_with(
+        EndpointApplication(identifier="test-app", version="1.2.2")
+    )
+    missing = expected.compatibility_with(None)
+
+    assert compatible.matches is True
+    compatible.require_match()
+    assert incompatible.matches is False
+    assert incompatible.observed_version_label == "1.2.2"
+    assert missing.observed_version_label == "not reported"
+    with pytest.raises(
+        EndpointApplicationCompatibilityError,
+        match=("expected test-app 1.2.3, observed test-app 1.2.2"),
+    ):
+        incompatible.require_match()
 
 
 def test_execute_request_roundtrip():

@@ -922,6 +922,14 @@ class EndpointApplication:
             MessageFields.APPLICATION_VERSION: self.version,
         }
 
+    def compatibility_with(
+        self,
+        observed: "EndpointApplication | None",
+    ) -> "EndpointApplicationCompatibility":
+        """Compare one observed endpoint with this declared application."""
+
+        return EndpointApplicationCompatibility(expected=self, observed=observed)
+
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "EndpointApplication":
         identifier = data[MessageFields.APPLICATION_ID]
@@ -929,6 +937,48 @@ class EndpointApplication:
         if not isinstance(identifier, str) or not isinstance(version, str):
             raise TypeError("Endpoint application identity fields must be strings")
         return cls(identifier=identifier, version=version)
+
+
+@dataclass(frozen=True)
+class EndpointApplicationCompatibility:
+    """Exact compatibility between a declared and observed application identity."""
+
+    expected: EndpointApplication
+    observed: EndpointApplication | None
+
+    @property
+    def matches(self) -> bool:
+        return self.observed == self.expected
+
+    @property
+    def observed_version_label(self) -> str:
+        if self.observed is None:
+            return "not reported"
+        return self.observed.version
+
+    def require_match(self) -> None:
+        """Raise a typed mismatch when the observed endpoint is incompatible."""
+
+        if not self.matches:
+            raise EndpointApplicationCompatibilityError(self)
+
+
+@dataclass(frozen=True)
+class EndpointApplicationCompatibilityError(ValueError):
+    """Raised when an endpoint does not match its required application identity."""
+
+    compatibility: EndpointApplicationCompatibility
+
+    def __str__(self) -> str:
+        expected = self.compatibility.expected
+        observed = self.compatibility.observed
+        observed_label = (
+            "not reported" if observed is None else f"{observed.identifier} {observed.version}"
+        )
+        return (
+            "Endpoint application mismatch: expected "
+            f"{expected.identifier} {expected.version}, observed {observed_label}."
+        )
 
 
 @dataclass(frozen=True)
