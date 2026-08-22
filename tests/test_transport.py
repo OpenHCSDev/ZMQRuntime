@@ -162,6 +162,25 @@ def test_resolve_transport_mode_rejects_textual_mirror():
         resolve_transport_mode("tcp")
 
 
+def test_transport_endpoint_reports_exact_occupied_pair_ports() -> None:
+    config = ZMQConfig(default_port=47777, control_port_offset=1000)
+    pair = TcpDataControlPortPairAuthority.acquire(config)
+    endpoint = TransportEndpoint(
+        host="127.0.0.1",
+        port=pair.data_port,
+        transport_mode=TransportMode.TCP,
+    )
+
+    assert endpoint.port_pair(config) == pair
+    assert endpoint.occupied_ports(config) == frozenset()
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as control_socket:
+        control_socket.bind((endpoint.host, pair.control_port))
+        control_socket.listen()
+
+        assert endpoint.occupied_ports(config) == frozenset((pair.control_port,))
+
+
 def test_socket_type_rejects_unknown_zmq_constant():
     with pytest.raises(ValueError, match="Unsupported ZMQ socket type"):
         SocketType.from_zmq_constant(object())

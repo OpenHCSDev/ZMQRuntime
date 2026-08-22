@@ -59,6 +59,23 @@ class TransportEndpoint:
 
         return get_control_port(self.port, config)
 
+    def port_pair(self, config: ZMQConfig) -> TcpDataControlPortPair:
+        """Return the configured data/control pair owned by this endpoint."""
+
+        return TcpDataControlPortPair(
+            data_port=self.port,
+            control_port=self.control_port(config),
+        )
+
+    def occupied_ports(self, config: ZMQConfig) -> frozenset[int]:
+        """Return the addresses in this endpoint pair that are currently bound."""
+
+        return frozenset(
+            port
+            for port in self.port_pair(config).ports
+            if self.transport_mode.endpoint_in_use(port, self.host, config)
+        )
+
     def control_url(self, config: ZMQConfig) -> str:
         """Return this endpoint's control socket URL."""
 
