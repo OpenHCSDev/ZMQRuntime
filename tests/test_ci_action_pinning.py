@@ -47,3 +47,11 @@ def test_dependabot_owns_github_action_pin_updates() -> None:
         "        patterns:\n"
         '          - "*"\n'
     )
+
+
+def test_pypi_publication_precedes_github_release() -> None:
+    publish_workflow = (WORKFLOW_ROOT / "publish.yml").read_text(encoding="utf-8")
+
+    assert publish_workflow.index("- name: Publish to PyPI") < publish_workflow.index(
+        "- name: Create GitHub Release"
+    )
