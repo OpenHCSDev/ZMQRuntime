@@ -12,7 +12,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from functools import singledispatch
 from multiprocessing.process import BaseProcess
@@ -186,22 +186,84 @@ class EndpointProcess(ABC):
         """Terminate the exact process and report whether escalation was required."""
 
 
+class _EndpointProcessExitObservation:
+    """Observe and retain one exact child until its platform wait completes."""
+
+    def __init__(self, wait_for_exit: Callable[[], ProcessExit]) -> None:
+        self._wait_for_exit = wait_for_exit
+        self._completed = threading.Event()
+        self._exit: ProcessExit | None = None
+        self._failure: BaseException | None = None
+        threading.Thread(
+            target=self._observe,
+            name="zmqruntime-endpoint-process-reaper",
+            daemon=True,
+        ).start()
+
+    def _observe(self) -> None:
+        try:
+            self._exit = self._wait_for_exit()
+        except BaseException as error:
+            self._failure = error
+        finally:
+            self._completed.set()
+
+    def exit(self) -> ProcessExit | None:
+        if not self._completed.is_set():
+            return None
+        if self._failure is not None:
+            raise RuntimeError("Failed to observe endpoint process exit") from self._failure
+        return self._exit
+
+    def wait(self, timeout: float) -> ProcessExit | None:
+        if not self._completed.wait(timeout=timeout):
+            return None
+        return self.exit()
+
+
 @dataclass(frozen=True, slots=True)
-class MultiprocessingEndpointProcess(EndpointProcess):
+class _ObservedEndpointProcess(EndpointProcess, ABC):
+    """Template owner for exact child exit observation and bounded waits."""
+
+    _exit_observation: _EndpointProcessExitObservation = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "_exit_observation",
+            _EndpointProcessExitObservation(self._wait_and_resolve_exit),
+        )
+
+    @abstractmethod
+    def _wait_and_resolve_exit(self) -> ProcessExit:
+        """Perform the platform wait and resolve its exact terminal status."""
+
+    def exit(self) -> ProcessExit | None:
+        return self._exit_observation.exit()
+
+    def wait_for_exit(self, timeout: float) -> ProcessExit | None:
+        return self._exit_observation.wait(timeout)
+
+
+@dataclass(frozen=True, slots=True)
+class MultiprocessingEndpointProcess(_ObservedEndpointProcess):
     """Endpoint process backed by multiprocessing."""
 
     process: BaseProcess
 
+    def _wait_and_resolve_exit(self) -> ProcessExit:
+        self.process.join()
+        returncode = self.process.exitcode
+        if returncode is None:
+            raise RuntimeError("Multiprocessing endpoint exited without a return code")
+        return ProcessExit(returncode)
+
     def is_alive(self) -> bool:
         return self.process.is_alive()
-
-    def exit(self) -> ProcessExit | None:
-        returncode = self.process.exitcode
-        return None if returncode is None else ProcessExit(returncode)
-
-    def wait_for_exit(self, timeout: float) -> ProcessExit | None:
-        self.process.join(timeout=timeout)
-        return self.exit()
 
     def stop(
         self,
@@ -209,51 +271,41 @@ class MultiprocessingEndpointProcess(EndpointProcess):
         kill_timeout: float = 2.0,
     ) -> bool:
         forced = False
-        if self.process.is_alive():
+        if self.is_alive():
             self.process.terminate()
-            self.process.join(timeout=timeout)
-        if self.process.is_alive():
+        if self.wait_for_exit(timeout) is None:
             forced = True
             self.process.kill()
-            self.process.join(timeout=kill_timeout)
-        if self.process.is_alive():
+        if self.wait_for_exit(kill_timeout) is None:
             raise TimeoutError("Multiprocessing endpoint process did not terminate")
         return forced
 
 
 @dataclass(frozen=True, slots=True)
-class SubprocessEndpointProcess(EndpointProcess):
+class SubprocessEndpointProcess(_ObservedEndpointProcess):
     """Endpoint process backed by subprocess.Popen."""
 
     process: subprocess.Popen
 
+    def _wait_and_resolve_exit(self) -> ProcessExit:
+        return ProcessExit(self.process.wait())
+
     def is_alive(self) -> bool:
         return self.process.poll() is None
-
-    def exit(self) -> ProcessExit | None:
-        returncode = self.process.poll()
-        return None if returncode is None else ProcessExit(returncode)
-
-    def wait_for_exit(self, timeout: float) -> ProcessExit | None:
-        try:
-            return ProcessExit(self.process.wait(timeout=timeout))
-        except subprocess.TimeoutExpired:
-            return None
 
     def stop(
         self,
         timeout: float = 5.0,
         kill_timeout: float = 2.0,
     ) -> bool:
-        if self.process.poll() is None:
+        if self.is_alive():
             self.process.terminate()
-            try:
-                self.process.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait(timeout=kill_timeout)
-                return True
-        return False
+        if self.wait_for_exit(timeout) is not None:
+            return False
+        self.process.kill()
+        if self.wait_for_exit(kill_timeout) is None:
+            raise TimeoutError("Subprocess endpoint process did not terminate")
+        return True
 
 
 EndpointProcessSource = EndpointProcess | BaseProcess | subprocess.Popen

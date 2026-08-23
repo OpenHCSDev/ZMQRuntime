@@ -98,6 +98,13 @@ Group shutdown stops the retained handles concurrently, so one slow child does
 not consume the grace period of every sibling. The group never discovers or
 terminates processes by port, command text, or application label.
 
+Each ``EndpointProcess`` adapter begins a retained platform wait when it assumes
+the exact child handle. That observer remains the exit and reaping authority
+even when a persistent client later releases its connection or another
+controller stops the endpoint. Bounded shutdown waits consume the resulting
+``ProcessExit`` while process-specific liveness queries remain encapsulated by
+the same adapter.
+
 Viewer readiness adds a stricter application-level handshake on top of this
 transport lifecycle. See :doc:`viewer_streaming_architecture`; it does not
 replace startup serialization or owned-process cleanup.

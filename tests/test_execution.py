@@ -1,4 +1,5 @@
 import json
+import multiprocessing
 import pickle
 import platform
 import subprocess
@@ -53,6 +54,10 @@ from zmqruntime.transport import (
 class DummyExecutionServer(ExecutionServer):
     def execute_task(self, execution_id: str, request: ExecuteRequest):
         return {"result": 1}
+
+
+def _return_immediately() -> None:
+    return None
 
 
 class FailingExecutionServer(ExecutionServer):
@@ -120,6 +125,29 @@ def test_endpoint_process_adapts_subprocess_lifecycle():
         if source.poll() is None:
             source.kill()
             source.wait(timeout=1)
+
+
+def test_endpoint_process_reaps_external_subprocess_exit_without_polling():
+    source = subprocess.Popen(
+        [sys.executable, "-c", "pass"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    process = endpoint_process(source)
+
+    assert process.wait_for_exit(timeout=2) == ProcessExit(0)
+    assert source.returncode == 0
+    assert not process.is_alive()
+
+
+def test_endpoint_process_reaps_external_multiprocessing_exit_without_polling():
+    source = multiprocessing.get_context("spawn").Process(target=_return_immediately)
+    source.start()
+    process = endpoint_process(source)
+
+    assert process.wait_for_exit(timeout=5) == ProcessExit(0)
+    assert source.exitcode == 0
+    assert not process.is_alive()
 
 
 def test_endpoint_process_rejects_structural_process_lookalike():
