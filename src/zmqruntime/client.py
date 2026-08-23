@@ -174,6 +174,10 @@ class EndpointProcess(ABC):
         """Return the exact process exit when it has terminated."""
 
     @abstractmethod
+    def wait_for_exit(self, timeout: float) -> ProcessExit | None:
+        """Wait for the exact process and return its exit, or none on timeout."""
+
+    @abstractmethod
     def stop(
         self,
         timeout: float = 5.0,
@@ -194,6 +198,10 @@ class MultiprocessingEndpointProcess(EndpointProcess):
     def exit(self) -> ProcessExit | None:
         returncode = self.process.exitcode
         return None if returncode is None else ProcessExit(returncode)
+
+    def wait_for_exit(self, timeout: float) -> ProcessExit | None:
+        self.process.join(timeout=timeout)
+        return self.exit()
 
     def stop(
         self,
@@ -225,6 +233,12 @@ class SubprocessEndpointProcess(EndpointProcess):
     def exit(self) -> ProcessExit | None:
         returncode = self.process.poll()
         return None if returncode is None else ProcessExit(returncode)
+
+    def wait_for_exit(self, timeout: float) -> ProcessExit | None:
+        try:
+            return ProcessExit(self.process.wait(timeout=timeout))
+        except subprocess.TimeoutExpired:
+            return None
 
     def stop(
         self,
@@ -307,23 +321,38 @@ class EndpointProcessGroup:
         with self._lock:
             owned_processes = tuple(self._processes.items())
 
-        failures: list[BaseException] = []
-        for source_id, process in owned_processes:
+        if not owned_processes:
+            return
+
+        def stop_owned_process(
+            owned_process: tuple[int, EndpointProcess],
+        ) -> list[BaseException]:
+            source_id, process = owned_process
+            process_failures: list[BaseException] = []
             try:
                 if process.is_alive():
                     process.stop(timeout=timeout, kill_timeout=kill_timeout)
             except BaseException as exc:
-                failures.append(exc)
+                process_failures.append(exc)
             finally:
                 try:
                     alive = process.is_alive()
                 except BaseException as exc:
-                    failures.append(exc)
+                    process_failures.append(exc)
                     alive = True
                 if not alive:
                     with self._lock:
                         if self._processes.get(source_id) is process:
                             self._processes.pop(source_id)
+            return process_failures
+
+        failures: list[BaseException] = []
+        with ThreadPoolExecutor(max_workers=len(owned_processes)) as executor:
+            for process_failures in executor.map(
+                stop_owned_process,
+                owned_processes,
+            ):
+                failures.extend(process_failures)
 
         if failures:
             raise RuntimeError(
@@ -346,13 +375,27 @@ class OwnedEndpointConnection(ClientEndpointConnection):
     target: TransportEndpoint
     config: ZMQConfig
     endpoint: PongResponse
+    shutdown_timeout_seconds: float = 10.0
 
     def close_client(self, persistent: bool) -> None:
         if not persistent:
             self.terminate_endpoint()
 
     def terminate_endpoint(self) -> None:
-        self.process.stop()
+        shutdown = ZMQClient.shutdown_endpoint_on_port(
+            port=self.target.port,
+            mode=EndpointShutdownMode.FORCE,
+            timeout=self.shutdown_timeout_seconds,
+            transport_mode=self.target.transport_mode,
+            host=self.target.host,
+            config=self.config,
+        )
+        if shutdown.succeeded:
+            process_exit = self.process.wait_for_exit(timeout=self.shutdown_timeout_seconds)
+            if process_exit is not None:
+                self.target.cleanup(self.config)
+                return
+        self.process.stop(timeout=self.shutdown_timeout_seconds)
         self.target.cleanup(self.config)
 
     def owned_process_is_alive(self) -> bool | None:

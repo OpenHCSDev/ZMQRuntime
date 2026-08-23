@@ -81,12 +81,18 @@ class StubEndpointProcess(EndpointProcess):
     def __init__(self) -> None:
         self.alive = True
         self.stop_count = 0
+        self.wait_count = 0
 
     def is_alive(self) -> bool:
         return self.alive
 
     def exit(self) -> ProcessExit | None:
         return None if self.alive else ProcessExit(0)
+
+    def wait_for_exit(self, timeout: float) -> ProcessExit | None:
+        del timeout
+        self.wait_count += 1
+        return self.exit()
 
     def stop(
         self,
@@ -142,6 +148,32 @@ def test_endpoint_process_group_stops_every_owned_process_once():
     assert group.active_count == 0
 
 
+def test_endpoint_process_group_stops_owned_processes_concurrently():
+    group = EndpointProcessGroup()
+    stop_barrier = threading.Barrier(2)
+
+    class CoordinatedEndpointProcess(StubEndpointProcess):
+        def stop(
+            self,
+            timeout: float = 5.0,
+            kill_timeout: float = 2.0,
+        ) -> bool:
+            del timeout, kill_timeout
+            stop_barrier.wait(timeout=1)
+            return super().stop()
+
+    first = CoordinatedEndpointProcess()
+    second = CoordinatedEndpointProcess()
+    group.own(first)
+    group.own(second)
+
+    group.stop_all()
+
+    assert first.stop_count == 1
+    assert second.stop_count == 1
+    assert group.active_count == 0
+
+
 def test_endpoint_process_group_disowns_without_stopping():
     group = EndpointProcessGroup()
     process = StubEndpointProcess()
@@ -171,6 +203,62 @@ def owned_connection(client, process) -> OwnedEndpointConnection:
         config=client.config,
         endpoint=endpoint,
     )
+
+
+def test_owned_endpoint_requests_shutdown_and_waits_for_exact_process(
+    monkeypatch,
+):
+    client = EndpointPolicyExecutionClient()
+    process = StubEndpointProcess()
+    connection = owned_connection(client, process)
+    shutdown_calls = []
+
+    def shutdown_endpoint_on_port(**kwargs):
+        shutdown_calls.append(kwargs)
+        process.alive = False
+        return EndpointShutdownResult(succeeded=True, endpoint_terminated=True)
+
+    monkeypatch.setattr(
+        ZMQClient,
+        "shutdown_endpoint_on_port",
+        shutdown_endpoint_on_port,
+    )
+
+    connection.terminate_endpoint()
+
+    assert shutdown_calls == [
+        {
+            "port": client.port,
+            "mode": EndpointShutdownMode.FORCE,
+            "timeout": connection.shutdown_timeout_seconds,
+            "transport_mode": client.transport_mode,
+            "host": client.host,
+            "config": client.config,
+        }
+    ]
+    assert process.wait_count == 1
+    assert process.stop_count == 0
+
+
+def test_owned_endpoint_uses_exact_process_when_shutdown_is_not_admitted(
+    monkeypatch,
+):
+    client = EndpointPolicyExecutionClient()
+    process = StubEndpointProcess()
+    connection = owned_connection(client, process)
+    monkeypatch.setattr(
+        ZMQClient,
+        "shutdown_endpoint_on_port",
+        lambda **_kwargs: EndpointShutdownResult(
+            succeeded=False,
+            endpoint_terminated=False,
+        ),
+    )
+
+    connection.terminate_endpoint()
+
+    assert process.wait_count == 0
+    assert process.stop_count == 1
 
 
 def attached_connection(

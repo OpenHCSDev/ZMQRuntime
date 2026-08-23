@@ -40,6 +40,10 @@ class _EndpointProcess(EndpointProcess):
     def exit(self) -> ProcessExit | None:
         return None
 
+    def wait_for_exit(self, timeout: float) -> ProcessExit | None:
+        del timeout
+        return None
+
     def stop(
         self,
         timeout: float = 5.0,
