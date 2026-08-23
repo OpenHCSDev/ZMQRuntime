@@ -86,6 +86,14 @@ and cleanup as separate facts. A socket path is not readiness evidence; an
 unresponsive live IPC socket is not stale; and knowing a port does not grant a
 client ownership of an existing process.
 
+``EndpointProcessGroup`` is the cleanup authority when one application owner
+spawns several endpoint processes. Each exact ``multiprocessing.Process`` or
+``subprocess.Popen`` source is adapted through ``EndpointProcess`` and retained
+until it is explicitly released, observed terminated, or stopped by group
+shutdown. Adding another process cannot overwrite an earlier ownership record.
+The group never discovers or terminates processes by port, command text, or
+application label.
+
 Viewer readiness adds a stricter application-level handshake on top of this
 transport lifecycle. See :doc:`viewer_streaming_architecture`; it does not
 replace startup serialization or owned-process cleanup.

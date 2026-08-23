@@ -1,15 +1,22 @@
 """Sphinx configuration for zmqruntime."""
 
-from importlib.metadata import version as distribution_version
-from pathlib import Path
 import sys
+from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 project = "zmqruntime"
 author = "Tristan Simas"
-release = distribution_version("zmqruntime")
+project_metadata = tomllib.loads(
+    (Path(__file__).resolve().parents[2] / "pyproject.toml").read_text(encoding="utf-8")
+)["project"]
+release = project_metadata["version"]
 version = release.rsplit(".", maxsplit=1)[0]
 
 extensions = [

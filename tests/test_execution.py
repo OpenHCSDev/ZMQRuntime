@@ -13,6 +13,7 @@ from zmqruntime.client import (
     AttachedEndpointConnection,
     EndpointConnectionPolicy,
     EndpointProcess,
+    EndpointProcessGroup,
     EndpointShutdownMode,
     EndpointShutdownResult,
     OwnedEndpointConnection,
@@ -87,9 +88,69 @@ class StubEndpointProcess(EndpointProcess):
     def exit(self) -> ProcessExit | None:
         return None if self.alive else ProcessExit(0)
 
-    def stop(self, timeout: float = 5.0) -> None:
+    def stop(
+        self,
+        timeout: float = 5.0,
+        kill_timeout: float = 2.0,
+    ) -> bool:
         self.stop_count += 1
         self.alive = False
+        return False
+
+
+def test_endpoint_process_adapts_subprocess_lifecycle():
+    source = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        process = endpoint_process(source)
+
+        assert process.is_alive()
+        assert process.stop(timeout=1, kill_timeout=1) is False
+        assert not process.is_alive()
+    finally:
+        if source.poll() is None:
+            source.kill()
+            source.wait(timeout=1)
+
+
+def test_endpoint_process_rejects_structural_process_lookalike():
+    class ProcessLike:
+        def is_alive(self):
+            return True
+
+    with pytest.raises(TypeError, match="Unsupported ZMQ server process handle"):
+        endpoint_process(ProcessLike())
+
+
+def test_endpoint_process_group_stops_every_owned_process_once():
+    group = EndpointProcessGroup()
+    first = StubEndpointProcess()
+    second = StubEndpointProcess()
+
+    assert group.own(first) is first
+    assert group.own(second) is second
+    assert group.own(first) is first
+    assert group.active_count == 2
+
+    group.stop_all()
+
+    assert first.stop_count == 1
+    assert second.stop_count == 1
+    assert group.active_count == 0
+
+
+def test_endpoint_process_group_disowns_without_stopping():
+    group = EndpointProcessGroup()
+    process = StubEndpointProcess()
+    group.own(process)
+
+    assert group.disown(process) is process
+    group.stop_all()
+
+    assert process.stop_count == 0
 
 
 def owned_connection(client, process) -> OwnedEndpointConnection:

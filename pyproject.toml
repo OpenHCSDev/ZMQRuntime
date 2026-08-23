@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "zmqruntime"
-version = "0.2.11"
+version = "0.2.12"
 description = "Generic ZMQ-based distributed execution framework"
 authors = [{name = "Tristan Simas", email = "tristan.simas@mail.mcgill.ca"}]
 license = {text = "MIT"}
@@ -37,6 +37,7 @@ dependencies = [
 docs = [
     "sphinx>=7.0",
     "sphinx-rtd-theme>=2.0",
+    "tomli>=2.0; python_version < '3.11'",
 ]
 dev = [
     "pytest>=7.0",

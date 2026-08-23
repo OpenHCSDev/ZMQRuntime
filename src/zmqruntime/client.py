@@ -174,8 +174,12 @@ class EndpointProcess(ABC):
         """Return the exact process exit when it has terminated."""
 
     @abstractmethod
-    def stop(self, timeout: float = 5.0) -> None:
-        """Terminate the exact spawned process, escalating when necessary."""
+    def stop(
+        self,
+        timeout: float = 5.0,
+        kill_timeout: float = 2.0,
+    ) -> bool:
+        """Terminate the exact process and report whether escalation was required."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,15 +195,22 @@ class MultiprocessingEndpointProcess(EndpointProcess):
         returncode = self.process.exitcode
         return None if returncode is None else ProcessExit(returncode)
 
-    def stop(self, timeout: float = 5.0) -> None:
+    def stop(
+        self,
+        timeout: float = 5.0,
+        kill_timeout: float = 2.0,
+    ) -> bool:
+        forced = False
         if self.process.is_alive():
             self.process.terminate()
             self.process.join(timeout=timeout)
         if self.process.is_alive():
+            forced = True
             self.process.kill()
-            self.process.join(timeout=timeout)
+            self.process.join(timeout=kill_timeout)
         if self.process.is_alive():
             raise TimeoutError("Multiprocessing endpoint process did not terminate")
+        return forced
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,14 +226,20 @@ class SubprocessEndpointProcess(EndpointProcess):
         returncode = self.process.poll()
         return None if returncode is None else ProcessExit(returncode)
 
-    def stop(self, timeout: float = 5.0) -> None:
+    def stop(
+        self,
+        timeout: float = 5.0,
+        kill_timeout: float = 2.0,
+    ) -> bool:
         if self.process.poll() is None:
             self.process.terminate()
             try:
                 self.process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 self.process.kill()
-                self.process.wait(timeout=timeout)
+                self.process.wait(timeout=kill_timeout)
+                return True
+        return False
 
 
 EndpointProcessSource = EndpointProcess | BaseProcess | subprocess.Popen
@@ -248,6 +265,77 @@ def _(source: BaseProcess) -> EndpointProcess:
 @endpoint_process.register
 def _(source: subprocess.Popen) -> EndpointProcess:
     return SubprocessEndpointProcess(source)
+
+
+class EndpointProcessGroup:
+    """Authoritative owner for every exact endpoint process added to the group."""
+
+    def __init__(self) -> None:
+        self._processes: dict[int, EndpointProcess] = {}
+        self._lock = threading.Lock()
+
+    def own(self, source: EndpointProcessSource) -> EndpointProcess:
+        """Retain ownership of one process source until release or group shutdown."""
+
+        process = endpoint_process(source)
+        with self._lock:
+            self._discard_terminated_locked()
+            self._processes[id(source)] = process
+        return process
+
+    def disown(self, source: EndpointProcessSource) -> EndpointProcess | None:
+        """Release this group's ownership without stopping the process."""
+
+        with self._lock:
+            return self._processes.pop(id(source), None)
+
+    @property
+    def active_count(self) -> int:
+        """Return the number of processes this group still owns and observes alive."""
+
+        with self._lock:
+            self._discard_terminated_locked()
+            return len(self._processes)
+
+    def stop_all(
+        self,
+        timeout: float = 5.0,
+        kill_timeout: float = 2.0,
+    ) -> None:
+        """Stop and release every process currently owned by this group."""
+
+        with self._lock:
+            owned_processes = tuple(self._processes.items())
+
+        failures: list[BaseException] = []
+        for source_id, process in owned_processes:
+            try:
+                if process.is_alive():
+                    process.stop(timeout=timeout, kill_timeout=kill_timeout)
+            except BaseException as exc:
+                failures.append(exc)
+            finally:
+                try:
+                    alive = process.is_alive()
+                except BaseException as exc:
+                    failures.append(exc)
+                    alive = True
+                if not alive:
+                    with self._lock:
+                        if self._processes.get(source_id) is process:
+                            self._processes.pop(source_id)
+
+        if failures:
+            raise RuntimeError(
+                f"Failed to stop {len(failures)} owned endpoint process operation(s)."
+            ) from failures[0]
+
+    def _discard_terminated_locked(self) -> None:
+        terminated_ids = [
+            source_id for source_id, process in self._processes.items() if not process.is_alive()
+        ]
+        for source_id in terminated_ids:
+            self._processes.pop(source_id)
 
 
 @dataclass(frozen=True, slots=True)

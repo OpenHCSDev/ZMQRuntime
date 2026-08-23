@@ -40,8 +40,12 @@ class _EndpointProcess(EndpointProcess):
     def exit(self) -> ProcessExit | None:
         return None
 
-    def stop(self, timeout: float = 5.0) -> None:
-        return None
+    def stop(
+        self,
+        timeout: float = 5.0,
+        kill_timeout: float = 2.0,
+    ) -> bool:
+        return False
 
 
 class _StartupClient(ZMQClient):
