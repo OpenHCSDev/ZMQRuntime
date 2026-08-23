@@ -6,13 +6,80 @@ import json
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
 
 import zmq
 
+from zmqruntime.execution.responses import WireResponse
 from zmqruntime.messages import validate_progress_payload
 
 logger = logging.getLogger(__name__)
+
+
+def _freeze_wire_value(value):
+    if isinstance(value, Mapping):
+        return MappingProxyType({str(key): _freeze_wire_value(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_wire_value(item) for item in value)
+    return value
+
+
+def _thaw_wire_value(value):
+    if isinstance(value, Mapping):
+        return {str(key): _thaw_wire_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_wire_value(item) for item in value]
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionProgressObservation:
+    """Immutable latest progress event and its per-execution sequence."""
+
+    sequence: int
+    event: WireResponse
+
+    def __post_init__(self) -> None:
+        if self.sequence < 1:
+            raise ValueError("Execution progress sequence must be positive")
+        object.__setattr__(
+            self,
+            "event",
+            _freeze_wire_value(self.event),
+        )
+
+    @classmethod
+    def first(cls, event: WireResponse) -> ExecutionProgressObservation:
+        """Create the first retained observation for one execution."""
+
+        return cls(sequence=1, event=event)
+
+    def followed_by(self, event: WireResponse) -> ExecutionProgressObservation:
+        """Return the next immutable observation for the same execution."""
+
+        return type(self)(sequence=self.sequence + 1, event=event)
+
+    def as_wire(self) -> dict:
+        """Return a detached JSON-compatible projection."""
+
+        return {
+            type(self).sequence.__name__: self.sequence,
+            type(self).event.__name__: _thaw_wire_value(self.event),
+        }
+
+    @classmethod
+    def from_wire(cls, payload: WireResponse) -> ExecutionProgressObservation:
+        """Parse the projection emitted by :meth:`as_wire`."""
+
+        sequence = payload[cls.sequence.__name__]
+        event = payload[cls.event.__name__]
+        if isinstance(sequence, bool) or not isinstance(sequence, int):
+            raise TypeError("Execution progress sequence must be an integer")
+        if not isinstance(event, Mapping):
+            raise TypeError("Execution progress event must be a mapping")
+        return cls(sequence=sequence, event=event)
 
 
 class ProgressStreamSubscriber:

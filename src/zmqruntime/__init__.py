@@ -16,6 +16,7 @@ from zmqruntime.client import (
 from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.execution import (
     ExecutionLifecycleEngineABC,
+    ExecutionProgressObservation,
     ExecutionResponseDiagnostic,
     ExecutionSubmissionResponse,
     ExecutionWaiter,
@@ -250,6 +251,7 @@ __all__ = [
     "ViewerWireValue",
     "viewer_wire_key",
     "ExecutionLifecycleEngineABC",
+    "ExecutionProgressObservation",
     "InMemoryExecutionLifecycleEngine",
     "ProgressStreamSubscriber",
     "ExecutionWaiter",

@@ -18,6 +18,8 @@ Core Components
 - ``ExecutionServer`` (queue + lifecycle ownership)
 - ``ExecutionClient`` (submit/poll/wait + progress callback)
 - ``ProgressStreamSubscriber`` (client-side background progress loop)
+- ``ExecutionProgressObservation`` (immutable latest event and sequence retained
+  by the submitting client for each execution)
 - typed messages in ``zmqruntime.messages``
 
 Progress Registration
@@ -117,7 +119,9 @@ ExecutionClient Responsibilities
 --------------------------------
 
 - serialize app task payloads into ``ExecuteRequest``
-- register progress subscription before first execution submit when progress callback is enabled
+- register the progress subscription before the first execution submit
+- retain each execution's latest exact progress event and monotonic sequence on
+  the same client that submitted it
 - submit and retrieve ``execution_id``
 - wait for completion using polling waiter/policy
 - provide optional progress callback lifecycle

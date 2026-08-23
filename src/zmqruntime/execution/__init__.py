@@ -19,7 +19,10 @@ from zmqruntime.execution.logs import (
     ExecutionWorkerLogIdentity,
     ExecutionWorkerLogObservation,
 )
-from zmqruntime.execution.progress_stream import ProgressStreamSubscriber
+from zmqruntime.execution.progress_stream import (
+    ExecutionProgressObservation,
+    ProgressStreamSubscriber,
+)
 from zmqruntime.execution.responses import (
     ExecutionResponseDiagnostic,
     ExecutionSubmissionResponse,
@@ -49,6 +52,7 @@ __all__ = [
     "ExecutionLifecycleTransition",
     "ExecutionCancellationResult",
     "InMemoryExecutionLifecycleEngine",
+    "ExecutionProgressObservation",
     "ProgressStreamSubscriber",
     "ExecutionWaiter",
     "WaitPolicy",

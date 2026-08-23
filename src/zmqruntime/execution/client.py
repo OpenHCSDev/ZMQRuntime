@@ -12,7 +12,10 @@ from typing import Generic, TypeVar
 import zmq
 
 from zmqruntime.client import ZMQClient
-from zmqruntime.execution.progress_stream import ProgressStreamSubscriber
+from zmqruntime.execution.progress_stream import (
+    ExecutionProgressObservation,
+    ProgressStreamSubscriber,
+)
 from zmqruntime.execution.responses import (
     ExecutionSubmissionResponse,
     WireRequest,
@@ -26,6 +29,7 @@ from zmqruntime.messages import (
     PongResponse,
     ResponseType,
 )
+from zmqruntime.subscription import CallbackSubscription, SubscriptionABC
 from zmqruntime.timeouts import OperationDeadline
 from zmqruntime.transport import get_zmq_transport_url
 
@@ -58,9 +62,12 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
         self.progress_callback = progress_callback
         self._progress_stream: ProgressStreamSubscriber | None = None
         self._progress_client_id = str(uuid.uuid4())
-        self._progress_registered = False
+        self._progress_registration: SubscriptionABC | None = None
         self._progress_lock = threading.Lock()
-        self._progress_sequence_by_execution_id: dict[str, int] = {}
+        self._progress_by_execution_id: dict[
+            str,
+            ExecutionProgressObservation,
+        ] = {}
 
     def _start_progress_listener(self):
         if self._progress_stream is None:
@@ -226,17 +233,13 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
                 ctx.term()
 
     def disconnect(self):
-        if self.is_connected() and self._progress_registered:
+        registration = self._progress_registration
+        self._progress_registration = None
+        if registration is not None:
             try:
-                self._send_control_request(
-                    {
-                        MessageFields.TYPE: ControlMessageType.UNREGISTER_PROGRESS.value,
-                        MessageFields.CLIENT_ID: self._progress_client_id,
-                    }
-                )
+                registration.release()
             except Exception as error:
                 logger.debug("Progress unregistration failed during disconnect: %s", error)
-            self._progress_registered = False
         listener_error = None
         try:
             self._stop_progress_listener()
@@ -253,7 +256,7 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
 
     def _ensure_progress_subscription(self, *, timeout_ms: int = 5000) -> None:
         self._start_progress_listener()
-        if self._progress_registered:
+        if self._progress_registration is not None:
             return
         response = self._send_control_request(
             {
@@ -266,7 +269,20 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
             raise RuntimeError(f"Progress registration response missing status: {response}")
         if response[MessageFields.STATUS] != ResponseType.OK.value:
             raise RuntimeError(f"Progress registration failed: {response}")
-        self._progress_registered = True
+        self._progress_registration = CallbackSubscription(
+            self._unregister_progress,
+        )
+
+    def _unregister_progress(self) -> bool:
+        if not self.is_connected():
+            return True
+        self._send_control_request(
+            {
+                MessageFields.TYPE: ControlMessageType.UNREGISTER_PROGRESS.value,
+                MessageFields.CLIENT_ID: self._progress_client_id,
+            }
+        )
+        return True
 
     def enable_progress_stream(self) -> None:
         """Explicitly register and start progress streaming for this client."""
@@ -277,15 +293,28 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
     def _record_progress(self, data: dict) -> None:
         execution_id = data[MessageFields.EXECUTION_ID]
         with self._progress_lock:
-            self._progress_sequence_by_execution_id[execution_id] = (
-                self._progress_sequence_by_execution_id.get(execution_id, 0) + 1
+            current = self._progress_by_execution_id.get(execution_id)
+            observation = (
+                ExecutionProgressObservation.first(data)
+                if current is None
+                else current.followed_by(data)
             )
+            self._progress_by_execution_id[execution_id] = observation
         if self.progress_callback is not None:
             self.progress_callback(data)
 
-    def _progress_sequence(self, execution_id: str) -> int | None:
+    def progress_observation(
+        self,
+        execution_id: str,
+    ) -> ExecutionProgressObservation | None:
+        """Return the immutable latest progress observation for one execution."""
+
         with self._progress_lock:
-            return self._progress_sequence_by_execution_id.get(execution_id)
+            return self._progress_by_execution_id.get(execution_id)
+
+    def _progress_sequence(self, execution_id: str) -> int | None:
+        observation = self.progress_observation(execution_id)
+        return None if observation is None else observation.sequence
 
     @abstractmethod
     def serialize_task(

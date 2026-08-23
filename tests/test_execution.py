@@ -472,6 +472,56 @@ def test_execution_client_registers_progress_before_execute():
     )
 
 
+def test_execution_client_retains_immutable_progress_observations_per_execution():
+    client = ProgressAwareExecutionClient()
+    first = TaskProgress(
+        task_id="execution-1",
+        phase="compile",
+        status="running",
+        percent=10.0,
+        timestamp=1.0,
+        completed=1,
+        total=10,
+    ).to_dict()
+    second = TaskProgress(
+        task_id="execution-1",
+        phase="execute",
+        status="running",
+        percent=20.0,
+        timestamp=2.0,
+        completed=2,
+        total=10,
+    ).to_dict()
+    second["nested"] = {"values": [1, 2]}
+    other = TaskProgress(
+        task_id="execution-2",
+        phase="compile",
+        status="running",
+        percent=50.0,
+        timestamp=3.0,
+        completed=1,
+        total=2,
+    ).to_dict()
+
+    client._record_progress(first)
+    client._record_progress(second)
+    client._record_progress(other)
+    second["phase"] = "mutated"
+    second["nested"]["values"][0] = 99
+
+    observation = client.progress_observation("execution-1")
+    other_observation = client.progress_observation("execution-2")
+
+    assert observation is not None
+    assert observation.sequence == 2
+    assert observation.event["phase"] == "execute"
+    assert observation.event["nested"]["values"] == (1, 2)
+    assert type(observation).from_wire(observation.as_wire()) == observation
+    assert other_observation is not None
+    assert other_observation.sequence == 1
+    assert client.progress_observation("missing") is None
+
+
 def test_execution_client_disconnect_closes_base_after_listener_failure(monkeypatch):
     client = ProgressAwareExecutionClient()
     base_disconnect_called = []
