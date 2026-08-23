@@ -86,6 +86,7 @@ from zmqruntime.startup import (
     EndpointStartupStatusReader,
     EndpointStartupStatusWriter,
 )
+from zmqruntime.subscription import CallbackSubscription, SubscriptionABC
 from zmqruntime.timeouts import OperationDeadline, OperationTimeoutError
 from zmqruntime.transport import (
     DataControlPortPair,
@@ -259,6 +260,8 @@ __all__ = [
     "EventRegistryABC",
     "EventRegistryMutation",
     "EventRegistryMutationKind",
+    "CallbackSubscription",
+    "SubscriptionABC",
     "LatestEventRegistry",
     "GenericAxisProjection",
     "GenericPlateProjection",

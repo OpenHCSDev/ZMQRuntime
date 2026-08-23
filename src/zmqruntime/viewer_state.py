@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
+from zmqruntime.subscription import CallbackSubscription, SubscriptionABC
+
 if TYPE_CHECKING:
     from zmqruntime.streaming.process_manager import VisualizerProcessManager
 
@@ -399,16 +401,32 @@ class ViewerStateManager:
 
     def register_state_callback(self, callback: Callable[[ViewerInstance], None]) -> None:
         """Register a callback for state change notifications."""
-        self._state_callbacks.append(callback)
+        with self._lock:
+            if callback not in self._state_callbacks:
+                self._state_callbacks.append(callback)
 
-    def unregister_state_callback(self, callback: Callable[[ViewerInstance], None]) -> None:
+    def subscribe_state(
+        self,
+        callback: Callable[[ViewerInstance], None],
+    ) -> SubscriptionABC:
+        """Return the release capability for one state callback registration."""
+
+        self.register_state_callback(callback)
+        return CallbackSubscription(lambda: self.unregister_state_callback(callback))
+
+    def unregister_state_callback(self, callback: Callable[[ViewerInstance], None]) -> bool:
         """Unregister a state change callback."""
-        if callback in self._state_callbacks:
+        with self._lock:
+            if callback not in self._state_callbacks:
+                return False
             self._state_callbacks.remove(callback)
+            return True
 
     def _notify_state_change(self, instance: ViewerInstance) -> None:
         """Notify all registered callbacks of a state change."""
-        for callback in self._state_callbacks:
+        with self._lock:
+            callbacks = tuple(self._state_callbacks)
+        for callback in callbacks:
             try:
                 callback(instance)
             except Exception as e:

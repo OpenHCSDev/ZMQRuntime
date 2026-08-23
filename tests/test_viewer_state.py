@@ -80,3 +80,19 @@ def test_viewer_manager_delegates_the_full_readiness_timeout(viewer_manager):
     )
 
     assert visualizer.ready_timeouts == [12.5]
+
+
+def test_viewer_state_subscription_owns_idempotent_release(viewer_manager):
+    observed = []
+    subscription = viewer_manager.subscribe_state(observed.append)
+
+    viewer_manager.get_or_create_viewer(
+        viewer_type="napari",
+        port=5700,
+        factory=RecordingVisualizer,
+    )
+    assert subscription.release() is True
+    assert subscription.release() is False
+    viewer_manager.release_viewer("napari", 5700)
+
+    assert len(observed) == 2

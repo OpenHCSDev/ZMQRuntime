@@ -117,6 +117,49 @@ def test_registry_mutation_listener_observes_register_and_all_clear_routes():
     ]
 
 
+def test_registry_mutation_subscription_owns_idempotent_release():
+    registry = LatestEventRegistry[
+        _Event,
+        tuple[str, str, str],
+    ](
+        key_builder=lambda event: (event.plate_id, event.axis_id, event.channel),
+        is_terminal=lambda event: event.terminal,
+        timestamp_of=lambda event: event.timestamp,
+    )
+    mutations = []
+    subscription = registry.subscribe_mutations(mutations.append)
+
+    registry.register_event(
+        "exec-1",
+        _Event("plate-1", "A01", "pipeline", timestamp=1.0),
+    )
+    assert subscription.release() is True
+    assert subscription.release() is False
+    registry.register_event(
+        "exec-2",
+        _Event("plate-2", "A01", "pipeline", timestamp=1.0),
+    )
+
+    assert len(mutations) == 1
+    assert mutations[0].execution_id == "exec-1"
+
+
+def test_clearing_mutation_listeners_retires_owned_subscriptions():
+    registry = LatestEventRegistry[
+        _Event,
+        tuple[str, str, str],
+    ](
+        key_builder=lambda event: (event.plate_id, event.axis_id, event.channel),
+        is_terminal=lambda event: event.terminal,
+        timestamp_of=lambda event: event.timestamp,
+    )
+    subscription = registry.subscribe_mutations(lambda _mutation: None)
+
+    registry.clear_mutation_listeners()
+
+    assert subscription.release() is False
+
+
 def test_cleanup_notifies_mutation_listener_for_each_removed_execution():
     registry = LatestEventRegistry[
         _Event,

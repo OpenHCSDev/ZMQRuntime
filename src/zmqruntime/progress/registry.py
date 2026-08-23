@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Dict, Generic, List, Optional, TypeVar
 
+from zmqruntime.subscription import CallbackSubscription, SubscriptionABC
+
 TEvent = TypeVar("TEvent")
 TKey = TypeVar("TKey")
 logger = logging.getLogger(__name__)
@@ -54,6 +56,13 @@ class EventRegistryABC(ABC, Generic[TEvent]):
     def clear_all(self) -> None:
         """Drop all events while preserving registered listeners."""
 
+    @abstractmethod
+    def subscribe_mutations(
+        self,
+        listener: Callable[[EventRegistryMutation[TEvent]], None],
+    ) -> SubscriptionABC:
+        """Return the owned registration for one mutation listener."""
+
 
 class LatestEventRegistry(EventRegistryABC[TEvent], Generic[TEvent, TKey]):
     """Thread-safe registry that keeps one latest event per semantic key."""
@@ -88,15 +97,15 @@ class LatestEventRegistry(EventRegistryABC[TEvent], Generic[TEvent, TKey]):
             listeners = list(self._listeners)
             mutation_listeners = list(self._mutation_listeners)
 
-        for listener in listeners:
-            self._notify_listener(listener, execution_id, event)
-        mutation = EventRegistryMutation(
+        for event_listener in listeners:
+            self._notify_listener(event_listener, execution_id, event)
+        mutation: EventRegistryMutation[TEvent] = EventRegistryMutation(
             kind=EventRegistryMutationKind.REGISTERED,
             execution_id=execution_id,
             event=event,
         )
-        for listener in mutation_listeners:
-            self._notify_mutation_listener(listener, mutation)
+        for mutation_listener in mutation_listeners:
+            self._notify_mutation_listener(mutation_listener, mutation)
         return True
 
     def get_events(self, execution_id: str) -> List[TEvent]:
@@ -134,6 +143,15 @@ class LatestEventRegistry(EventRegistryABC[TEvent], Generic[TEvent, TKey]):
             if listener not in self._mutation_listeners:
                 self._mutation_listeners.append(listener)
 
+    def subscribe_mutations(
+        self,
+        listener: Callable[[EventRegistryMutation[TEvent]], None],
+    ) -> SubscriptionABC:
+        """Return the release capability for one mutation-listener registration."""
+
+        self.add_mutation_listener(listener)
+        return CallbackSubscription(lambda: self.remove_mutation_listener(listener))
+
     def remove_mutation_listener(
         self,
         listener: Callable[[EventRegistryMutation[TEvent]], None],
@@ -155,7 +173,7 @@ class LatestEventRegistry(EventRegistryABC[TEvent], Generic[TEvent, TKey]):
             mutation_listeners = list(self._mutation_listeners)
         if removed is None:
             return
-        mutation = EventRegistryMutation(
+        mutation: EventRegistryMutation[TEvent] = EventRegistryMutation(
             kind=EventRegistryMutationKind.CLEARED,
             execution_id=execution_id,
         )
@@ -170,7 +188,7 @@ class LatestEventRegistry(EventRegistryABC[TEvent], Generic[TEvent, TKey]):
             mutation_listeners = list(self._mutation_listeners)
         if not had_events:
             return
-        mutation = EventRegistryMutation(
+        mutation: EventRegistryMutation[TEvent] = EventRegistryMutation(
             kind=EventRegistryMutationKind.CLEARED,
             execution_id=None,
         )
@@ -198,7 +216,7 @@ class LatestEventRegistry(EventRegistryABC[TEvent], Generic[TEvent, TKey]):
             mutation_listeners = list(self._mutation_listeners)
 
         for execution_id in removed_execution_ids:
-            mutation = EventRegistryMutation(
+            mutation: EventRegistryMutation[TEvent] = EventRegistryMutation(
                 kind=EventRegistryMutationKind.CLEARED,
                 execution_id=execution_id,
             )
