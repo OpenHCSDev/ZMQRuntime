@@ -11,6 +11,8 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
 
+from zmqruntime.timeouts import OperationCancellation
+
 
 class EndpointStartupPresentationTarget(ABC):
     """Nominal rendering port consumed by endpoint-phase presentation leaves."""
@@ -38,34 +40,6 @@ EndpointStartupPresenter = Callable[
 ]
 
 
-def _present_checking(
-    target: EndpointStartupPresentationTarget,
-    message: str,
-) -> None:
-    target.present_checking(message)
-
-
-def _present_connected(
-    target: EndpointStartupPresentationTarget,
-    message: str,
-) -> None:
-    target.present_connected(message)
-
-
-def _present_disconnected(
-    target: EndpointStartupPresentationTarget,
-    message: str,
-) -> None:
-    target.present_disconnected(message)
-
-
-def _present_warning(
-    target: EndpointStartupPresentationTarget,
-    message: str,
-) -> None:
-    target.present_warning(message)
-
-
 class EndpointStartupPhase(str, Enum):
     """Closed lifecycle vocabulary for a client-managed endpoint."""
 
@@ -85,48 +59,48 @@ class EndpointStartupPhase(str, Enum):
 
     DISCONNECTED = (
         "disconnected",
-        _present_disconnected,
+        lambda target, message: target.present_disconnected(message),
         False,
     )
     CHECKING_ENDPOINT = (
         "checking_endpoint",
-        _present_checking,
+        lambda target, message: target.present_checking(message),
     )
     STARTING_PROCESS = (
         "starting_process",
-        _present_checking,
+        lambda target, message: target.present_checking(message),
     )
     LOADING_CONFIG = (
         "loading_config",
-        _present_checking,
+        lambda target, message: target.present_checking(message),
     )
     IMPORTING_RUNTIME = (
         "importing_runtime",
-        _present_checking,
+        lambda target, message: target.present_checking(message),
     )
     CREATING_SERVER = (
         "creating_server",
-        _present_checking,
+        lambda target, message: target.present_checking(message),
     )
     BINDING_ENDPOINT = (
         "binding_endpoint",
-        _present_checking,
+        lambda target, message: target.present_checking(message),
     )
     SERVER_READY = (
         "server_ready",
-        _present_checking,
+        lambda target, message: target.present_checking(message),
     )
     CONNECTED = (
         "connected",
-        _present_connected,
+        lambda target, message: target.present_connected(message),
     )
     PREPARING_CAPABILITIES = (
         "preparing_capabilities",
-        _present_warning,
+        lambda target, message: target.present_warning(message),
     )
     FAILED = (
         "failed",
-        _present_disconnected,
+        lambda target, message: target.present_disconnected(message),
         False,
         True,
     )
@@ -273,6 +247,24 @@ class IdleEndpointStartupObserver(EndpointStartupObserver):
 
 
 IDLE_ENDPOINT_STARTUP_OBSERVER = IdleEndpointStartupObserver()
+
+
+class EndpointStartupCancellationObserver(EndpointStartupObserver):
+    """Abort readiness when the client cancels its current connection attempt."""
+
+    def __init__(
+        self,
+        cancellation: OperationCancellation,
+        observed: EndpointStartupObserver = IDLE_ENDPOINT_STARTUP_OBSERVER,
+    ) -> None:
+        self._cancellation = cancellation
+        self._observed = observed
+
+    def poll_activity(self) -> bool:
+        return self._observed.poll_activity()
+
+    def should_abort(self) -> bool:
+        return self._cancellation.requested() or self._observed.should_abort()
 
 
 class EndpointStartupStatusMonitor(EndpointStartupObserver):

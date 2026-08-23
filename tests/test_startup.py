@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import threading
 from functools import partialmethod
 
-from zmqruntime.client import EndpointProcess, ZMQClient
+from zmqruntime.client import EndpointConnectionPolicy, EndpointProcess, ZMQClient
 from zmqruntime.messages import PongResponse, ProcessExit, ServerRole
 from zmqruntime.startup import (
+    EndpointStartupCancellationObserver,
     EndpointStartupObserver,
     EndpointStartupPhase,
     EndpointStartupPresentationTarget,
@@ -14,6 +16,7 @@ from zmqruntime.startup import (
     EndpointStartupStatusReader,
     EndpointStartupStatusWriter,
 )
+from zmqruntime.timeouts import OperationCancellation
 from zmqruntime.transport import get_default_transport_mode, wait_for_server_ready
 
 
@@ -165,6 +168,91 @@ def test_startup_monitor_owns_relay_failure_and_process_exit_state(tmp_path) -> 
     assert monitor.should_abort() is True
 
 
+def test_cancellation_observer_composes_with_startup_monitor(tmp_path) -> None:
+    cancellation = OperationCancellation()
+    path = tmp_path / "startup.jsonl"
+    EndpointStartupStatusWriter(path).emit(
+        EndpointStartupPhase.IMPORTING_RUNTIME,
+        "Importing runtime",
+    )
+    relayed = []
+    monitor = EndpointStartupCancellationObserver(
+        cancellation,
+        EndpointStartupStatusMonitor(
+            path,
+            status_emitter=lambda phase, message: relayed.append((phase, message)),
+            process_has_exited=lambda: False,
+        ),
+    )
+
+    assert monitor.poll_activity() is True
+    assert relayed == [(EndpointStartupPhase.IMPORTING_RUNTIME, "Importing runtime")]
+    assert monitor.should_abort() is False
+
+    cancellation.cancel()
+
+    assert monitor.should_abort() is True
+
+
+def test_cancelled_client_does_not_spawn_an_endpoint() -> None:
+    statuses = []
+    client = _StartupClient(statuses)
+    attempt = client.new_connection_attempt()
+    attempt.cancel()
+
+    assert attempt.connect(EndpointConnectionPolicy.ATTACH_OR_START, 1) is False
+    assert [status.phase for status in statuses] == [
+        EndpointStartupPhase.CHECKING_ENDPOINT,
+        EndpointStartupPhase.DISCONNECTED,
+    ]
+
+    assert client.connect(timeout=1) is True
+    assert client.connected_endpoint is not None
+
+
+def test_concurrent_attempts_use_their_exact_cancellation_tokens() -> None:
+    statuses = []
+    client = _StartupClient(statuses)
+    first_started = threading.Event()
+    release_first = threading.Event()
+    original_connect_locked = client._connect_locked
+
+    def delayed_connect_locked(timeout, *, operation_deadline=None):
+        first_started.set()
+        release_first.wait(timeout=1.0)
+        return original_connect_locked(
+            timeout,
+            operation_deadline=operation_deadline,
+        )
+
+    client._connect_locked = delayed_connect_locked
+    results: list[bool] = []
+    first_attempt = client.new_connection_attempt()
+    second_attempt = client.new_connection_attempt()
+    first = threading.Thread(
+        target=lambda: results.append(
+            first_attempt.connect(EndpointConnectionPolicy.ATTACH_OR_START, 1)
+        )
+    )
+    second = threading.Thread(
+        target=lambda: results.append(
+            second_attempt.connect(EndpointConnectionPolicy.ATTACH_OR_START, 1)
+        )
+    )
+
+    first.start()
+    assert first_started.wait(timeout=1.0)
+    second.start()
+    first_attempt.cancel()
+    release_first.set()
+    first.join(timeout=2.0)
+    second.join(timeout=2.0)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert results == [False, True]
+
+
 def test_typed_handshake_preserves_legacy_readiness_extension_point() -> None:
     client = _LegacyStartupClient([])
 
@@ -264,9 +352,9 @@ def test_readiness_timeout_is_an_inactivity_deadline(
         lambda duration: now.__setitem__(0, now[0] + duration),
     )
     monkeypatch.setattr(
-        get_default_transport_mode(),
+        get_default_transport_mode().declaration,
         "endpoint_in_use",
-        lambda _port, _host, _config: False,
+        staticmethod(lambda _port, _host, _config: False),
     )
 
     ready = wait_for_server_ready(

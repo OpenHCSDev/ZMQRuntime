@@ -1,7 +1,10 @@
 import pytest
 
+from zmqruntime.client import EndpointClientSession, EndpointCompatibilityClientABC
 from zmqruntime.messages import (
     CancelRequest,
+    ControlMessageType,
+    ControlRequestHeader,
     EndpointApplication,
     EndpointApplicationCompatibilityError,
     ExecuteRequest,
@@ -13,6 +16,13 @@ from zmqruntime.messages import (
     ServerRole,
     WorkerState,
 )
+
+
+def test_control_request_header_owns_dict_and_pickle_wire_round_trip() -> None:
+    request = ControlRequestHeader(ControlMessageType.PING)
+
+    assert ControlRequestHeader.from_dict(request.to_dict()) == request
+    assert ControlRequestHeader.from_wire_payload(request.to_wire_payload()) == request
 
 
 def test_endpoint_application_owns_exact_compatibility() -> None:
@@ -36,6 +46,31 @@ def test_endpoint_application_owns_exact_compatibility() -> None:
         match=("expected test-app 1.2.3, observed test-app 1.2.2"),
     ):
         incompatible.require_match()
+
+
+def test_endpoint_client_session_exposes_only_an_admitted_client() -> None:
+    expected = EndpointApplication(identifier="test-app", version="1.2.3")
+
+    class Client(EndpointCompatibilityClientABC):
+        def __init__(self, observed: EndpointApplication) -> None:
+            self.observed = observed
+
+        def endpoint_compatibility(self):
+            return expected.compatibility_with(self.observed)
+
+    admitted_client = Client(expected)
+    admitted_session = EndpointClientSession(admitted_client)
+    assert admitted_session.admitted_client is None
+    admitted_session.observe_compatibility()
+    assert admitted_session.require_admitted_client() is admitted_client
+    assert admitted_session.admitted_client is admitted_client
+
+    foreign_client = Client(EndpointApplication("foreign", "1.2.3"))
+    foreign_session = EndpointClientSession(foreign_client)
+    foreign_session.observe_compatibility()
+    assert foreign_session.admitted_client is None
+    with pytest.raises(EndpointApplicationCompatibilityError):
+        foreign_session.require_admitted_client()
 
 
 def test_execute_request_roundtrip():

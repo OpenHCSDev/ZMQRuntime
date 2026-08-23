@@ -21,6 +21,7 @@ from zmqruntime.execution.responses import (
 from zmqruntime.execution.wait_policy import ExecutionWaiter, WaitPolicy
 from zmqruntime.messages import (
     ControlMessageType,
+    ControlRequestHeader,
     MessageFields,
     PongResponse,
     ResponseType,
@@ -167,7 +168,7 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
         if not self.is_connected() and not self.connect():
             raise RuntimeError("Not connected")
         response = self._send_control_request(
-            {MessageFields.TYPE: ControlMessageType.PING.value},
+            ControlRequestHeader(ControlMessageType.PING).to_dict(),
             timeout_ms=1000,
         )
         if not isinstance(response, dict):
@@ -236,8 +237,19 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
             except Exception as error:
                 logger.debug("Progress unregistration failed during disconnect: %s", error)
             self._progress_registered = False
-        self._stop_progress_listener()
-        super().disconnect()
+        listener_error = None
+        try:
+            self._stop_progress_listener()
+        except Exception as error:
+            listener_error = error
+        try:
+            super().disconnect()
+        except Exception as base_error:
+            if listener_error is not None:
+                raise base_error from listener_error
+            raise
+        if listener_error is not None:
+            raise listener_error
 
     def _ensure_progress_subscription(self, *, timeout_ms: int = 5000) -> None:
         self._start_progress_listener()

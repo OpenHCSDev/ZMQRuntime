@@ -472,6 +472,49 @@ def test_execution_client_registers_progress_before_execute():
     )
 
 
+def test_execution_client_disconnect_closes_base_after_listener_failure(monkeypatch):
+    client = ProgressAwareExecutionClient()
+    base_disconnect_called = []
+
+    monkeypatch.setattr(
+        client,
+        "_stop_progress_listener",
+        lambda: (_ for _ in ()).throw(TimeoutError("listener still running")),
+    )
+    monkeypatch.setattr(
+        ZMQClient,
+        "disconnect",
+        lambda _client: base_disconnect_called.append(True),
+    )
+
+    with pytest.raises(TimeoutError, match="listener still running"):
+        client.disconnect()
+
+    assert base_disconnect_called == [True]
+
+
+def test_execution_client_disconnect_chains_listener_and_base_failures(
+    monkeypatch,
+):
+    client = ProgressAwareExecutionClient()
+
+    monkeypatch.setattr(
+        client,
+        "_stop_progress_listener",
+        lambda: (_ for _ in ()).throw(TimeoutError("listener still running")),
+    )
+    monkeypatch.setattr(
+        ZMQClient,
+        "disconnect",
+        lambda _client: (_ for _ in ()).throw(RuntimeError("base close failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="base close failed") as error:
+        client.disconnect()
+
+    assert isinstance(error.value.__cause__, TimeoutError)
+
+
 class EndpointPolicyExecutionClient(ExecutionClient):
     def __init__(
         self,
@@ -529,9 +572,9 @@ class EndpointPolicyExecutionClient(ExecutionClient):
 
 def test_ipc_connect_preserves_unresponsive_live_server_endpoint(monkeypatch):
     monkeypatch.setattr(
-        TransportMode.IPC,
+        TransportMode.IPC.declaration,
         "preserve_unresponsive_endpoint",
-        lambda _port, _config: True,
+        classmethod(lambda _cls, _port, _config: True),
     )
     client = EndpointPolicyExecutionClient()
 
@@ -545,9 +588,9 @@ def test_ipc_connect_preserves_unresponsive_live_server_endpoint(monkeypatch):
 
 def test_ipc_connect_removes_stale_endpoint_before_spawning(monkeypatch):
     monkeypatch.setattr(
-        TransportMode.IPC,
+        TransportMode.IPC.declaration,
         "preserve_unresponsive_endpoint",
-        lambda _port, _config: False,
+        classmethod(lambda _cls, _port, _config: False),
     )
     client = EndpointPolicyExecutionClient()
 
@@ -887,9 +930,9 @@ def test_known_server_process_liveness_leaves_remote_identity_unknown(monkeypatc
     client = EndpointPolicyExecutionClient(transport_mode=TransportMode.TCP)
     client._connection = attached_connection(client, ProcessIdentity.current())
     monkeypatch.setattr(
-        TransportMode.TCP,
+        TransportMode.TCP.declaration,
         "endpoint_is_local",
-        lambda _host, _port: False,
+        classmethod(lambda _cls, _host, _port: False),
     )
 
     assert client.known_server_process_is_alive() is None

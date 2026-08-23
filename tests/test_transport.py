@@ -18,7 +18,11 @@ from zmqruntime.messages import (
     SocketType,
 )
 from zmqruntime.server import ZMQServer
-from zmqruntime.timeouts import OperationDeadline, OperationTimeoutError
+from zmqruntime.timeouts import (
+    OperationCancellation,
+    OperationDeadline,
+    OperationTimeoutError,
+)
 from zmqruntime.transport import (
     DataControlPortPairAuthority,
     TcpDataControlPortPairAuthority,
@@ -34,6 +38,52 @@ from zmqruntime.transport import (
     wait_for_endpoint_ready,
     wait_for_server_ready,
 )
+
+
+class _BindingSocket:
+    def __init__(self) -> None:
+        self.bound = []
+        self.random_bind_requests = []
+
+    def bind(self, endpoint: str) -> None:
+        self.bound.append(endpoint)
+
+    def bind_to_random_port(self, endpoint: str) -> int:
+        self.random_bind_requests.append(endpoint)
+        return 45678
+
+
+def test_transport_mode_owns_tcp_socket_binding() -> None:
+    endpoint_socket = _BindingSocket()
+
+    port = TransportMode.TCP.declaration.bind_socket(
+        endpoint_socket,
+        "127.0.0.1",
+        None,
+        ZMQConfig(),
+    )
+
+    assert port == 45678
+    assert endpoint_socket.random_bind_requests == ["tcp://127.0.0.1"]
+    assert endpoint_socket.bound == []
+
+
+@pytest.mark.skipif(platform.system() == "Windows", reason="IPC is POSIX-only")
+def test_transport_mode_owns_ipc_socket_binding() -> None:
+    endpoint_socket = _BindingSocket()
+    config = ZMQConfig(app_name=f"zmqruntime-bind-{uuid.uuid4().hex}")
+
+    port = TransportMode.IPC.declaration.bind_socket(
+        endpoint_socket,
+        "localhost",
+        45679,
+        config,
+    )
+
+    assert port == 45679
+    assert len(endpoint_socket.bound) == 1
+    assert endpoint_socket.bound[0].startswith("ipc://")
+    assert endpoint_socket.random_bind_requests == []
 
 
 @pytest.mark.skipif(platform.system() == "Windows", reason="IPC is POSIX-only")
@@ -67,6 +117,52 @@ def test_ipc_startup_lock_obeys_total_operation_deadline() -> None:
                 operation_deadline=deadline,
             ):
                 raise AssertionError("contended lock must not be entered")
+    finally:
+        release_lock.set()
+        holder.join(timeout=1.0)
+        assert not holder.is_alive()
+        socket_path = get_ipc_socket_path(port, config)
+        assert socket_path is not None
+        socket_path.with_name(f"{socket_path.name}.startup.lock").unlink()
+        socket_path.parent.rmdir()
+
+
+@pytest.mark.skipif(platform.system() == "Windows", reason="IPC is POSIX-only")
+def test_ipc_startup_lock_observes_cancellation_while_contended() -> None:
+    config = ZMQConfig(
+        app_name=f"zmqruntime-lock-{uuid.uuid4().hex}",
+        ipc_socket_prefix="test",
+    )
+    port = 45555
+    lock_entered = threading.Event()
+    release_lock = threading.Event()
+    cancellation = OperationCancellation()
+
+    def hold_lock() -> None:
+        with endpoint_startup_lock(port, TransportMode.IPC, config):
+            lock_entered.set()
+            release_lock.wait(timeout=5.0)
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    assert lock_entered.wait(timeout=1.0)
+    try:
+
+        def cancel_soon() -> None:
+            time.sleep(0.02)
+            cancellation.cancel()
+
+        canceller = threading.Thread(target=cancel_soon)
+        canceller.start()
+        with endpoint_startup_lock(
+            port,
+            TransportMode.IPC,
+            config,
+            cancellation=cancellation,
+        ) as acquired:
+            assert acquired is False
+        canceller.join(timeout=1.0)
+        assert not canceller.is_alive()
     finally:
         release_lock.set()
         holder.join(timeout=1.0)
@@ -131,7 +227,10 @@ def test_data_control_port_pair_authority_uses_ipc_path_occupancy() -> None:
         control_port_offset=1000,
         app_name=f"zmqruntime-pair-{uuid.uuid4().hex}",
     )
-    occupied_path = TransportMode.IPC.socket_path(config.default_port, config)
+    occupied_path = TransportMode.IPC.declaration.socket_path(
+        config.default_port,
+        config,
+    )
     assert occupied_path is not None
     occupied_path.parent.mkdir(parents=True)
     occupied_path.touch()
@@ -175,8 +274,8 @@ def test_get_default_transport_mode():
 def test_transport_declarations_own_platform_support_and_default(monkeypatch):
     monkeypatch.setattr("zmqruntime.transport_modes.platform.system", lambda: "Windows")
 
-    assert TransportMode.TCP.is_supported() is True
-    assert TransportMode.IPC.is_supported() is False
+    assert TransportMode.TCP.declaration.is_supported() is True
+    assert TransportMode.IPC.declaration.is_supported() is False
     assert get_default_transport_mode() is TransportMode.TCP
 
 
@@ -388,9 +487,9 @@ def test_wait_for_server_ready_retries_until_server_reports_ready(
     ping_calls = []
 
     monkeypatch.setattr(
-        TransportMode.IPC,
+        TransportMode.IPC.declaration,
         "endpoint_in_use",
-        lambda _port, _host, _config: True,
+        staticmethod(lambda _port, _host, _config: True),
     )
 
     def ping(endpoint, config, *, timeout_ms):
@@ -427,9 +526,9 @@ def test_startup_activity_cannot_extend_an_operation_deadline(monkeypatch):
             return False
 
     monkeypatch.setattr(
-        TransportMode.TCP,
+        TransportMode.TCP.declaration,
         "endpoint_in_use",
-        lambda _port, _host, _config: False,
+        staticmethod(lambda _port, _host, _config: False),
     )
     observer = AlwaysActiveObserver()
     operation_deadline = OperationDeadline.after_milliseconds(
@@ -460,9 +559,9 @@ def test_wait_for_endpoint_ready_returns_the_authoritative_handshake(monkeypatch
         server_role=ServerRole.GENERIC,
     )
     monkeypatch.setattr(
-        TransportMode.IPC,
+        TransportMode.IPC.declaration,
         "endpoint_in_use",
-        lambda _port, _host, _config: True,
+        staticmethod(lambda _port, _host, _config: True),
     )
     monkeypatch.setattr(
         TransportEndpoint,

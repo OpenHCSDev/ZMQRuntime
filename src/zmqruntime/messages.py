@@ -5,7 +5,10 @@ Application-specific logic (pipelines, compilation, etc.) should extend these ty
 at the application layer, not in this runtime library.
 """
 
+from __future__ import annotations
+
 import logging
+import pickle
 import signal
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
@@ -385,6 +388,33 @@ class ControlMessageType(Enum):
     FORCE_SHUTDOWN = "force_shutdown"
     REGISTER_PROGRESS = "register_progress"
     UNREGISTER_PROGRESS = "unregister_progress"
+
+
+@dataclass(frozen=True, slots=True)
+class ControlRequestHeader:
+    """Canonical control-message identity and its pickle wire boundary."""
+
+    message_type: ControlMessageType
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, object]) -> ControlRequestHeader:
+        raw_message_type = payload[MessageFields.TYPE]
+        if not isinstance(raw_message_type, str):
+            raise TypeError("Control request type must be a string.")
+        return cls(ControlMessageType(raw_message_type))
+
+    @classmethod
+    def from_wire_payload(cls, wire_payload: bytes) -> ControlRequestHeader:
+        payload = pickle.loads(wire_payload)
+        if not isinstance(payload, Mapping):
+            raise TypeError("Control request payload must be a mapping.")
+        return cls.from_dict(payload)
+
+    def to_dict(self) -> dict[str, str]:
+        return {MessageFields.TYPE: self.message_type.value}
+
+    def to_wire_payload(self) -> bytes:
+        return pickle.dumps(self.to_dict())
 
 
 class ResponseType(Enum):
@@ -963,7 +993,7 @@ class EndpointApplicationCompatibility:
             raise EndpointApplicationCompatibilityError(self)
 
 
-@dataclass(frozen=True)
+@dataclass
 class EndpointApplicationCompatibilityError(ValueError):
     """Raised when an endpoint does not match its required application identity."""
 

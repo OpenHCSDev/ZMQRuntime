@@ -10,16 +10,20 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, wait
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from enum import Enum
 from functools import singledispatch
 from multiprocessing.process import BaseProcess
+from typing import Generic, TypeVar
 
 import zmq
 
 from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.messages import (
     ControlMessageType,
+    EndpointApplicationCompatibility,
     EndpointControlCapability,
     MessageFields,
     PongResponse,
@@ -27,11 +31,14 @@ from zmqruntime.messages import (
     ResponseType,
 )
 from zmqruntime.startup import (
+    IDLE_ENDPOINT_STARTUP_OBSERVER,
+    EndpointStartupCancellationObserver,
+    EndpointStartupObserver,
     EndpointStartupPhase,
     EndpointStartupStatus,
     EndpointStartupStatusCallback,
 )
-from zmqruntime.timeouts import OperationDeadline
+from zmqruntime.timeouts import OperationCancellation, OperationDeadline
 from zmqruntime.transport import (
     TransportEndpoint,
     endpoint_startup_lock,
@@ -65,10 +72,70 @@ class EndpointConnectionPolicy(Enum):
         lambda client, timeout: client.connect_existing(timeout=timeout),
     )
 
-    def connect(self, client: ZMQClient, timeout: float) -> bool:
+    def connect(
+        self,
+        client: ZMQClient,
+        timeout: float,
+    ) -> bool:
         """Execute this policy's exact connection leaf."""
 
         return self._connector(client, timeout)
+
+
+class EndpointConnectionAttempt:
+    """One cancellable invocation of a declared endpoint connection policy."""
+
+    __slots__ = ("_cancellation", "_client")
+
+    def __init__(self, client: ZMQClient) -> None:
+        self._client = client
+        self._cancellation = OperationCancellation()
+
+    def cancel(self) -> None:
+        """Request cancellation of this exact attempt."""
+
+        self._cancellation.cancel()
+
+    def connect(self, policy: EndpointConnectionPolicy, timeout: float) -> bool:
+        """Execute the selected connection leaf under this attempt's authority."""
+
+        with self._client._bind_connection_attempt(self._cancellation):
+            return policy.connect(self._client, timeout)
+
+
+class EndpointCompatibilityClientABC(ABC):
+    """Nominal client contract able to prove endpoint application identity."""
+
+    @abstractmethod
+    def endpoint_compatibility(self) -> EndpointApplicationCompatibility:
+        """Return compatibility with the application's local declaration."""
+
+
+CompatibleClientT = TypeVar("CompatibleClientT", bound=EndpointCompatibilityClientABC)
+
+
+@dataclass(slots=True, eq=False)
+class EndpointClientSession(Generic[CompatibleClientT]):
+    """One observed transport client and its application admission proof."""
+
+    client: CompatibleClientT
+    compatibility: EndpointApplicationCompatibility | None = None
+
+    def observe_compatibility(self) -> EndpointApplicationCompatibility:
+        self.compatibility = self.client.endpoint_compatibility()
+        return self.compatibility
+
+    def require_admitted_client(self) -> CompatibleClientT:
+        if self.compatibility is None:
+            raise RuntimeError("Endpoint compatibility has not been observed")
+        self.compatibility.require_match()
+        return self.client
+
+    @property
+    def admitted_client(self) -> CompatibleClientT | None:
+        if self.compatibility is None or not self.compatibility.matches:
+            return None
+        return self.client
 
 
 class ClientEndpointConnection(ABC):
@@ -275,7 +342,7 @@ class _EndpointShutdownOperation:
         process_identity = None if self.endpoint is None else self.endpoint.process_identity
         if (
             process_identity is not None
-            and self.target.transport_mode.endpoint_is_local(
+            and self.target.transport_mode.declaration.endpoint_is_local(
                 self.target.host,
                 self.target.control_port(self.config),
             )
@@ -329,6 +396,12 @@ class EndpointShutdownMode(str, Enum):
 
         return cls.GRACEFUL if graceful else cls.FORCE
 
+    @classmethod
+    def from_force(cls, force: bool) -> EndpointShutdownMode:
+        """Resolve a force flag only at the nominal declaration boundary."""
+
+        return cls.FORCE if force else cls.GRACEFUL
+
     def complete(
         self,
         operation: _EndpointShutdownOperation,
@@ -362,6 +435,10 @@ class ZMQClient(ABC):
         self.control_socket = None
         self._connection: ClientEndpointConnection | None = None
         self._lock = threading.Lock()
+        self._connection_cancellation: ContextVar[OperationCancellation | None] = ContextVar(
+            f"{type(self).__qualname__}.connection_cancellation",
+            default=None,
+        )
         self._connection_status_callback = connection_status_callback
         self._connection_status_sequence = 0
 
@@ -398,65 +475,111 @@ class ZMQClient(ABC):
         if self._connection_status_callback is not None:
             self._connection_status_callback(status)
 
+    @contextmanager
+    def _bind_connection_attempt(
+        self,
+        cancellation: OperationCancellation,
+    ):
+        """Bind the exact cancellation authority for one connection attempt."""
+
+        if self._connection_cancellation.get() is not None:
+            raise RuntimeError("A connection attempt is already active in this context")
+        token = self._connection_cancellation.set(cancellation)
+        try:
+            yield
+        finally:
+            self._connection_cancellation.reset(token)
+
+    @contextmanager
+    def _ensure_connection_attempt(self):
+        """Give direct client calls an exact local cancellation authority."""
+
+        if self._connection_cancellation.get() is not None:
+            yield
+            return
+        with self._bind_connection_attempt(OperationCancellation()):
+            yield
+
+    def new_connection_attempt(self) -> EndpointConnectionAttempt:
+        """Create the exact cancellable authority for one future connection call."""
+
+        return EndpointConnectionAttempt(self)
+
+    def _connection_cancelled(self) -> bool:
+        cancellation = self._connection_cancellation.get()
+        return cancellation is not None and cancellation.requested()
+
     def connect(
         self,
         timeout: float = 10.0,
         *,
         operation_deadline: OperationDeadline | None = None,
     ):
-        self._emit_connection_status(
-            EndpointStartupPhase.CHECKING_ENDPOINT,
-            f"Checking server endpoint on port {self.port}",
-        )
-        try:
-            with self._lock:
-                return self._connect_locked(
-                    timeout,
-                    operation_deadline=operation_deadline,
-                )
-        except BaseException as error:
+        with self._ensure_connection_attempt():
             self._emit_connection_status(
-                EndpointStartupPhase.FAILED,
-                f"Server endpoint connection failed: {error}",
+                EndpointStartupPhase.CHECKING_ENDPOINT,
+                f"Checking server endpoint on port {self.port}",
             )
-            raise
+            try:
+                with self._lock:
+                    return self._connect_locked(
+                        timeout,
+                        operation_deadline=operation_deadline,
+                    )
+            except BaseException as error:
+                self._emit_connection_status(
+                    EndpointStartupPhase.FAILED,
+                    f"Server endpoint connection failed: {error}",
+                )
+                raise
 
-    def connect_existing(self, timeout: float = 1.0) -> bool:
+    def connect_existing(
+        self,
+        timeout: float = 1.0,
+    ) -> bool:
         """Attach to a ready endpoint without starting or replacing a server."""
 
-        self._emit_connection_status(
-            EndpointStartupPhase.CHECKING_ENDPOINT,
-            f"Checking existing server endpoint on port {self.port}",
-        )
-        try:
-            with self._lock:
-                if self.is_connected():
-                    self._emit_connected_status()
-                    return True
-                with endpoint_startup_lock(
-                    self.port,
-                    self.transport_mode,
-                    self.config,
-                ):
-                    if not self._is_port_in_use(self.port):
+        with self._ensure_connection_attempt():
+            self._emit_connection_status(
+                EndpointStartupPhase.CHECKING_ENDPOINT,
+                f"Checking existing server endpoint on port {self.port}",
+            )
+            try:
+                with self._lock:
+                    if self.is_connected():
+                        self._emit_connected_status()
+                        return True
+                    if self._connection_cancelled():
+                        return self._cancelled_connection_result()
+                    with endpoint_startup_lock(
+                        self.port,
+                        self.transport_mode,
+                        self.config,
+                        cancellation=self._connection_cancellation.get(),
+                    ) as lock_acquired:
+                        if not lock_acquired:
+                            return self._cancelled_connection_result()
+                        if not self._is_port_in_use(self.port):
+                            self._emit_connection_status(
+                                EndpointStartupPhase.DISCONNECTED,
+                                f"No server endpoint available on port {self.port}",
+                            )
+                            return False
+                        if self._attach_existing_endpoint(timeout):
+                            return True
+                        if self._connection_cancelled():
+                            return self._cancelled_connection_result()
                         self._emit_connection_status(
-                            EndpointStartupPhase.DISCONNECTED,
-                            f"No server endpoint available on port {self.port}",
+                            EndpointStartupPhase.FAILED,
+                            f"Server endpoint on port {self.port} is unresponsive",
                         )
                         return False
-                    if self._attach_existing_endpoint(timeout):
-                        return True
-                    self._emit_connection_status(
-                        EndpointStartupPhase.FAILED,
-                        f"Server endpoint on port {self.port} is unresponsive",
-                    )
-                    return False
-        except BaseException as error:
-            self._emit_connection_status(
-                EndpointStartupPhase.FAILED,
-                f"Existing server endpoint connection failed: {error}",
-            )
-            raise
+            except BaseException as error:
+                self._emit_connection_status(
+                    EndpointStartupPhase.FAILED,
+                    f"Existing server endpoint connection failed: {error}",
+                )
+                raise
 
     def _connect_locked(
         self,
@@ -469,12 +592,17 @@ class ZMQClient(ABC):
         if self.is_connected():
             self._emit_connected_status()
             return True
+        if self._connection_cancelled():
+            return self._cancelled_connection_result()
         with endpoint_startup_lock(
             self.port,
             self.transport_mode,
             self.config,
             operation_deadline=operation_deadline,
-        ):
+            cancellation=self._connection_cancellation.get(),
+        ) as lock_acquired:
+            if not lock_acquired:
+                return self._cancelled_connection_result()
             if self._is_port_in_use(self.port):
                 attach_timeout = (
                     timeout
@@ -483,7 +611,9 @@ class ZMQClient(ABC):
                 )
                 if self._attach_existing_endpoint(attach_timeout):
                     return True
-                if self.transport_mode.preserve_unresponsive_endpoint(
+                if self._connection_cancelled():
+                    return self._cancelled_connection_result()
+                if self.transport_mode.declaration.preserve_unresponsive_endpoint(
                     self.port,
                     self.config,
                 ):
@@ -498,6 +628,8 @@ class ZMQClient(ABC):
                     time.sleep(0.5)
                 else:
                     time.sleep(min(0.5, operation_deadline.remaining_seconds()))
+            if self._connection_cancelled():
+                return self._cancelled_connection_result()
             self._emit_connection_status(
                 EndpointStartupPhase.STARTING_PROCESS,
                 f"Starting server process for port {self.port}",
@@ -522,11 +654,17 @@ class ZMQClient(ABC):
             if endpoint is None:
                 process.stop()
                 self.endpoint.cleanup(self.config)
+                if self._connection_cancelled():
+                    return self._cancelled_connection_result()
                 self._emit_connection_status(
                     EndpointStartupPhase.FAILED,
                     f"Server endpoint on port {self.port} did not become ready",
                 )
                 return False
+            if self._connection_cancelled():
+                process.stop()
+                self.endpoint.cleanup(self.config)
+                return self._cancelled_connection_result()
             owned_connection = OwnedEndpointConnection(
                 process=process,
                 target=self.endpoint,
@@ -547,7 +685,7 @@ class ZMQClient(ABC):
             self.port,
             timeout_ms=self._existing_endpoint_probe_timeout_ms(timeout),
         )
-        if endpoint is None:
+        if endpoint is None or self._connection_cancelled():
             return False
         self._setup_client_sockets()
         self._connection = AttachedEndpointConnection(endpoint)
@@ -559,6 +697,13 @@ class ZMQClient(ABC):
             EndpointStartupPhase.CONNECTED,
             f"Connected to server endpoint on port {self.port}",
         )
+
+    def _cancelled_connection_result(self) -> bool:
+        self._emit_connection_status(
+            EndpointStartupPhase.DISCONNECTED,
+            f"Connection attempt cancelled for port {self.port}",
+        )
+        return False
 
     def disconnect(self):
         with self._lock:
@@ -605,7 +750,7 @@ class ZMQClient(ABC):
         if connection is None:
             return None
         return connection.known_process_is_alive(
-            self.transport_mode.endpoint_is_local(
+            self.transport_mode.declaration.endpoint_is_local(
                 self.host,
                 self.control_port,
             )
@@ -704,6 +849,19 @@ class ZMQClient(ABC):
             host=self.host,
             config=self.config,
             timeout=timeout,
+            startup_observer=self._connection_startup_observer(),
+        )
+
+    def _connection_startup_observer(
+        self,
+        observed: EndpointStartupObserver = IDLE_ENDPOINT_STARTUP_OBSERVER,
+    ) -> EndpointStartupObserver:
+        """Compose client cancellation with an optional startup observer."""
+
+        cancellation = self._connection_cancellation.get()
+        return EndpointStartupCancellationObserver(
+            cancellation or OperationCancellation(),
+            observed,
         )
 
     def _is_port_in_use(self, port: int) -> bool:
@@ -715,7 +873,7 @@ class ZMQClient(ABC):
         )
 
     def _kill_processes_on_port(self, port: int):
-        self.transport_mode.kill_processes_on_port(port, self.config)
+        self.transport_mode.declaration.kill_processes_on_port(port, self.config)
 
     @staticmethod
     def scan_servers(

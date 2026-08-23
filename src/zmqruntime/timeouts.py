@@ -2,12 +2,28 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass
 
 
 class OperationTimeoutError(TimeoutError):
     """Raised before an operation can enter its next side-effecting phase."""
+
+
+class OperationCancellation:
+    """One explicit, thread-safe cancellation authority for an operation."""
+
+    __slots__ = ("_requested",)
+
+    def __init__(self) -> None:
+        self._requested = threading.Event()
+
+    def cancel(self) -> None:
+        self._requested.set()
+
+    def requested(self) -> bool:
+        return self._requested.is_set()
 
 
 @dataclass(frozen=True, slots=True)

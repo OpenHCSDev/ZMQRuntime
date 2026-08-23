@@ -12,12 +12,12 @@ from pathlib import Path
 import zmq
 
 from zmqruntime.config import TransportMode, ZMQConfig
-from zmqruntime.messages import ControlMessageType, MessageFields, PongResponse
+from zmqruntime.messages import ControlMessageType, ControlRequestHeader, PongResponse
 from zmqruntime.startup import (
     IDLE_ENDPOINT_STARTUP_OBSERVER,
     EndpointStartupObserver,
 )
-from zmqruntime.timeouts import OperationDeadline
+from zmqruntime.timeouts import OperationCancellation, OperationDeadline
 
 _default_config = ZMQConfig()
 
@@ -72,7 +72,11 @@ class TransportEndpoint:
         return frozenset(
             port
             for port in self.port_pair(config).ports
-            if self.transport_mode.endpoint_in_use(port, self.host, config)
+            if self.transport_mode.declaration.endpoint_in_use(
+                port,
+                self.host,
+                config,
+            )
         )
 
     def control_url(self, config: ZMQConfig) -> str:
@@ -88,7 +92,7 @@ class TransportEndpoint:
     def is_in_use(self, config: ZMQConfig) -> bool:
         """Return whether this endpoint's data address is occupied."""
 
-        return self.transport_mode.endpoint_in_use(
+        return self.transport_mode.declaration.endpoint_in_use(
             self.port,
             self.host,
             config,
@@ -113,8 +117,8 @@ class TransportEndpoint:
     def cleanup(self, config: ZMQConfig) -> None:
         """Remove residue for both addresses owned by this endpoint."""
 
-        self.transport_mode.cleanup_endpoint(self.port, config)
-        self.transport_mode.cleanup_endpoint(
+        self.transport_mode.declaration.cleanup_endpoint(self.port, config)
+        self.transport_mode.declaration.cleanup_endpoint(
             self.control_port(config),
             config,
         )
@@ -165,11 +169,11 @@ class TransportEndpoint:
                 or (operation_deadline is not None and operation_deadline.expired())
             ):
                 return None
-            addresses_ready = self.transport_mode.endpoint_in_use(
+            addresses_ready = self.transport_mode.declaration.endpoint_in_use(
                 self.port,
                 self.host,
                 config,
-            ) and self.transport_mode.endpoint_in_use(
+            ) and self.transport_mode.declaration.endpoint_in_use(
                 control_port,
                 self.host,
                 config,
@@ -209,7 +213,7 @@ class DataControlPortPairAuthority:
         """Return the first available configured data/control endpoint pair."""
 
         mode = resolve_transport_mode(transport_mode)
-        if not mode.is_supported():
+        if not mode.declaration.is_supported():
             raise ValueError(f"Transport mode {mode.value!r} is not supported.")
         first_port = config.default_port
         last_port = 65535 - config.control_port_offset
@@ -217,7 +221,7 @@ class DataControlPortPairAuthority:
             control_port = get_control_port(data_port, config)
             if data_port in excluded or control_port in excluded:
                 continue
-            if not mode.data_control_pair_is_available(
+            if not mode.declaration.data_control_pair_is_available(
                 data_port,
                 control_port,
                 host,
@@ -268,7 +272,7 @@ def resolve_transport_mode(mode: TransportMode | None) -> TransportMode:
 def get_ipc_socket_path(port: int, config: ZMQConfig | None = None) -> Path | None:
     """Get IPC socket path for a given port (Unix/Mac only)."""
     config = config or _default_config
-    return TransportMode.IPC.socket_path(port, config)
+    return TransportMode.IPC.declaration.socket_path(port, config)
 
 
 def get_zmq_transport_url(
@@ -280,7 +284,7 @@ def get_zmq_transport_url(
     """Get ZMQ transport URL for given port/host/mode."""
     config = config or _default_config
     mode = resolve_transport_mode(mode)
-    return mode.endpoint_url(port, host, config)
+    return mode.declaration.endpoint_url(port, host, config)
 
 
 def get_control_port(port: int, config: ZMQConfig | None = None) -> int:
@@ -313,23 +317,33 @@ def endpoint_startup_lock(
     config: ZMQConfig | None = None,
     *,
     operation_deadline: OperationDeadline | None = None,
+    cancellation: OperationCancellation | None = None,
 ):
     """Serialize discovery and startup for one IPC endpoint across clients."""
 
     config = config or _default_config
     mode = resolve_transport_mode(transport_mode)
-    with mode.startup_lock(port, config, operation_deadline):
-        yield
+    cancellation = cancellation or OperationCancellation()
+    with mode.declaration.startup_lock(
+        port,
+        config,
+        operation_deadline,
+        cancellation,
+    ) as acquired:
+        yield acquired
 
 
 def remove_ipc_socket(port: int, config: ZMQConfig | None = None) -> bool:
     """Remove stale IPC socket file."""
-    return TransportMode.IPC.cleanup_endpoint(port, config or _default_config)
+    return TransportMode.IPC.declaration.cleanup_endpoint(
+        port,
+        config or _default_config,
+    )
 
 
 def ipc_socket_is_stale(port: int, config: ZMQConfig | None = None) -> bool:
     """Return whether an IPC path exists without a kernel-owned Unix socket."""
-    return TransportMode.IPC.endpoint_is_stale(
+    return TransportMode.IPC.declaration.endpoint_is_stale(
         port,
         config or _default_config,
     )
@@ -344,7 +358,7 @@ def is_port_in_use(
     """Check whether the given port is in use for the chosen transport."""
     config = config or _default_config
     mode = resolve_transport_mode(transport_mode)
-    return mode.endpoint_in_use(port, host, config)
+    return mode.declaration.endpoint_in_use(port, host, config)
 
 
 def ping_control_port(
@@ -401,9 +415,7 @@ def request_control_ping(
         if send_timeout_ms <= 0 or not sock.poll(send_timeout_ms, zmq.POLLOUT):
             return None
         sock.send(
-            pickle.dumps(
-                {MessageFields.TYPE: ControlMessageType.PING.value},
-            ),
+            ControlRequestHeader(ControlMessageType.PING).to_wire_payload(),
             flags=zmq.NOBLOCK,
         )
         receive_timeout_ms = remaining_timeout_ms()
