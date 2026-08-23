@@ -1,8 +1,26 @@
 import time
+from threading import Timer
 
 import pytest
 
-from zmqruntime.timeouts import OperationDeadline, OperationTimeoutError
+from zmqruntime import OperationCancellation
+from zmqruntime.timeouts import (
+    OperationDeadline,
+    OperationTimeoutError,
+)
+
+
+def test_operation_cancellation_owns_interruptible_waiting() -> None:
+    cancellation = OperationCancellation()
+    timer = Timer(0.01, cancellation.cancel)
+    timer.start()
+    try:
+        assert cancellation.wait(1.0) is True
+    finally:
+        timer.join()
+
+    assert cancellation.requested() is True
+    assert OperationCancellation().wait(0.001) is False
 
 
 def test_operation_deadline_owns_one_monotonic_budget() -> None:

@@ -25,6 +25,11 @@ class OperationCancellation:
     def requested(self) -> bool:
         return self._requested.is_set()
 
+    def wait(self, timeout: float | None = None) -> bool:
+        """Wait until cancellation or ``timeout`` and report the owned state."""
+
+        return self._requested.wait(timeout)
+
 
 @dataclass(frozen=True, slots=True)
 class OperationDeadline:

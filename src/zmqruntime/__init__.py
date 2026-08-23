@@ -89,7 +89,11 @@ from zmqruntime.startup import (
     EndpointStartupStatusWriter,
 )
 from zmqruntime.subscription import CallbackSubscription, SubscriptionABC
-from zmqruntime.timeouts import OperationDeadline, OperationTimeoutError
+from zmqruntime.timeouts import (
+    OperationCancellation,
+    OperationDeadline,
+    OperationTimeoutError,
+)
 from zmqruntime.transport import (
     DataControlPortPair,
     DataControlPortPairAuthority,
@@ -202,6 +206,7 @@ __all__ = [
     "EndpointStartupStatusMonitor",
     "EndpointStartupStatusReader",
     "EndpointStartupStatusWriter",
+    "OperationCancellation",
     "OperationDeadline",
     "OperationTimeoutError",
     "DataControlPortPair",
