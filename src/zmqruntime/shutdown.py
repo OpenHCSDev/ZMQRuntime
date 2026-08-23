@@ -6,7 +6,6 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
-from typing import Self
 
 from zmqruntime.client import (
     EndpointShutdownMode,
@@ -77,7 +76,7 @@ class EndpointShutdownService:
     """Execute endpoint shutdowns and retire their generic progress trackers."""
 
     @classmethod
-    def for_config(cls, config: ZMQConfig) -> Self:
+    def for_config(cls, config: ZMQConfig) -> EndpointShutdownService:
         tracker_registry = GlobalQueueTrackerRegistry()
         return cls(
             shutdown_endpoint=partial(
