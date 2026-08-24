@@ -4,6 +4,7 @@ import socket
 import threading
 import time
 import uuid
+from pathlib import Path
 
 import pytest
 import zmq
@@ -449,6 +450,30 @@ def test_remove_ipc_socket(tmp_path):
     socket_path.write_text("test")
     assert socket_path.exists()
     assert remove_ipc_socket(5555, config) is True
+    assert not socket_path.exists()
+
+
+@pytest.mark.skipif(platform.system() == "Windows", reason="IPC is POSIX-only")
+def test_remove_ipc_socket_tolerates_endpoint_disappearing_during_cleanup(
+    monkeypatch,
+):
+    config = ZMQConfig(
+        app_name=f"zmqruntime-cleanup-{uuid.uuid4().hex}",
+        ipc_socket_prefix="test",
+    )
+    socket_path = get_ipc_socket_path(5555, config)
+    assert socket_path is not None
+    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    socket_path.touch()
+    path_unlink = Path.unlink
+
+    def endpoint_disappears(path):
+        path_unlink(path)
+        path_unlink(path)
+
+    monkeypatch.setattr(Path, "unlink", endpoint_disappears)
+
+    assert remove_ipc_socket(5555, config) is False
     assert not socket_path.exists()
 
 

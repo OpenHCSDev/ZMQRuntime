@@ -340,9 +340,12 @@ class IpcTransportDeclaration(TransportDeclaration):
     @classmethod
     def cleanup_endpoint(cls, port: int, config: ZMQConfig) -> bool:
         socket_path = cls.socket_path(port, config)
-        if socket_path is None or not socket_path.exists():
+        if socket_path is None:
             return False
-        socket_path.unlink()
+        try:
+            socket_path.unlink()
+        except FileNotFoundError:
+            return False
         return True
 
     @classmethod
@@ -440,6 +443,5 @@ class IpcTransportDeclaration(TransportDeclaration):
         config: ZMQConfig,
     ) -> bool:
         return not any(
-            cls.endpoint_in_use(port, host, config)
-            for port in (data_port, control_port)
+            cls.endpoint_in_use(port, host, config) for port in (data_port, control_port)
         )
