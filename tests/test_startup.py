@@ -5,7 +5,14 @@ from __future__ import annotations
 import threading
 from functools import partialmethod
 
-from zmqruntime.client import EndpointConnectionPolicy, EndpointProcess, ZMQClient
+import pytest
+
+from zmqruntime.client import (
+    EndpointConnectionCancelledError,
+    EndpointConnectionPolicy,
+    EndpointProcess,
+    ZMQClient,
+)
 from zmqruntime.messages import PongResponse, ProcessExit, ServerRole
 from zmqruntime.startup import (
     EndpointStartupCancellationObserver,
@@ -208,7 +215,8 @@ def test_cancelled_client_does_not_spawn_an_endpoint() -> None:
     attempt = client.new_connection_attempt()
     attempt.cancel()
 
-    assert attempt.connect(EndpointConnectionPolicy.ATTACH_OR_START, 1) is False
+    with pytest.raises(EndpointConnectionCancelledError):
+        attempt.connect(EndpointConnectionPolicy.ATTACH_OR_START, 1)
     assert [status.phase for status in statuses] == [
         EndpointStartupPhase.CHECKING_ENDPOINT,
         EndpointStartupPhase.DISCONNECTED,
@@ -234,18 +242,23 @@ def test_concurrent_attempts_use_their_exact_cancellation_tokens() -> None:
         )
 
     client._connect_locked = delayed_connect_locked
-    results: list[bool] = []
+    results: list[bool | type[BaseException]] = []
     first_attempt = client.new_connection_attempt()
     second_attempt = client.new_connection_attempt()
+
+    def connect(attempt) -> None:
+        try:
+            results.append(attempt.connect(EndpointConnectionPolicy.ATTACH_OR_START, 1))
+        except EndpointConnectionCancelledError:
+            results.append(EndpointConnectionCancelledError)
+
     first = threading.Thread(
-        target=lambda: results.append(
-            first_attempt.connect(EndpointConnectionPolicy.ATTACH_OR_START, 1)
-        )
+        target=connect,
+        args=(first_attempt,),
     )
     second = threading.Thread(
-        target=lambda: results.append(
-            second_attempt.connect(EndpointConnectionPolicy.ATTACH_OR_START, 1)
-        )
+        target=connect,
+        args=(second_attempt,),
     )
 
     first.start()
@@ -258,7 +271,9 @@ def test_concurrent_attempts_use_their_exact_cancellation_tokens() -> None:
 
     assert not first.is_alive()
     assert not second.is_alive()
-    assert results == [False, True]
+    assert len(results) == 2
+    assert EndpointConnectionCancelledError in results
+    assert True in results
 
 
 def test_typed_handshake_preserves_legacy_readiness_extension_point() -> None:

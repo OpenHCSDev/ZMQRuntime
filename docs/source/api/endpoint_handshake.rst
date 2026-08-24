@@ -33,3 +33,13 @@ the authoritative handshake:
 ``wait_for_endpoint_ready`` exposes the same typed response to process owners
 that need readiness metadata. ``wait_for_server_ready`` remains the Boolean
 compatibility boundary for callers that only need readiness.
+
+Connection-attempt cancellation
+-------------------------------
+
+``EndpointConnectionAttempt.cancel()`` retires its exact in-flight operation.
+The corresponding ``connect()`` call raises
+``EndpointConnectionCancelledError`` and disconnects a connection that won a
+late readiness race. Applications can therefore treat owner-requested teardown
+separately from endpoint failure without inspecting error text or copying
+connection state.

@@ -82,6 +82,10 @@ class EndpointConnectionPolicy(Enum):
         return self._connector(client, timeout)
 
 
+class EndpointConnectionCancelledError(RuntimeError):
+    """Raised when the owner cancels one exact endpoint connection attempt."""
+
+
 class EndpointConnectionAttempt:
     """One cancellable invocation of a declared endpoint connection policy."""
 
@@ -100,7 +104,13 @@ class EndpointConnectionAttempt:
         """Execute the selected connection leaf under this attempt's authority."""
 
         with self._client._bind_connection_attempt(self._cancellation):
-            return policy.connect(self._client, timeout)
+            connected = policy.connect(self._client, timeout)
+        if not self._cancellation.requested():
+            return connected
+        self._client.disconnect()
+        raise EndpointConnectionCancelledError(
+            "Endpoint connection attempt was cancelled by its owner."
+        )
 
 
 class EndpointCompatibilityClientABC(ABC):
@@ -1147,7 +1157,14 @@ class ZMQClient(ABC):
             )
             ack = pickle.loads(sock.recv())
             acknowledged = ack.get(MessageFields.TYPE) == ResponseType.SHUTDOWN_ACK.value
-        except (EOFError, KeyError, OSError, TypeError, pickle.PickleError, zmq.ZMQError):
+        except (
+            EOFError,
+            KeyError,
+            OSError,
+            TypeError,
+            pickle.PickleError,
+            zmq.ZMQError,
+        ):
             acknowledged = False
         finally:
             if sock is not None:

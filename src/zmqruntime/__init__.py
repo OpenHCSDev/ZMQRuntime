@@ -8,6 +8,7 @@ __version__ = _distribution_version("zmqruntime")
 
 from zmqruntime.ack_listener import GlobalAckListener
 from zmqruntime.client import (
+    EndpointConnectionCancelledError,
     EndpointConnectionPolicy,
     EndpointProcessGroup,
     EndpointShutdownMode,
@@ -151,6 +152,7 @@ from zmqruntime.viewer_state import (
 
 __all__ = [
     "GlobalAckListener",
+    "EndpointConnectionCancelledError",
     "EndpointConnectionPolicy",
     "EndpointProcessGroup",
     "EndpointShutdownMode",
