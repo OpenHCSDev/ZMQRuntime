@@ -79,6 +79,26 @@ class TransportEndpoint:
             )
         )
 
+    def cleanup_stale_addresses(self, config: ZMQConfig) -> frozenset[int]:
+        """Remove only pair addresses proven stale by this transport."""
+
+        declaration = self.transport_mode.declaration
+        return frozenset(
+            port
+            for port in self.port_pair(config).ports
+            if declaration.endpoint_is_stale(port, config)
+            and declaration.cleanup_endpoint(port, config)
+        )
+
+    def force_release_local_addresses(self, config: ZMQConfig) -> int:
+        """Terminate local owners of both addresses through the declaration."""
+
+        declaration = self.transport_mode.declaration
+        return sum(
+            declaration.kill_processes_on_port(port, config)
+            for port in self.port_pair(config).ports
+        )
+
     def control_url(self, config: ZMQConfig) -> str:
         """Return this endpoint's control socket URL."""
 

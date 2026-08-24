@@ -309,6 +309,64 @@ def test_transport_endpoint_reports_exact_occupied_pair_ports() -> None:
         assert endpoint.occupied_ports(config) == frozenset((pair.control_port,))
 
 
+def test_transport_endpoint_cleans_only_declaration_proven_stale_addresses(
+    monkeypatch,
+) -> None:
+    config = ZMQConfig(default_port=47777, control_port_offset=1000)
+    endpoint = TransportEndpoint(
+        host="localhost",
+        port=config.default_port,
+        transport_mode=TransportMode.IPC,
+    )
+    stale_port = endpoint.port
+    probed: set[int] = set()
+    cleaned: set[int] = set()
+
+    def endpoint_is_stale(port, observed_config):
+        assert observed_config is config
+        probed.add(port)
+        return port == stale_port
+
+    def cleanup_endpoint(port, observed_config):
+        assert observed_config is config
+        cleaned.add(port)
+        return True
+
+    declaration = TransportMode.IPC.declaration
+    monkeypatch.setattr(declaration, "endpoint_is_stale", endpoint_is_stale)
+    monkeypatch.setattr(declaration, "cleanup_endpoint", cleanup_endpoint)
+
+    assert endpoint.cleanup_stale_addresses(config) == frozenset((stale_port,))
+    assert probed == endpoint.port_pair(config).ports
+    assert cleaned == {stale_port}
+
+
+def test_transport_endpoint_forces_pair_release_through_declaration(
+    monkeypatch,
+) -> None:
+    config = ZMQConfig(default_port=47777, control_port_offset=1000)
+    endpoint = TransportEndpoint(
+        host="localhost",
+        port=config.default_port,
+        transport_mode=TransportMode.IPC,
+    )
+    released: set[int] = set()
+
+    def kill_processes_on_port(port, observed_config):
+        assert observed_config is config
+        released.add(port)
+        return 1
+
+    monkeypatch.setattr(
+        TransportMode.IPC.declaration,
+        "kill_processes_on_port",
+        kill_processes_on_port,
+    )
+
+    assert endpoint.force_release_local_addresses(config) == 2
+    assert released == endpoint.port_pair(config).ports
+
+
 def test_server_projects_topology_from_its_single_endpoint_owner() -> None:
     class TestServer(ZMQServer):
         def handle_control_message(self, message):
