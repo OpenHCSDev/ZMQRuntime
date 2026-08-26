@@ -14,6 +14,7 @@ from zmqruntime.client import (
 )
 from zmqruntime.config import ZMQConfig
 from zmqruntime.queue_tracker import GlobalQueueTrackerRegistry
+from zmqruntime.transport import TransportEndpoint
 
 logger = logging.getLogger(__name__)
 
@@ -51,9 +52,7 @@ class EndpointShutdownBatchResult:
 
     @property
     def terminated_ports(self) -> tuple[int, ...]:
-        return tuple(
-            outcome.port for outcome in self.outcomes if outcome.endpoint_terminated
-        )
+        return tuple(outcome.port for outcome in self.outcomes if outcome.endpoint_terminated)
 
     @property
     def failed_ports(self) -> tuple[int, ...]:
@@ -76,11 +75,19 @@ class EndpointShutdownService:
     """Execute endpoint shutdowns and retire their generic progress trackers."""
 
     @classmethod
-    def for_config(cls, config: ZMQConfig) -> EndpointShutdownService:
+    def for_endpoint(
+        cls,
+        config: ZMQConfig,
+        endpoint: TransportEndpoint,
+    ) -> EndpointShutdownService:
+        """Bind batch shutdown to one declared host and transport identity."""
+
         tracker_registry = GlobalQueueTrackerRegistry()
         return cls(
             shutdown_endpoint=partial(
                 ZMQClient.shutdown_endpoint_on_port,
+                transport_mode=endpoint.transport_mode,
+                host=endpoint.host,
                 config=config,
             ),
             retire_progress_tracker=tracker_registry.remove_tracker,

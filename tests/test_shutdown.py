@@ -1,7 +1,48 @@
 """Endpoint shutdown batching remains owned by the generic runtime."""
 
 from zmqruntime.client import EndpointShutdownMode, EndpointShutdownResult
+from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.shutdown import EndpointShutdownService
+from zmqruntime.transport import TransportEndpoint
+
+
+def test_shutdown_service_factory_preserves_endpoint_transport(monkeypatch) -> None:
+    calls = []
+
+    def shutdown_endpoint_on_port(
+        port: int,
+        mode: EndpointShutdownMode,
+        **kwargs,
+    ) -> EndpointShutdownResult:
+        calls.append({"port": port, "mode": mode, **kwargs})
+        return EndpointShutdownResult(succeeded=True, endpoint_terminated=True)
+
+    monkeypatch.setattr(
+        "zmqruntime.shutdown.ZMQClient.shutdown_endpoint_on_port",
+        shutdown_endpoint_on_port,
+    )
+    config = ZMQConfig()
+    endpoint = TransportEndpoint(
+        host="execution.internal",
+        port=7777,
+        transport_mode=TransportMode.TCP,
+    )
+
+    result = EndpointShutdownService.for_endpoint(config, endpoint).shutdown_ports(
+        ports=[8888],
+        mode=EndpointShutdownMode.FORCE,
+    )
+
+    assert result.terminated_ports == (8888,)
+    assert calls == [
+        {
+            "port": 8888,
+            "mode": EndpointShutdownMode.FORCE,
+            "transport_mode": TransportMode.TCP,
+            "host": "execution.internal",
+            "config": config,
+        }
+    ]
 
 
 def test_shutdown_batch_reports_exact_failures_and_terminated_endpoints() -> None:
