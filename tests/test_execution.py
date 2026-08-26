@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 
 import pytest
 
@@ -1203,13 +1204,17 @@ def test_disconnect_stops_owned_server_when_socket_cleanup_fails(monkeypatch):
 
 
 class ConcurrentStartupExecutionClient(ExecutionClient):
-    def __init__(self, *, port, config, state):
+    def __init__(self, *, port, transport_mode, config, state):
         super().__init__(
             port=port,
-            transport_mode=TransportMode.IPC,
+            transport_mode=transport_mode,
             config=config,
         )
         self.state = state
+
+    def _is_port_in_use(self, port: int) -> bool:
+        del port
+        return self.state["ready"].is_set()
 
     def _try_connect_to_existing(self, port: int, timeout_ms: int = 500):
         if not self.state["ready"].is_set():
@@ -1232,11 +1237,6 @@ class ConcurrentStartupExecutionClient(ExecutionClient):
         process: EndpointProcess,
         timeout: float = 10.0,
     ):
-        for port in (self.port, self.control_port):
-            path = get_ipc_socket_path(port, self.config)
-            assert path is not None
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.touch()
         self.state["ready"].set()
         time.sleep(0.1)
         return self._try_connect_to_existing(self.port)
@@ -1251,10 +1251,12 @@ class ConcurrentStartupExecutionClient(ExecutionClient):
         return {"task": task}
 
 
-@pytest.mark.skipif(platform.system() == "Windows", reason="IPC is POSIX-only")
-def test_concurrent_clients_spawn_one_ipc_server():
+@pytest.mark.parametrize("transport_mode", (TransportMode.TCP, TransportMode.IPC))
+def test_concurrent_clients_spawn_one_server(transport_mode: TransportMode):
+    if not transport_mode.declaration.is_supported():
+        pytest.skip(f"{transport_mode.value} is not supported on this platform")
     config = ZMQConfig(
-        app_name="zmqruntime-concurrent-startup-test",
+        app_name=f"zmqruntime-concurrent-startup-{uuid.uuid4().hex}",
         ipc_socket_prefix="concurrent",
     )
     port = 45557
@@ -1264,7 +1266,13 @@ def test_concurrent_clients_spawn_one_ipc_server():
         "spawn_count": 0,
     }
     clients = tuple(
-        ConcurrentStartupExecutionClient(port=port, config=config, state=state) for _ in range(2)
+        ConcurrentStartupExecutionClient(
+            port=port,
+            transport_mode=transport_mode,
+            config=config,
+            state=state,
+        )
+        for _ in range(2)
     )
     barrier = threading.Barrier(len(clients))
 
@@ -1286,10 +1294,13 @@ def test_concurrent_clients_spawn_one_ipc_server():
             == 1
         )
     finally:
-        for endpoint_port in (port, port + config.control_port_offset):
-            path = get_ipc_socket_path(endpoint_port, config)
-            if path is not None and path.exists():
-                path.unlink()
+        lock_path = transport_mode.declaration.startup_lock_path(port, config)
+        lock_path.unlink(missing_ok=True)
+        for directory in (lock_path.parent, lock_path.parent.parent):
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
 
 
 def test_execution_waiter_surfaces_error_field_when_message_absent():

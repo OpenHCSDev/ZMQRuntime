@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import platform
 import socket
-import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import contextmanager
 from ipaddress import ip_address
 from pathlib import Path
 from typing import ClassVar
 
+import portalocker
 import zmq
 from metaclass_registry import AutoRegisterMeta
 
@@ -104,14 +104,51 @@ class TransportDeclaration(ABC, metaclass=AutoRegisterMeta):
 
     @classmethod
     @abstractmethod
+    def startup_lock_path(
+        cls,
+        port: int,
+        config: ZMQConfig,
+    ) -> Path:
+        """Return the process-shared startup lock identity for one endpoint."""
+
+    @classmethod
+    @contextmanager
     def startup_lock(
         cls,
         port: int,
         config: ZMQConfig,
         operation_deadline: OperationDeadline | None,
         cancellation: OperationCancellation,
-    ) -> AbstractContextManager[bool]:
-        """Serialize startup and yield whether the operation acquired ownership."""
+    ) -> Iterator[bool]:
+        """Serialize startup across processes and preserve cancellation semantics."""
+
+        lock_path = cls.startup_lock_path(port, config)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+b") as lock_file:
+            while True:
+                if cancellation.requested():
+                    yield False
+                    return
+                if operation_deadline is not None:
+                    operation_deadline.remaining_seconds()
+                try:
+                    portalocker.lock(
+                        lock_file,
+                        portalocker.LOCK_EX | portalocker.LOCK_NB,
+                    )
+                    break
+                except portalocker.exceptions.AlreadyLocked:
+                    wait_seconds = 0.05
+                    if operation_deadline is not None:
+                        wait_seconds = min(
+                            wait_seconds,
+                            operation_deadline.remaining_seconds(),
+                        )
+                    cancellation.wait(wait_seconds)
+            try:
+                yield True
+            finally:
+                portalocker.unlock(lock_file)
 
     @classmethod
     @abstractmethod
@@ -235,21 +272,17 @@ class TcpTransportDeclaration(TransportDeclaration):
         return None
 
     @classmethod
-    def endpoint_is_stale(cls, port: int, config: ZMQConfig) -> bool:
-        del port, config
-        return False
-
-    @classmethod
-    @contextmanager
-    def startup_lock(
+    def startup_lock_path(
         cls,
         port: int,
         config: ZMQConfig,
-        operation_deadline: OperationDeadline | None,
-        cancellation: OperationCancellation,
-    ) -> Iterator[bool]:
-        del port, config, operation_deadline
-        yield not cancellation.requested()
+    ) -> Path:
+        return Path.home() / f".{config.app_name}" / "tcp" / f"{port}.startup.lock"
+
+    @classmethod
+    def endpoint_is_stale(cls, port: int, config: ZMQConfig) -> bool:
+        del port, config
+        return False
 
     @classmethod
     def data_control_pair_is_available(
@@ -365,6 +398,17 @@ class IpcTransportDeclaration(TransportDeclaration):
         return all(connection.laddr != path for connection in connections)
 
     @classmethod
+    def startup_lock_path(
+        cls,
+        port: int,
+        config: ZMQConfig,
+    ) -> Path:
+        socket_path = cls.socket_path(port, config)
+        if socket_path is None:
+            raise ValueError("IPC endpoint lock requires an IPC socket path")
+        return socket_path.with_name(f"{socket_path.name}.startup.lock")
+
+    @classmethod
     def preserve_unresponsive_endpoint(
         cls,
         port: int,
@@ -393,46 +437,6 @@ class IpcTransportDeclaration(TransportDeclaration):
                     continue
         cls.cleanup_endpoint(port, config)
         return killed
-
-    @classmethod
-    @contextmanager
-    def startup_lock(
-        cls,
-        port: int,
-        config: ZMQConfig,
-        operation_deadline: OperationDeadline | None,
-        cancellation: OperationCancellation,
-    ) -> Iterator[bool]:
-        import fcntl
-
-        socket_path = cls.socket_path(port, config)
-        if socket_path is None:
-            raise ValueError("IPC endpoint lock requires an IPC socket path")
-        lock_path = socket_path.with_name(f"{socket_path.name}.startup.lock")
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        with lock_path.open("a+b") as lock_file:
-            while True:
-                if cancellation.requested():
-                    yield False
-                    return
-                try:
-                    fcntl.flock(
-                        lock_file.fileno(),
-                        fcntl.LOCK_EX | fcntl.LOCK_NB,
-                    )
-                    break
-                except BlockingIOError:
-                    wait_seconds = 0.05
-                    if operation_deadline is not None:
-                        wait_seconds = min(
-                            wait_seconds,
-                            operation_deadline.remaining_seconds(),
-                        )
-                    time.sleep(wait_seconds)
-            try:
-                yield True
-            finally:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     @classmethod
     def data_control_pair_is_available(

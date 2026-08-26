@@ -49,10 +49,11 @@ Endpoint startup and ownership lifecycle
 ----------------------------------------
 
 ``ZMQClient.connect()`` performs discovery and optional auto-spawn inside
-``endpoint_startup_lock()``. For IPC transport, that context manager takes an
-exclusive file lock derived from the endpoint path, so concurrent clients cannot
-both observe an absent endpoint and spawn competing servers. TCP transport does
-not use the filesystem lock.
+``endpoint_startup_lock()``. Each transport declaration projects a stable lock
+path for its endpoint identity, while the shared lifecycle takes a cross-process
+exclusive file lock. Concurrent TCP or IPC clients therefore cannot both
+observe an absent endpoint and spawn competing servers. IPC derives the lock
+from its socket path; TCP stores it beneath the application's endpoint namespace.
 
 While holding the startup boundary, the client follows one ordered decision:
 
@@ -117,8 +118,8 @@ operation. It is distinct from the endpoint startup inactivity timeout:
 reported startup activity may refresh the inactivity deadline, but cannot
 extend an operation deadline supplied by the caller. Readiness failure still
 stops and cleans up a child process owned by the client before returning.
-For IPC endpoints, the same deadline also bounds acquisition of the
-per-endpoint startup lock.
+For every transport, the same deadline also bounds acquisition of the
+per-endpoint startup lock, and explicit cancellation interrupts lock waiting.
 
 Control requests apply one deadline across socket writability, request send,
 and response receipt. Applications can reuse the remaining operation budget

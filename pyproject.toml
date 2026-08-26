@@ -28,6 +28,7 @@ dependencies = [
     "annotated-types>=0.7.0",
     "metaclass-registry>=0.1.6",
     "numpy>=1.24",
+    "portalocker>=2.8.2",
     "pyzmq>=22.0",
     "psutil>=5.9",
     "python-introspect>=0.1.6",

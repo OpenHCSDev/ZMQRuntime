@@ -1,3 +1,4 @@
+import multiprocessing
 import pickle
 import platform
 import socket
@@ -54,6 +55,34 @@ class _BindingSocket:
         return 45678
 
 
+def _hold_startup_lock(
+    port: int,
+    transport_mode: TransportMode,
+    config: ZMQConfig,
+    lock_entered,
+    release_lock,
+) -> None:
+    with endpoint_startup_lock(port, transport_mode, config) as acquired:
+        if not acquired:
+            return
+        lock_entered.set()
+        release_lock.wait(timeout=5.0)
+
+
+def _remove_startup_lock(
+    port: int,
+    transport_mode: TransportMode,
+    config: ZMQConfig,
+) -> None:
+    lock_path = transport_mode.declaration.startup_lock_path(port, config)
+    lock_path.unlink(missing_ok=True)
+    for directory in (lock_path.parent, lock_path.parent.parent):
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
+
+
 def test_transport_mode_owns_tcp_socket_binding() -> None:
     endpoint_socket = _BindingSocket()
 
@@ -67,6 +96,85 @@ def test_transport_mode_owns_tcp_socket_binding() -> None:
     assert port == 45678
     assert endpoint_socket.random_bind_requests == ["tcp://127.0.0.1"]
     assert endpoint_socket.bound == []
+
+
+def test_tcp_startup_lock_serializes_across_processes() -> None:
+    context = multiprocessing.get_context("spawn")
+    config = ZMQConfig(app_name=f"zmqruntime-lock-{uuid.uuid4().hex}")
+    port = 45553
+    lock_entered = context.Event()
+    release_lock = context.Event()
+    holder = context.Process(
+        target=_hold_startup_lock,
+        args=(port, TransportMode.TCP, config, lock_entered, release_lock),
+    )
+
+    holder.start()
+    assert lock_entered.wait(timeout=5.0)
+    try:
+        deadline = OperationDeadline.after_milliseconds(
+            50,
+            operation="TCP startup lock",
+        )
+        with pytest.raises(OperationTimeoutError, match="TCP startup lock"):
+            with endpoint_startup_lock(
+                port,
+                TransportMode.TCP,
+                config,
+                operation_deadline=deadline,
+            ):
+                raise AssertionError("contended lock must not be entered")
+    finally:
+        release_lock.set()
+        holder.join(timeout=5.0)
+        if holder.is_alive():
+            holder.terminate()
+            holder.join(timeout=1.0)
+        _remove_startup_lock(port, TransportMode.TCP, config)
+
+    assert holder.exitcode == 0
+
+
+def test_tcp_startup_lock_observes_cancellation_while_contended() -> None:
+    context = multiprocessing.get_context("spawn")
+    config = ZMQConfig(app_name=f"zmqruntime-lock-{uuid.uuid4().hex}")
+    port = 45554
+    lock_entered = context.Event()
+    release_lock = context.Event()
+    holder = context.Process(
+        target=_hold_startup_lock,
+        args=(port, TransportMode.TCP, config, lock_entered, release_lock),
+    )
+    cancellation = OperationCancellation()
+
+    holder.start()
+    assert lock_entered.wait(timeout=5.0)
+    try:
+
+        def cancel_soon() -> None:
+            time.sleep(0.02)
+            cancellation.cancel()
+
+        canceller = threading.Thread(target=cancel_soon)
+        canceller.start()
+        with endpoint_startup_lock(
+            port,
+            TransportMode.TCP,
+            config,
+            cancellation=cancellation,
+        ) as acquired:
+            assert acquired is False
+        canceller.join(timeout=1.0)
+        assert not canceller.is_alive()
+    finally:
+        release_lock.set()
+        holder.join(timeout=5.0)
+        if holder.is_alive():
+            holder.terminate()
+            holder.join(timeout=1.0)
+        _remove_startup_lock(port, TransportMode.TCP, config)
+
+    assert holder.exitcode == 0
 
 
 @pytest.mark.skipif(platform.system() == "Windows", reason="IPC is POSIX-only")
