@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "zmqruntime"
-version = "0.2.18"
+version = "0.2.19"
 description = "Generic ZMQ-based distributed execution framework"
 authors = [{name = "Tristan Simas", email = "tristan.simas@mail.mcgill.ca"}]
 license = {text = "MIT"}
@@ -54,6 +54,10 @@ Issues = "https://github.com/OpenHCSDev/zmqruntime/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/zmqruntime"]
+core-metadata-version = "2.4"
+
+[tool.hatch.build.targets.sdist]
+core-metadata-version = "2.4"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
