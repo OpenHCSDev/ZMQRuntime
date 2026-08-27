@@ -226,6 +226,23 @@ def test_cancelled_client_does_not_spawn_an_endpoint() -> None:
     assert client.connected_endpoint is not None
 
 
+def test_connection_attempt_can_share_its_callers_cancellation_authority() -> None:
+    statuses = []
+    client = _StartupClient(statuses)
+    cancellation = OperationCancellation()
+    attempt = client.new_connection_attempt(cancellation=cancellation)
+
+    cancellation.cancel()
+
+    with pytest.raises(EndpointConnectionCancelledError):
+        attempt.connect(EndpointConnectionPolicy.ATTACH_OR_START, 1)
+    assert [status.phase for status in statuses] == [
+        EndpointStartupPhase.CHECKING_ENDPOINT,
+        EndpointStartupPhase.DISCONNECTED,
+    ]
+    assert client.connected_endpoint is None
+
+
 def test_concurrent_attempts_use_their_exact_cancellation_tokens() -> None:
     statuses = []
     client = _StartupClient(statuses)

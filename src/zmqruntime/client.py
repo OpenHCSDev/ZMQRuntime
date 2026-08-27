@@ -91,9 +91,14 @@ class EndpointConnectionAttempt:
 
     __slots__ = ("_cancellation", "_client")
 
-    def __init__(self, client: ZMQClient) -> None:
+    def __init__(
+        self,
+        client: ZMQClient,
+        *,
+        cancellation: OperationCancellation | None = None,
+    ) -> None:
         self._client = client
-        self._cancellation = OperationCancellation()
+        self._cancellation = OperationCancellation() if cancellation is None else cancellation
 
     def cancel(self) -> None:
         """Request cancellation of this exact attempt."""
@@ -693,10 +698,14 @@ class ZMQClient(ABC):
         with self._bind_connection_attempt(OperationCancellation()):
             yield
 
-    def new_connection_attempt(self) -> EndpointConnectionAttempt:
-        """Create the exact cancellable authority for one future connection call."""
+    def new_connection_attempt(
+        self,
+        *,
+        cancellation: OperationCancellation | None = None,
+    ) -> EndpointConnectionAttempt:
+        """Create one connection attempt under its caller-selected authority."""
 
-        return EndpointConnectionAttempt(self)
+        return EndpointConnectionAttempt(self, cancellation=cancellation)
 
     def _connection_cancelled(self) -> bool:
         cancellation = self._connection_cancellation.get()
