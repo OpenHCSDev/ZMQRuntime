@@ -20,6 +20,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -36,6 +38,9 @@ jobs:
 
       - name: Build package
         run: python -m build
+
+      - name: Validate immutable release declaration
+        uses: OpenHCSDev/python-introspect/.github/actions/validate-python-release@c29190a576054d16c0976a5be17e6a4112e324b8
 
       - name: Check distribution
         run: python -m twine check dist/*
