@@ -27,6 +27,11 @@ from zmqruntime.timeouts import OperationCancellation
 from zmqruntime.transport import get_default_transport_mode, wait_for_server_ready
 
 
+@pytest.mark.parametrize("phase", EndpointStartupPhase)
+def test_only_connected_endpoint_accepts_requests(phase):
+    assert phase.accepts_requests is (phase is EndpointStartupPhase.CONNECTED)
+
+
 class _PresentationTarget(EndpointStartupPresentationTarget):
     def __init__(self) -> None:
         self.events: list[tuple[str, str]] = []

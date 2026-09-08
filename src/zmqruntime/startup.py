@@ -43,18 +43,22 @@ EndpointStartupPresenter = Callable[
 class EndpointStartupPhase(str, Enum):
     """Closed lifecycle vocabulary for a client-managed endpoint."""
 
+    accepts_requests: bool
+
     def __new__(
         cls,
         value: str,
         presenter: EndpointStartupPresenter,
         expects_endpoint_presence: bool = True,
         startup_failure: bool = False,
+        accepts_requests: bool = False,
     ) -> EndpointStartupPhase:
         member = str.__new__(cls, value)
         member._value_ = value
         member._presenter = presenter
         member._expects_endpoint_presence = expects_endpoint_presence
         member._startup_failure = startup_failure
+        member.accepts_requests = accepts_requests
         return member
 
     DISCONNECTED = (
@@ -93,6 +97,9 @@ class EndpointStartupPhase(str, Enum):
     CONNECTED = (
         "connected",
         lambda target, message: target.present_connected(message),
+        True,
+        False,
+        True,
     )
     PREPARING_CAPABILITIES = (
         "preparing_capabilities",
