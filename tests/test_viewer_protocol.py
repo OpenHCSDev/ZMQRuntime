@@ -236,6 +236,24 @@ def test_viewer_batch_message_normalizes_nested_mapping_proxy_to_json_wire():
     assert message["extra"] == {"nested": "value"}
 
 
+def test_viewer_component_metadata_scopes_both_projections_together():
+    payload = ViewerComponentMetadataPayload(
+        component_names_metadata={
+            "well": {"A01": "A01"},
+            "channel": {"1": "DNA"},
+        },
+        component_value_domain={
+            "well": ("A01",),
+            "channel": ("1",),
+        },
+    )
+
+    scoped = payload.scoped_to(("well",))
+
+    assert scoped.component_names_metadata == {"well": {"A01": "A01"}}
+    assert scoped.component_value_domain == {"well": ("A01",)}
+
+
 def test_viewer_wire_payload_rejects_unsupported_objects_with_context():
     class Unsupported:
         pass

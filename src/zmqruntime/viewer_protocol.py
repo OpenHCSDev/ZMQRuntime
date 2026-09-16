@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from enum import Enum
 from math import isfinite
@@ -562,6 +562,26 @@ class ViewerComponentMetadataPayload:
 
     component_names_metadata: ViewerWireMapping
     component_value_domain: ViewerWireMapping
+
+    def scoped_to(
+        self,
+        component_order: Iterable[str],
+    ) -> ViewerComponentMetadataPayload:
+        """Restrict both component projections to the declared display axes."""
+
+        components = frozenset(component_order)
+        return type(self)(
+            component_names_metadata={
+                component: values
+                for component, values in self.component_names_metadata.items()
+                if component in components
+            },
+            component_value_domain={
+                component: values
+                for component, values in self.component_value_domain.items()
+                if component in components
+            },
+        )
 
     @classmethod
     def from_wire_mapping(
