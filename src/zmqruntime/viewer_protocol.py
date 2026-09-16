@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import Enum
+from math import isfinite
 from numbers import Integral, Real
-from typing import TypeAlias, Union
+from typing import TYPE_CHECKING, Self, TypeAlias, Union
 
 import zmq
 
 from zmqruntime.messages import MessageFields
 from zmqruntime.transport import TransportEndpoint
+
+if TYPE_CHECKING:
+    from pydantic import GetCoreSchemaHandler
+    from pydantic_core import CoreSchema
 
 ViewerWireScalar: TypeAlias = str | int | float | bool | None
 ViewerWireValue: TypeAlias = (
@@ -22,6 +27,139 @@ ViewerWireValue: TypeAlias = (
 )
 ViewerWireMapping: TypeAlias = Mapping[str, ViewerWireValue]
 ViewerCleanup: TypeAlias = Callable[[], None]
+
+
+class ViewerDeclaredWireValue:
+    """Wire projection derived from a nominal value's dataclass declarations."""
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls, source_type: type, handler: GetCoreSchemaHandler
+    ) -> CoreSchema:
+        """Preserve native constructor validation before optional wire coercion."""
+        # Pydantic is optional: its integration imports only on this schema hook.
+        from pydantic_core import core_schema
+
+        def construct(value: object) -> object:
+            if isinstance(value, Mapping):
+                try:
+                    return cls(**value)
+                except TypeError as error:
+                    raise ValueError(str(error)) from error
+            return value
+
+        return core_schema.no_info_before_validator_function(construct, handler(source_type))
+
+    def to_wire_mapping(self) -> dict[str, ViewerWireValue]:
+        return {member.name: getattr(self, member.name) for member in fields(self)}
+
+    @classmethod
+    def from_wire_mapping(cls, payload: Mapping[str, object]) -> Self:
+        members = fields(cls)
+        expected = {member.name for member in members}
+        if set(payload) != expected:
+            raise ValueError(f"{cls.__name__} requires exactly {sorted(expected)!r}.")
+        return cls(**{member.name: payload[member.name] for member in members})
+
+
+@dataclass(frozen=True, slots=True)
+class ViewerNativeLayerTransform(ViewerDeclaredWireValue):
+    """Native layer coordinates, not camera fitting or inferred pixel calibration.
+
+    The dataclass declarations own the wire members and their tuple projection.
+    An empty snapshot represents a route without a mounted native layer.
+    """
+
+    scale: tuple[float, ...] = ()
+    translate: tuple[float, ...] = ()
+
+    def __post_init__(self) -> None:
+        for member in fields(self):
+            values = getattr(self, member.name)
+            if not isinstance(values, (tuple, list)) or any(
+                isinstance(value, bool) or not isinstance(value, Real) for value in values
+            ):
+                raise TypeError(f"Native transform {member.name} must contain real numbers.")
+            object.__setattr__(self, member.name, tuple(float(value) for value in values))
+        if len(self.scale) != len(self.translate):
+            raise ValueError("Native scale and translate must have the same dimensionality.")
+
+
+@dataclass(frozen=True, slots=True)
+class ViewerNativeImageIntensityPresentation(ViewerDeclaredWireValue):
+    """Complete native display bounds and gamma, never image preprocessing."""
+
+    contrast_limits: tuple[float, float]
+    gamma: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.contrast_limits, (tuple, list)) or len(self.contrast_limits) != 2:
+            raise TypeError("contrast_limits must contain exactly two real bounds.")
+        values = (*self.contrast_limits, self.gamma)
+        if any(isinstance(value, bool) or not isinstance(value, Real) for value in values):
+            raise TypeError("Image intensity presentation requires real numbers, not bools.")
+        if not all(isfinite(value) for value in values):
+            raise ValueError("Image intensity presentation requires finite values.")
+        lower, upper = (float(value) for value in self.contrast_limits)
+        if lower >= upper:
+            raise ValueError("contrast_limits lower bound must be smaller than upper bound.")
+        if self.gamma <= 0:
+            raise ValueError("gamma must be positive.")
+        object.__setattr__(self, "contrast_limits", (lower, upper))
+        object.__setattr__(self, "gamma", float(self.gamma))
+
+
+@dataclass(frozen=True, slots=True)
+class ViewerNativeViewportPresentation(ViewerDeclaredWireValue):
+    """Native 2D camera center in world coordinates and canvas/world zoom."""
+
+    center: tuple[float, float, float]
+    zoom: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.center, (tuple, list)) or len(self.center) != 3:
+            raise TypeError("Viewport center must contain three native coordinates.")
+        values = (*self.center, self.zoom)
+        if any(isinstance(value, bool) or not isinstance(value, Real) for value in values):
+            raise TypeError("Viewport presentation requires real numbers, not bools.")
+        if not all(isfinite(value) for value in values):
+            raise ValueError("Viewport presentation requires finite values.")
+        if self.zoom <= 0:
+            raise ValueError("Viewport zoom must be positive.")
+        object.__setattr__(self, "center", tuple(float(value) for value in self.center))
+        object.__setattr__(self, "zoom", float(self.zoom))
+
+
+@dataclass(frozen=True, slots=True)
+class ViewerImageIntensityControlOptions:
+    """Generic exact-route native image-presentation command contract."""
+
+    route_key: str
+    presentation: ViewerNativeImageIntensityPresentation
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.route_key, str) or not self.route_key.strip():
+            raise ValueError("Image intensity route_key must be a nonblank string.")
+        if not isinstance(self.presentation, ViewerNativeImageIntensityPresentation):
+            raise TypeError("Image intensity control requires a typed native presentation.")
+
+
+class ViewerControlMessageType(Enum):
+    """Shared control-message identities consumed by viewer servers."""
+
+    SCREENSHOT = "screenshot"
+    CLEAR_STATE = "clear_state"
+    SETTLE = "settle"
+    STATE = "state"
+    PAYLOADS = "payloads"
+    NAVIGATE = "navigate"
+    ISOLATE_LAYERS = "isolate_layers"
+    IMAGE_INTENSITY = "image_intensity"
+    VIEWPORT = "viewport"
+
+    @property
+    def acknowledgement_type(self) -> str:
+        return f"{self.value}_ack"
 
 
 class ViewerProtocolStatus(Enum):
@@ -65,6 +203,7 @@ class ViewerWireField(str, Enum):
     PRODUCER_IDENTITY = "producer_identity"
     IMAGE_ID = MessageFields.IMAGE_ID
     SOURCE_CHANNEL_AXIS = "source_channel_axis"
+    IMAGE_METADATA = "image_metadata"
     PLANE_AXIS = "plane_axis"
     PLANE_COMPONENT_VALUES = "plane_component_values"
     SHAPES = MessageFields.SHAPES
@@ -522,11 +661,13 @@ class ViewerBatchMessagePayload(ViewerBatchMessageWirePayload):
             {
                 ViewerBatchWireField.TYPE.value: ViewerBatchMessageType.BATCH.value,
                 ViewerBatchWireField.IMAGES.value: [
-                    image.to_wire_mapping()
-                    if isinstance(image, ViewerBatchItemPayload)
-                    else ViewerWirePayload.mapping(
-                        image,
-                        context=f"viewer batch message image[{index}]",
+                    (
+                        image.to_wire_mapping()
+                        if isinstance(image, ViewerBatchItemPayload)
+                        else ViewerWirePayload.mapping(
+                            image,
+                            context=f"viewer batch message image[{index}]",
+                        )
                     )
                     for index, image in enumerate(images)
                 ],
