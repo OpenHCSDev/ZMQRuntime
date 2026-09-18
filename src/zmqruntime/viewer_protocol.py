@@ -154,6 +154,7 @@ class ViewerControlMessageType(Enum):
     PAYLOADS = "payloads"
     NAVIGATE = "navigate"
     ISOLATE_LAYERS = "isolate_layers"
+    APPLY_INTENSITY_WINDOW = "apply_intensity_window"
     IMAGE_INTENSITY = "image_intensity"
     VIEWPORT = "viewport"
 
