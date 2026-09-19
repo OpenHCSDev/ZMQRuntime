@@ -10,7 +10,6 @@ from dataclasses import replace
 from multiprocessing import shared_memory
 from typing import Any
 
-import numpy as np
 import zmq
 
 from zmqruntime.config import TransportMode, ZMQConfig
@@ -34,6 +33,8 @@ class StreamingVisualizerServer(ZMQServer, ABC):
     @staticmethod
     def load_images_from_shared_memory(images, error_callback=None):
         """Decode viewer image payloads from shared memory and clean up."""
+
+        import numpy as np
 
         image_data_list = []
         for image_info in images:
