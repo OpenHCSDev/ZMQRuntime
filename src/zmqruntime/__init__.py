@@ -1,157 +1,149 @@
-"""Public API for zmqruntime."""
+"""Public API for zmqruntime.
+
+Package-root imports stay lightweight: heavy runtime modules (client, server,
+execution, message stacks) load on first attribute access instead of at
+import time. Declaration-only consumers (configuration modules, DTO layers)
+therefore do not pay the zmq/psutil/threading import cost.
+"""
 
 from __future__ import annotations
 
 from importlib.metadata import version as _distribution_version
+from typing import TYPE_CHECKING
 
 __version__ = _distribution_version("zmqruntime")
 
-from zmqruntime.ack_listener import GlobalAckListener
-from zmqruntime.client import (
-    EndpointConnectionCancelledError,
-    EndpointConnectionPolicy,
-    EndpointProcessGroup,
-    EndpointShutdownMode,
-    EndpointShutdownResult,
-    ZMQClient,
-)
-from zmqruntime.config import TransportMode, ZMQConfig
-from zmqruntime.execution import (
-    ExecutionLifecycleEngineABC,
-    ExecutionProgressObservation,
-    ExecutionResponseDiagnostic,
-    ExecutionSubmissionResponse,
-    ExecutionWaiter,
-    ExecutionWaitResult,
-    InMemoryExecutionLifecycleEngine,
-    ProgressStreamSubscriber,
-    WaitPolicy,
-)
-from zmqruntime.messages import (
-    CancelRequest,
-    ControlErrorResponse,
-    ControlMessageType,
-    ControlResponse,
-    EndpointApplication,
-    EndpointApplicationCompatibility,
-    EndpointApplicationCompatibilityError,
-    EndpointControlCapability,
-    ExecuteRequest,
-    ExecuteResponse,
-    ExecutionRecord,
-    ExecutionStatus,
-    ExecutionStatusSnapshot,
-    ImageAck,
-    MessageFields,
-    PongResponse,
-    ProcessExit,
-    ProcessIdentity,
-    ProcessResourceUsage,
-    ProgressRegistrationRequest,
-    ProgressUnregistrationRequest,
-    QueuedExecutionInfo,
-    ResponseType,
-    ROIMessage,
-    RunningExecutionInfo,
-    ServerRole,
-    ShapesMessage,
-    SocketType,
-    StatusRequest,
-    TaskPhase,
-    # Generic types
-    TaskProgress,
-    TaskStatus,
-    WorkerState,
-    validate_progress_payload,
-)
-from zmqruntime.progress import (
-    EventRegistryABC,
-    EventRegistryMutation,
-    EventRegistryMutationKind,
-    GenericAxisProjection,
-    GenericExecutionProjection,
-    GenericPlateProjection,
-    LatestEventRegistry,
-    ProgressProjectionAdapterABC,
-    build_execution_projection,
-)
-from zmqruntime.queue_tracker import GlobalQueueTrackerRegistry, QueueTracker
-from zmqruntime.runner import serve_forever
-from zmqruntime.server import ZMQServer
-from zmqruntime.startup import (
-    EndpointStartupObserver,
-    EndpointStartupPhase,
-    EndpointStartupPresentationTarget,
-    EndpointStartupStatus,
-    EndpointStartupStatusCallback,
-    EndpointStartupStatusMonitor,
-    EndpointStartupStatusRead,
-    EndpointStartupStatusReader,
-    EndpointStartupStatusWriter,
-)
-from zmqruntime.subscription import CallbackSubscription, SubscriptionABC
-from zmqruntime.timeouts import (
-    OperationCancellation,
-    OperationDeadline,
-    OperationTimeoutError,
-)
-from zmqruntime.transport import (
-    DataControlPortPair,
-    DataControlPortPairAuthority,
-    TcpDataControlPortPair,
-    TcpDataControlPortPairAuthority,
-    TransportEndpoint,
-    get_control_port,
-    get_control_url,
-    get_default_transport_mode,
-    get_ipc_socket_path,
-    get_zmq_transport_url,
-    is_port_in_use,
-    ping_control_port,
-    remove_ipc_socket,
-    resolve_transport_mode,
-    wait_for_endpoint_ready,
-    wait_for_server_ready,
-)
-from zmqruntime.viewer_protocol import (
-    ViewerAckPolicy,
-    ViewerAckResponsePayload,
-    ViewerBatchContextWireField,
-    ViewerBatchDisplayPayload,
-    ViewerBatchItemPayload,
-    ViewerBatchItemWireField,
-    ViewerBatchItemWireMapping,
-    ViewerBatchMessageExtraInput,
-    ViewerBatchMessageExtraPayload,
-    ViewerBatchMessageImages,
-    ViewerBatchMessagePayload,
-    ViewerBatchMessageType,
-    ViewerBatchMessageWirePayload,
-    ViewerBatchWireField,
-    ViewerComponentMetadataPayload,
-    ViewerComponentMode,
-    ViewerComponentModeGroups,
-    ViewerControlReplyHeader,
-    ViewerControlReplyPayload,
-    ViewerControlResponseField,
-    ViewerDisplayConfigWireField,
-    ViewerProtocolStatus,
-    ViewerTransportEndpoint,
-    ViewerWireMapping,
-    ViewerWirePayload,
-    ViewerWireScalar,
-    ViewerWireValue,
-    viewer_wire_key,
-)
-from zmqruntime.viewer_state import (
-    ViewerInstance,
-    ViewerState,
-    ViewerStateManager,
-    get_or_create_viewer,
-)
+_LAZY_EXPORTS: dict[str, str] = {
+    "GlobalAckListener": "zmqruntime.ack_listener",
+    "EndpointConnectionCancelledError": "zmqruntime.client",
+    "EndpointConnectionPolicy": "zmqruntime.client",
+    "EndpointProcessGroup": "zmqruntime.client",
+    "EndpointShutdownMode": "zmqruntime.client",
+    "EndpointShutdownResult": "zmqruntime.client",
+    "ZMQClient": "zmqruntime.client",
+    "TransportMode": "zmqruntime.config",
+    "ZMQConfig": "zmqruntime.config",
+    "CancelRequest": "zmqruntime.messages",
+    "ControlErrorResponse": "zmqruntime.messages",
+    "ControlMessageType": "zmqruntime.messages",
+    "ControlResponse": "zmqruntime.messages",
+    "EndpointApplication": "zmqruntime.messages",
+    "EndpointApplicationCompatibility": "zmqruntime.messages",
+    "EndpointApplicationCompatibilityError": "zmqruntime.messages",
+    "EndpointControlCapability": "zmqruntime.messages",
+    "ExecuteRequest": "zmqruntime.messages",
+    "ExecuteResponse": "zmqruntime.messages",
+    "ExecutionRecord": "zmqruntime.messages",
+    "ExecutionStatus": "zmqruntime.messages",
+    "ExecutionStatusSnapshot": "zmqruntime.messages",
+    "ImageAck": "zmqruntime.messages",
+    "MessageFields": "zmqruntime.messages",
+    "PongResponse": "zmqruntime.messages",
+    "ProcessExit": "zmqruntime.messages",
+    "ProcessIdentity": "zmqruntime.messages",
+    "ProcessResourceUsage": "zmqruntime.messages",
+    "ProgressRegistrationRequest": "zmqruntime.messages",
+    "ProgressUnregistrationRequest": "zmqruntime.messages",
+    "QueuedExecutionInfo": "zmqruntime.messages",
+    "ResponseType": "zmqruntime.messages",
+    "ROIMessage": "zmqruntime.messages",
+    "RunningExecutionInfo": "zmqruntime.messages",
+    "ServerRole": "zmqruntime.messages",
+    "ShapesMessage": "zmqruntime.messages",
+    "SocketType": "zmqruntime.messages",
+    "StatusRequest": "zmqruntime.messages",
+    "TaskPhase": "zmqruntime.messages",
+    "TaskProgress": "zmqruntime.messages",
+    "TaskStatus": "zmqruntime.messages",
+    "WorkerState": "zmqruntime.messages",
+    "validate_progress_payload": "zmqruntime.messages",
+    "ExecutionLifecycleEngineABC": "zmqruntime.execution",
+    "ExecutionProgressObservation": "zmqruntime.execution",
+    "ExecutionResponseDiagnostic": "zmqruntime.execution",
+    "ExecutionSubmissionResponse": "zmqruntime.execution",
+    "ExecutionWaiter": "zmqruntime.execution",
+    "ExecutionWaitResult": "zmqruntime.execution",
+    "InMemoryExecutionLifecycleEngine": "zmqruntime.execution",
+    "ProgressStreamSubscriber": "zmqruntime.execution",
+    "WaitPolicy": "zmqruntime.execution",
+    "EventRegistryABC": "zmqruntime.progress",
+    "EventRegistryMutation": "zmqruntime.progress",
+    "EventRegistryMutationKind": "zmqruntime.progress",
+    "GenericAxisProjection": "zmqruntime.progress",
+    "GenericExecutionProjection": "zmqruntime.progress",
+    "GenericPlateProjection": "zmqruntime.progress",
+    "LatestEventRegistry": "zmqruntime.progress",
+    "ProgressProjectionAdapterABC": "zmqruntime.progress",
+    "build_execution_projection": "zmqruntime.progress",
+    "GlobalQueueTrackerRegistry": "zmqruntime.queue_tracker",
+    "QueueTracker": "zmqruntime.queue_tracker",
+    "serve_forever": "zmqruntime.runner",
+    "ZMQServer": "zmqruntime.server",
+    "EndpointStartupObserver": "zmqruntime.startup",
+    "EndpointStartupPhase": "zmqruntime.startup",
+    "EndpointStartupPresentationTarget": "zmqruntime.startup",
+    "EndpointStartupStatus": "zmqruntime.startup",
+    "EndpointStartupStatusCallback": "zmqruntime.startup",
+    "EndpointStartupStatusMonitor": "zmqruntime.startup",
+    "EndpointStartupStatusRead": "zmqruntime.startup",
+    "EndpointStartupStatusReader": "zmqruntime.startup",
+    "EndpointStartupStatusWriter": "zmqruntime.startup",
+    "CallbackSubscription": "zmqruntime.subscription",
+    "SubscriptionABC": "zmqruntime.subscription",
+    "OperationCancellation": "zmqruntime.timeouts",
+    "OperationDeadline": "zmqruntime.timeouts",
+    "OperationTimeoutError": "zmqruntime.timeouts",
+    "DataControlPortPair": "zmqruntime.transport",
+    "DataControlPortPairAuthority": "zmqruntime.transport",
+    "TcpDataControlPortPair": "zmqruntime.transport",
+    "TcpDataControlPortPairAuthority": "zmqruntime.transport",
+    "TransportEndpoint": "zmqruntime.transport",
+    "get_control_port": "zmqruntime.transport",
+    "get_control_url": "zmqruntime.transport",
+    "get_default_transport_mode": "zmqruntime.transport",
+    "get_ipc_socket_path": "zmqruntime.transport",
+    "get_zmq_transport_url": "zmqruntime.transport",
+    "is_port_in_use": "zmqruntime.transport",
+    "ping_control_port": "zmqruntime.transport",
+    "remove_ipc_socket": "zmqruntime.transport",
+    "resolve_transport_mode": "zmqruntime.transport",
+    "wait_for_endpoint_ready": "zmqruntime.transport",
+    "wait_for_server_ready": "zmqruntime.transport",
+    "ViewerAckPolicy": "zmqruntime.viewer_protocol",
+    "ViewerAckResponsePayload": "zmqruntime.viewer_protocol",
+    "ViewerBatchContextWireField": "zmqruntime.viewer_protocol",
+    "ViewerBatchDisplayPayload": "zmqruntime.viewer_protocol",
+    "ViewerBatchItemPayload": "zmqruntime.viewer_protocol",
+    "ViewerBatchItemWireField": "zmqruntime.viewer_protocol",
+    "ViewerBatchItemWireMapping": "zmqruntime.viewer_protocol",
+    "ViewerBatchMessageExtraInput": "zmqruntime.viewer_protocol",
+    "ViewerBatchMessageExtraPayload": "zmqruntime.viewer_protocol",
+    "ViewerBatchMessageImages": "zmqruntime.viewer_protocol",
+    "ViewerBatchMessagePayload": "zmqruntime.viewer_protocol",
+    "ViewerBatchMessageType": "zmqruntime.viewer_protocol",
+    "ViewerBatchMessageWirePayload": "zmqruntime.viewer_protocol",
+    "ViewerBatchWireField": "zmqruntime.viewer_protocol",
+    "ViewerComponentMetadataPayload": "zmqruntime.viewer_protocol",
+    "ViewerComponentMode": "zmqruntime.viewer_protocol",
+    "ViewerComponentModeGroups": "zmqruntime.viewer_protocol",
+    "ViewerControlReplyHeader": "zmqruntime.viewer_protocol",
+    "ViewerControlReplyPayload": "zmqruntime.viewer_protocol",
+    "ViewerControlResponseField": "zmqruntime.viewer_protocol",
+    "ViewerDisplayConfigWireField": "zmqruntime.viewer_protocol",
+    "ViewerProtocolStatus": "zmqruntime.viewer_protocol",
+    "ViewerTransportEndpoint": "zmqruntime.viewer_protocol",
+    "ViewerWireMapping": "zmqruntime.viewer_protocol",
+    "ViewerWirePayload": "zmqruntime.viewer_protocol",
+    "ViewerWireScalar": "zmqruntime.viewer_protocol",
+    "ViewerWireValue": "zmqruntime.viewer_protocol",
+    "viewer_wire_key": "zmqruntime.viewer_protocol",
+    "ViewerInstance": "zmqruntime.viewer_state",
+    "ViewerState": "zmqruntime.viewer_state",
+    "ViewerStateManager": "zmqruntime.viewer_state",
+    "get_or_create_viewer": "zmqruntime.viewer_state",
+}
 
 __all__ = [
-    "GlobalAckListener",
     "EndpointConnectionCancelledError",
     "EndpointConnectionPolicy",
     "EndpointProcessGroup",
@@ -280,3 +272,18 @@ __all__ = [
     "ProgressProjectionAdapterABC",
     "build_execution_projection",
 ]
+
+
+def __getattr__(name: str):
+    module_name = _LAZY_EXPORTS.get(name)
+    if module_name is None:
+        raise AttributeError(f"module 'zmqruntime' has no attribute {name!r}")
+    import importlib
+
+    value = getattr(importlib.import_module(module_name), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_LAZY_EXPORTS))
