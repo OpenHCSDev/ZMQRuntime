@@ -52,11 +52,13 @@ class ExecutionWaiter:
             time.sleep(policy.poll_interval)
             try:
                 status_response = self._poll_status(execution_id)
+                # A socket response is not a successful status observation
+                # until the existing snapshot boundary admits it.
+                snapshot = ExecutionStatusSnapshot.from_dict(status_response)
                 consecutive_errors = 0
                 observed_progress_sequence = self._observed_progress_sequence(
                     execution_id
                 )
-                snapshot = ExecutionStatusSnapshot.from_dict(status_response)
 
                 if snapshot.status is ResponseType.OK and snapshot.execution is not None:
                     record = snapshot.execution
