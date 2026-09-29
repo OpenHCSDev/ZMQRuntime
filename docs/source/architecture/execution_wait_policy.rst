@@ -30,8 +30,12 @@ ExecutionWaiter Behavior
 
 - polls server status repeatedly
 - parses responses into ``ExecutionStatusSnapshot``
+- resets the consecutive-error budget only after that decode succeeds;
+  a received but malformed response remains a failed status observation
 - returns normalized terminal dict for complete/failed/cancelled/error
 - treats repeated polling failures as lost-connection cancellation
+- retains retries while known server liveness or advancing progress is observed;
+  the error budget is not a deadline for a healthy long-running execution
 
 Design Outcome
 --------------
