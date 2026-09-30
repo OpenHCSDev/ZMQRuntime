@@ -97,3 +97,28 @@ def test_unavailable_pair_never_spawns(client, monkeypatch):
     with pytest.raises(RuntimeError, match="unavailable"):
         start(client)
     client.spawn.assert_not_called()
+
+
+def test_cross_pair_prebind_reservation_rejects_second_child(client, monkeypatch):
+    declaration = client.transport_mode.declaration
+    monkeypatch.setattr(type(client.endpoint), "occupied_ports", lambda *_: frozenset())
+    monkeypatch.setattr(declaration, "data_control_pair_is_available", lambda *_: True)
+    start(client)
+    overlapping = Client(
+        port=client.control_port,
+        host="127.0.0.1",
+        transport_mode=client.transport_mode,
+        config=client.config,
+    )
+    overlapping.spawn = Mock(side_effect=AssertionError("Duplicate prebind child"))
+    with pytest.raises(RuntimeError, match="startup owner"):
+        start(overlapping)
+    overlapping.spawn.assert_not_called()
+    client.spawn.assert_called_once()
+
+
+def test_expired_budget_never_spawns(client):
+    deadline = OperationDeadline(operation="expired bootstrap", timeout_ms=1, expires_at=0)
+    with pytest.raises(TimeoutError):
+        client.start_owned_process(operation_deadline=deadline)
+    client.spawn.assert_not_called()

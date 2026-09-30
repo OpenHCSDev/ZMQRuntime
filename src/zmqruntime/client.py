@@ -10,7 +10,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, wait
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -830,19 +830,25 @@ class ZMQClient(ABC):
         with self._ensure_connection_attempt(), self._lock:
             if self._connection is not None:
                 raise RuntimeError("Explicit startup cannot adopt an existing connection")
-            with endpoint_startup_lock(
-                self.port,
-                self.transport_mode,
-                self.config,
-                operation_deadline=operation_deadline,
-                cancellation=self._connection_cancellation.get(),
-            ) as acquired:
-                if not acquired:
-                    raise EndpointConnectionCancelledError("Startup cancelled before spawn")
+            ports = sorted(self.endpoint.port_pair(self.config).ports)
+            with ExitStack() as locks:
+                for port in ports:
+                    acquired = locks.enter_context(
+                        endpoint_startup_lock(
+                            port,
+                            self.transport_mode,
+                            self.config,
+                            operation_deadline=operation_deadline,
+                            cancellation=self._connection_cancellation.get(),
+                        )
+                    )
+                    if not acquired:
+                        raise EndpointConnectionCancelledError("Startup cancelled before spawn")
                 operation_deadline.remaining_seconds()
-                prior_owner = declaration.startup_owner(self.port, self.config)
-                if prior_owner is not None and prior_owner.is_alive() is not False:
-                    raise RuntimeError("An existing startup owner reserves this endpoint")
+                for port in ports:
+                    prior_owner = declaration.startup_owner(port, self.config)
+                    if prior_owner is not None and prior_owner.is_alive() is not False:
+                        raise RuntimeError("An existing startup owner reserves this endpoint")
                 if self.endpoint.occupied_ports(self.config):
                     raise RuntimeError("Explicit startup requires an empty data/control pair")
                 if not declaration.data_control_pair_is_available(
@@ -852,13 +858,22 @@ class ZMQClient(ABC):
                     self.config,
                 ):
                     raise RuntimeError("Execution endpoint pair is unavailable")
+                operation_deadline.remaining_seconds()
                 self._emit_connection_status(
                     EndpointStartupPhase.STARTING_PROCESS,
                     f"Starting explicitly owned server on port {self.port}",
                 )
+                if self._connection_cancelled():
+                    raise EndpointConnectionCancelledError("Startup cancelled before spawn")
+                # Reserve before the side effect. A failed child publication
+                # must leave an active claim, not invite a concurrent replay.
+                for port in ports:
+                    declaration.record_startup_owner(port, self.config, ProcessIdentity.current())
+                operation_deadline.remaining_seconds()
                 process = endpoint_process(self._spawn_server_process())
                 try:
-                    declaration.record_startup_owner(self.port, self.config, process.identity)
+                    for port in ports:
+                        declaration.record_startup_owner(port, self.config, process.identity)
                 except Exception as error:
                     raise EndpointStartupUncertainError(process) from error
                 return process
