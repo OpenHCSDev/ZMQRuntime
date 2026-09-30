@@ -12,7 +12,10 @@ from types import MappingProxyType
 
 import zmq
 
-from zmqruntime.execution.responses import WireResponse
+from zmqruntime.execution.responses import (
+    WireResponse,
+    WireValue,  # noqa: F401 -- resolves WireResponse's recursive annotation in this module
+)
 from zmqruntime.messages import validate_progress_payload
 
 logger = logging.getLogger(__name__)

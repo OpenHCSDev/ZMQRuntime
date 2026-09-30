@@ -1,0 +1,364 @@
+openhcs= /home/ts/wt/openhcs-custom-function-admission-20260929/openhcs/__init__.py
+zmqruntime= /home/ts/wt/zmqruntime-progress-annotation-20260929/src/zmqruntime/__init__.py
+python_introspect= /home/ts/wt/openhcs-custom-function-admission-20260929/external/python-introspect/src/python_introspect/__init__.py
+FFFFFFF                                                                  [100%]
+=================================== FAILURES ===================================
+_ test_progress_annotations_resolve_without_caller_supplied_namespace[ExecutionProgressObservation] _
+
+declaration = <class 'zmqruntime.execution.progress_stream.ExecutionProgressObservation'>
+
+    @pytest.mark.parametrize(
+        "declaration",
+        (
+            ExecutionProgressObservation,
+            ExecutionProgressObservation.first,
+            ExecutionProgressObservation.followed_by,
+            ExecutionProgressObservation.from_wire,
+        ),
+    )
+    def test_progress_annotations_resolve_without_caller_supplied_namespace(declaration):
+>       assert get_type_hints(declaration, include_extras=True)
+
+tests/test_progress_annotation.py:24: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:2244: in get_type_hints
+    value = _eval_type(value, base_globals, base_locals)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:414: in _eval_type
+    return t._evaluate(globalns, localns, recursive_guard)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:929: in _evaluate
+    self.__forward_value__ = _eval_type(
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:414: in _eval_type
+    return t._evaluate(globalns, localns, recursive_guard)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:924: in _evaluate
+    eval(self.__forward_code__, globalns, localns),
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   NameError: name 'WireValue' is not defined
+
+<string>:1: NameError
+__ test_progress_annotations_resolve_without_caller_supplied_namespace[first] __
+
+declaration = <bound method ExecutionProgressObservation.first of <class 'zmqruntime.execution.progress_stream.ExecutionProgressObservation'>>
+
+    @pytest.mark.parametrize(
+        "declaration",
+        (
+            ExecutionProgressObservation,
+            ExecutionProgressObservation.first,
+            ExecutionProgressObservation.followed_by,
+            ExecutionProgressObservation.from_wire,
+        ),
+    )
+    def test_progress_annotations_resolve_without_caller_supplied_namespace(declaration):
+>       assert get_type_hints(declaration, include_extras=True)
+
+tests/test_progress_annotation.py:24: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:2281: in get_type_hints
+    hints[name] = _eval_type(value, globalns, localns)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:414: in _eval_type
+    return t._evaluate(globalns, localns, recursive_guard)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:929: in _evaluate
+    self.__forward_value__ = _eval_type(
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:414: in _eval_type
+    return t._evaluate(globalns, localns, recursive_guard)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:924: in _evaluate
+    eval(self.__forward_code__, globalns, localns),
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   NameError: name 'WireValue' is not defined
+
+<string>:1: NameError
+_ test_progress_annotations_resolve_without_caller_supplied_namespace[followed_by] _
+
+declaration = <function ExecutionProgressObservation.followed_by at 0x7fc8242a2fc0>
+
+    @pytest.mark.parametrize(
+        "declaration",
+        (
+            ExecutionProgressObservation,
+            ExecutionProgressObservation.first,
+            ExecutionProgressObservation.followed_by,
+            ExecutionProgressObservation.from_wire,
+        ),
+    )
+    def test_progress_annotations_resolve_without_caller_supplied_namespace(declaration):
+>       assert get_type_hints(declaration, include_extras=True)
+
+tests/test_progress_annotation.py:24: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:2281: in get_type_hints
+    hints[name] = _eval_type(value, globalns, localns)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:414: in _eval_type
+    return t._evaluate(globalns, localns, recursive_guard)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:929: in _evaluate
+    self.__forward_value__ = _eval_type(
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:414: in _eval_type
+    return t._evaluate(globalns, localns, recursive_guard)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:924: in _evaluate
+    eval(self.__forward_code__, globalns, localns),
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   NameError: name 'WireValue' is not defined
+
+<string>:1: NameError
+_ test_progress_annotations_resolve_without_caller_supplied_namespace[from_wire] _
+
+declaration = <bound method ExecutionProgressObservation.from_wire of <class 'zmqruntime.execution.progress_stream.ExecutionProgressObservation'>>
+
+    @pytest.mark.parametrize(
+        "declaration",
+        (
+            ExecutionProgressObservation,
+            ExecutionProgressObservation.first,
+            ExecutionProgressObservation.followed_by,
+            ExecutionProgressObservation.from_wire,
+        ),
+    )
+    def test_progress_annotations_resolve_without_caller_supplied_namespace(declaration):
+>       assert get_type_hints(declaration, include_extras=True)
+
+tests/test_progress_annotation.py:24: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:2281: in get_type_hints
+    hints[name] = _eval_type(value, globalns, localns)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:414: in _eval_type
+    return t._evaluate(globalns, localns, recursive_guard)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:929: in _evaluate
+    self.__forward_value__ = _eval_type(
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:414: in _eval_type
+    return t._evaluate(globalns, localns, recursive_guard)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:924: in _evaluate
+    eval(self.__forward_code__, globalns, localns),
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   NameError: name 'WireValue' is not defined
+
+<string>:1: NameError
+___ test_progress_mapping_decode_preserves_wire_and_immutable_nested_values ____
+
+    def test_progress_mapping_decode_preserves_wire_and_immutable_nested_values():
+        event = progress_event()
+        original = ExecutionProgressObservation.first(event)
+        payload = json.loads(json.dumps(original.as_wire()))
+>       decoded = dataclass_from_mapping(ExecutionProgressObservation, payload)
+
+tests/test_progress_annotation.py:58: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+../openhcs-custom-function-admission-20260929/external/python-introspect/src/python_introspect/dataclass_projection.py:54: in dataclass_from_mapping
+    annotations = get_type_hints(target_type, include_extras=True)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:2244: in get_type_hints
+    value = _eval_type(value, base_globals, base_locals)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:414: in _eval_type
+    return t._evaluate(globalns, localns, recursive_guard)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:929: in _evaluate
+    self.__forward_value__ = _eval_type(
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:414: in _eval_type
+    return t._evaluate(globalns, localns, recursive_guard)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:924: in _evaluate
+    eval(self.__forward_code__, globalns, localns),
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   NameError: name 'WireValue' is not defined
+
+<string>:1: NameError
+_ test_real_openhcs_job_status_decodes_nested_progress[ExecutionStatus.RUNNING] _
+
+status = <ExecutionStatus.RUNNING: 'running'>
+
+    @pytest.mark.parametrize("status", (ExecutionStatus.RUNNING, ExecutionStatus.COMPLETE))
+    def test_real_openhcs_job_status_decodes_nested_progress(status):
+        # Optional downstream integration, not a dependency or copied DTO in ZMQRuntime.
+        execution = pytest.importorskip("openhcs.agent.dto.execution")
+        from openhcs.agent.dto.common import SCHEMA_VERSION
+        from openhcs.serialization.json import to_jsonable
+    
+        original = execution.ExecutionJobStatus(
+            schema_version=SCHEMA_VERSION,
+            session_id="synthetic-session",
+            job_id="synthetic-job",
+            kind="compile",
+            uri="synthetic-job-uri",
+            server_execution_id="synthetic-execution",
+            status=status.value,
+            response={"status": status.value, "result": {"compile_only": True}},
+            progress=ExecutionProgressObservation.first(progress_event(status)),
+        )
+        payload = json.loads(json.dumps(to_jsonable(original)))
+>       decoded = dataclass_from_mapping(execution.ExecutionJobStatus, payload)
+
+tests/test_progress_annotation.py:89: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+../openhcs-custom-function-admission-20260929/external/python-introspect/src/python_introspect/dataclass_projection.py:66: in dataclass_from_mapping
+    constructor_values[declared_field.name] = _mapping_value_for_annotation(
+../openhcs-custom-function-admission-20260929/external/python-introspect/src/python_introspect/dataclass_projection.py:145: in _mapping_value_for_annotation
+    converted = _mapping_value_for_annotation(
+../openhcs-custom-function-admission-20260929/external/python-introspect/src/python_introspect/dataclass_projection.py:267: in _mapping_value_for_annotation
+    return dataclass_from_mapping(annotation, value)
+../openhcs-custom-function-admission-20260929/external/python-introspect/src/python_introspect/dataclass_projection.py:54: in dataclass_from_mapping
+    annotations = get_type_hints(target_type, include_extras=True)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:2244: in get_type_hints
+    value = _eval_type(value, base_globals, base_locals)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:414: in _eval_type
+    return t._evaluate(globalns, localns, recursive_guard)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:929: in _evaluate
+    self.__forward_value__ = _eval_type(
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:414: in _eval_type
+    return t._evaluate(globalns, localns, recursive_guard)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:924: in _evaluate
+    eval(self.__forward_code__, globalns, localns),
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   NameError: name 'WireValue' is not defined
+
+<string>:1: NameError
+_ test_real_openhcs_job_status_decodes_nested_progress[ExecutionStatus.COMPLETE] _
+
+status = <ExecutionStatus.COMPLETE: 'complete'>
+
+    @pytest.mark.parametrize("status", (ExecutionStatus.RUNNING, ExecutionStatus.COMPLETE))
+    def test_real_openhcs_job_status_decodes_nested_progress(status):
+        # Optional downstream integration, not a dependency or copied DTO in ZMQRuntime.
+        execution = pytest.importorskip("openhcs.agent.dto.execution")
+        from openhcs.agent.dto.common import SCHEMA_VERSION
+        from openhcs.serialization.json import to_jsonable
+    
+        original = execution.ExecutionJobStatus(
+            schema_version=SCHEMA_VERSION,
+            session_id="synthetic-session",
+            job_id="synthetic-job",
+            kind="compile",
+            uri="synthetic-job-uri",
+            server_execution_id="synthetic-execution",
+            status=status.value,
+            response={"status": status.value, "result": {"compile_only": True}},
+            progress=ExecutionProgressObservation.first(progress_event(status)),
+        )
+        payload = json.loads(json.dumps(to_jsonable(original)))
+>       decoded = dataclass_from_mapping(execution.ExecutionJobStatus, payload)
+
+tests/test_progress_annotation.py:89: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+../openhcs-custom-function-admission-20260929/external/python-introspect/src/python_introspect/dataclass_projection.py:66: in dataclass_from_mapping
+    constructor_values[declared_field.name] = _mapping_value_for_annotation(
+../openhcs-custom-function-admission-20260929/external/python-introspect/src/python_introspect/dataclass_projection.py:145: in _mapping_value_for_annotation
+    converted = _mapping_value_for_annotation(
+../openhcs-custom-function-admission-20260929/external/python-introspect/src/python_introspect/dataclass_projection.py:267: in _mapping_value_for_annotation
+    return dataclass_from_mapping(annotation, value)
+../openhcs-custom-function-admission-20260929/external/python-introspect/src/python_introspect/dataclass_projection.py:54: in dataclass_from_mapping
+    annotations = get_type_hints(target_type, include_extras=True)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:2244: in get_type_hints
+    value = _eval_type(value, base_globals, base_locals)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:414: in _eval_type
+    return t._evaluate(globalns, localns, recursive_guard)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:929: in _evaluate
+    self.__forward_value__ = _eval_type(
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:414: in _eval_type
+    return t._evaluate(globalns, localns, recursive_guard)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:924: in _evaluate
+    eval(self.__forward_code__, globalns, localns),
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   NameError: name 'WireValue' is not defined
+
+<string>:1: NameError
+=========================== short test summary info ============================
+FAILED tests/test_progress_annotation.py::test_progress_annotations_resolve_without_caller_supplied_namespace[ExecutionProgressObservation]
+FAILED tests/test_progress_annotation.py::test_progress_annotations_resolve_without_caller_supplied_namespace[first]
+FAILED tests/test_progress_annotation.py::test_progress_annotations_resolve_without_caller_supplied_namespace[followed_by]
+FAILED tests/test_progress_annotation.py::test_progress_annotations_resolve_without_caller_supplied_namespace[from_wire]
+FAILED tests/test_progress_annotation.py::test_progress_mapping_decode_preserves_wire_and_immutable_nested_values
+FAILED tests/test_progress_annotation.py::test_real_openhcs_job_status_decodes_nested_progress[ExecutionStatus.RUNNING]
+FAILED tests/test_progress_annotation.py::test_real_openhcs_job_status_decodes_nested_progress[ExecutionStatus.COMPLETE]
+7 failed in 4.39s
