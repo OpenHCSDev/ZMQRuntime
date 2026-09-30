@@ -6,11 +6,12 @@ from threading import Event
 from uuid import uuid4
 
 import pytest
+import zmq
 
 from zmqruntime.ack_listener import GlobalAckListener
 from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.messages import ImageAck, ImageTransferIdentity
-from zmqruntime.queue_tracker import GlobalQueueTrackerRegistry, QueueTracker
+from zmqruntime.queue_tracker import GlobalQueueTrackerRegistry
 from zmqruntime.streaming.server import StreamingVisualizerServer
 
 
@@ -150,6 +151,39 @@ def test_required_return_route_has_no_legacy_reader():
     with pytest.raises(ValueError, match="return_route"):
         ImageAck.from_dict(dict(type="image_ack", image_id="missing", viewer_port=1,
                                viewer_type="fixture"))
+
+
+@pytest.mark.parametrize("mode", [TransportMode.TCP, TransportMode.IPC])
+def test_occupied_explicit_destination_fails_without_stealing_owner(mode, tmp_path_factory):
+    if not mode.declaration.is_supported():
+        pytest.skip("Transport unavailable on this platform")
+    config = ZMQConfig(ipc_socket_dir=str(tmp_path_factory.mktemp("ack")))
+    context = zmq.Context()
+    owner = context.socket(zmq.PULL)
+    sender = context.socket(zmq.PUSH)
+    listener = GlobalAckListener()
+    port = 44556 if mode is TransportMode.IPC else 0
+    try:
+        port = mode.declaration.bind_socket(owner, "127.0.0.1", port, config)
+        url = mode.declaration.endpoint_url(port, "127.0.0.1", config)
+        with pytest.raises(zmq.ZMQError):
+            listener.start(port=port, transport_mode=mode, host="127.0.0.1",
+                           config=config, timeout_ms=2000)
+        assert not listener.startup_status.phase.accepts_requests
+        with pytest.raises(RuntimeError, match="no ready return route"):
+            _ = listener.return_route
+        sender.setsockopt(zmq.LINGER, 0)
+        sender.setsockopt(zmq.SNDTIMEO, 1000)
+        sender.connect(url)
+        sender.send_json({"owned": "still-here"})
+        assert owner.poll(1000)
+        assert owner.recv_json() == {"owned": "still-here"}
+    finally:
+        listener.stop(timeout_ms=2000)
+        sender.close(0)
+        owner.close(0)
+        context.term()
+        mode.declaration.cleanup_endpoint(port, config)
 
 
 def delegated_worker(pipe, route):

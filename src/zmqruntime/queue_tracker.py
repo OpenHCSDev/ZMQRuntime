@@ -8,7 +8,6 @@ import logging
 import threading
 import time
 from typing import Dict, Tuple, Optional, Set
-from typing import Any
 
 from zmqruntime.viewer_state import ViewerStateManager
 from zmqruntime.messages import ProcessIdentity
@@ -37,7 +36,7 @@ class QueueTracker:
         self.viewer_type = viewer_type
         self.timeout_seconds = timeout_seconds
 
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._pending: Dict[str, float] = {}  # {image_id: timestamp_sent}
         self._processed: Set[str] = set()  # {image_id}
         self._workers: set[ProcessIdentity] = set()
@@ -99,14 +98,15 @@ class QueueTracker:
     def register_worker_processed(self, image_id: str, producer: ProcessIdentity) -> None:
         """Explicitly account a delegated worker receipt, never an unknown local ACK.
 
-        The worker-result owner calls this at its admitted receipt boundary.
-        Local ACK dispatch must only complete previously registered IDs.
+        Listener dispatch requires this batch's admitted worker incarnation.
+        Local ACKs can only complete previously registered IDs.
         """
         with self._lock:
             if producer not in self._workers:
                 return
-        self.register_sent(image_id)
-        self.mark_processed(image_id)
+            # Admission and accounting share the batch's reset boundary.
+            self.register_sent(image_id)
+            self.mark_processed(image_id)
 
     def get_progress(self) -> Tuple[int, int]:
         """Get current progress.
