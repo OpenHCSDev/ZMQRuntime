@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
@@ -59,6 +60,21 @@ class ViewerInstance:
 
 
 VisualizerFactory = Callable[[], "VisualizerProcessManager"]
+
+
+class ViewerReuseAdmissionABC(ABC):
+    """Caller-owned constraints admitted inside atomic viewer acquisition."""
+
+    @abstractmethod
+    def require_reusable(self, visualizer: "VisualizerProcessManager") -> None:
+        """Raise without changing the existing instance when reuse is forbidden."""
+
+
+class HealthyViewerReuseAdmission(ViewerReuseAdmissionABC):
+    """Generic callers require health but declare no application launch settings."""
+
+    def require_reusable(self, visualizer: "VisualizerProcessManager") -> None:
+        pass
 
 
 class ViewerStateManager:
@@ -123,6 +139,8 @@ class ViewerStateManager:
         factory: VisualizerFactory,
         wait_for_ready: bool = True,
         ready_timeout: float = 30.0,
+        *,
+        reuse_admission: ViewerReuseAdmissionABC = HealthyViewerReuseAdmission(),
     ) -> Tuple["VisualizerProcessManager", bool]:
         """
         Atomically get existing viewer or create a new one.
@@ -136,6 +154,9 @@ class ViewerStateManager:
             factory: Callable that creates a VisualizerProcessManager
             wait_for_ready: If True, block until viewer is ready (or timeout)
             ready_timeout: Maximum seconds to wait for ready state
+            reuse_admission: Application constraints checked under the acquisition
+                lock before returning a healthy existing instance. Rejection does
+                not stop, replace or forget the existing viewer.
 
         Returns:
             Tuple of (visualizer_instance, was_created)
@@ -152,6 +173,7 @@ class ViewerStateManager:
 
             if existing is not None:
                 if existing.is_healthy:
+                    reuse_admission.require_reusable(existing.visualizer)
                     existing.last_used = time.time()
                     logger.debug(
                         "ViewerStateManager: Reusing existing %s viewer on port %d (state=%s)",
@@ -215,7 +237,10 @@ class ViewerStateManager:
         """Start the viewer process and optionally wait for ready state."""
         try:
             # Start the process
-            instance.visualizer.start()
+            # A factory may attach to an already-live, externally-owned viewer.
+            # Registering that lifecycle must not restart its foreign process.
+            if not instance.visualizer.is_running:
+                instance.visualizer.start()
             logger.info(
                 "ViewerStateManager: Started %s viewer on port %d",
                 instance.viewer_type,
@@ -482,6 +507,8 @@ def get_or_create_viewer(
     factory: VisualizerFactory,
     wait_for_ready: bool = True,
     ready_timeout: float = 30.0,
+    *,
+    reuse_admission: ViewerReuseAdmissionABC = HealthyViewerReuseAdmission(),
 ) -> Tuple["VisualizerProcessManager", bool]:
     """
     Convenience function for atomic viewer get-or-create.
@@ -494,4 +521,7 @@ def get_or_create_viewer(
         )
     """
     manager = ViewerStateManager.get_instance()
-    return manager.get_or_create_viewer(viewer_type, port, factory, wait_for_ready, ready_timeout)
+    return manager.get_or_create_viewer(
+        viewer_type, port, factory, wait_for_ready, ready_timeout,
+        reuse_admission=reuse_admission,
+    )
