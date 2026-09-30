@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from ipaddress import ip_address
 from pathlib import Path
+from dataclasses import replace
 from typing import ClassVar
 
 import portalocker
@@ -29,6 +30,15 @@ class TransportDeclaration(ABC, metaclass=AutoRegisterMeta):
 
     mode: ClassVar[TransportMode | None] = None
     default_priority: ClassVar[int]
+
+    @classmethod
+    @abstractmethod
+    def bind_ack_socket(cls, endpoint_socket, host, port, config, incarnation, cancellation) -> str:
+        """Bind one producer destination and return its connectable wire URL."""
+
+    @classmethod
+    def cleanup_ack_socket(cls, url: str) -> None:
+        """Retire only resources created by a successful ACK bind."""
 
     @classmethod
     @abstractmethod
@@ -218,6 +228,12 @@ class TcpTransportDeclaration(TransportDeclaration):
     default_priority = 1
 
     @classmethod
+    def bind_ack_socket(cls, endpoint_socket, host, port, config, incarnation, cancellation) -> str:
+        del incarnation, cancellation
+        resolved = cls.bind_socket(endpoint_socket, host, port, config)
+        return cls.endpoint_url(resolved, "127.0.0.1" if host == "*" else host, config)
+
+    @classmethod
     def is_supported(cls) -> bool:
         return True
 
@@ -359,6 +375,23 @@ class IpcTransportDeclaration(TransportDeclaration):
 
     mode = TransportMode.IPC
     default_priority = 0
+
+    @classmethod
+    def bind_ack_socket(cls, endpoint_socket, host, port, config, incarnation, cancellation) -> str:
+        if port == 0:
+            config = replace(config, ipc_socket_prefix=f"{config.ipc_socket_prefix}-{incarnation}")
+        # Reuse the process-shared lock: IPC bind itself replaces a live inode.
+        with cls.startup_lock(port, config, None, cancellation) as acquired:
+            if not acquired:
+                raise RuntimeError("ACK bind cancelled while waiting for endpoint ownership")
+            if cls.endpoint_in_use(port, host, config):
+                raise zmq.ZMQError(zmq.EADDRINUSE)
+            cls.bind_socket(endpoint_socket, host, port, config)
+        return cls.endpoint_url(port, host, config)
+
+    @classmethod
+    def cleanup_ack_socket(cls, url: str) -> None:
+        Path(url.removeprefix("ipc://")).unlink(missing_ok=True)
 
     @classmethod
     def is_supported(cls) -> bool:

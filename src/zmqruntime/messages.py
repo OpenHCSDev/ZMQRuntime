@@ -15,6 +15,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Optional, Tuple
+from uuid import UUID
 
 import psutil
 from zmqruntime.timeouts import OperationDeadline
@@ -1237,17 +1238,75 @@ class PongResponse(ControlResponse):
 # =============================================================================
 
 
+@dataclass(frozen=True, slots=True)
+class AckReturnRoute:
+    """Bound producer destination and exact listener incarnation, not a viewer port."""
+
+    url: str
+    incarnation: str
+    owner: ProcessIdentity
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.url, str) or not self.url:
+            raise ValueError("ACK destination must be a nonempty transport URL")
+        UUID(self.incarnation)
+        if not isinstance(self.owner, ProcessIdentity):
+            raise TypeError("ACK route requires a ProcessIdentity")
+
+    def to_dict(self) -> dict[str, Any]:
+        return dict(url=self.url, incarnation=self.incarnation, owner=self.owner.to_dict())
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "AckReturnRoute":
+        values = dict(data)
+        values["owner"] = ProcessIdentity.from_dict(values["owner"])
+        return cls(**values)
+
+
+@dataclass(frozen=True, slots=True)
+class ImageTransferIdentity:
+    """Per-image return contract carried unchanged through deferred viewer work."""
+
+    image_id: str
+    return_route: AckReturnRoute
+    producer: ProcessIdentity = field(default_factory=ProcessIdentity.current)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.image_id, str) or not self.image_id:
+            raise ValueError("Image transfer requires a nonempty image ID")
+        if not isinstance(self.return_route, AckReturnRoute):
+            raise TypeError("Image transfer requires an AckReturnRoute")
+
+    def to_dict(self) -> dict[str, Any]:
+        return dict(image_id=self.image_id, ack_return_route=self.return_route.to_dict(),
+                    ack_producer=self.producer.to_dict())
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "ImageTransferIdentity":
+        return cls(data["image_id"], AckReturnRoute.from_dict(data["ack_return_route"]),
+                   ProcessIdentity.from_dict(data["ack_producer"]))
+
+    @classmethod
+    def from_item(cls, data: Mapping[str, Any]) -> "ImageTransferIdentity | None":
+        """Untracked control items have no image identity; tracked items require a route."""
+        if data.get("image_id") is None:
+            return None
+        return cls.from_dict(data)
+
+
 @dataclass(frozen=True)
 class ImageAck:
     """Acknowledgment message sent by viewers after processing an image.
 
-    Sent via PUSH socket from viewer to shared ack port (7555).
+    Sent via PUSH socket to the original image's producer return route.
     Used to track real-time queue depth and show progress like '3/10 images processed'.
     """
 
     image_id: str  # UUID of the processed image
     viewer_port: int  # Port of the viewer that processed it (for routing)
     viewer_type: str  # 'napari' or 'fiji'
+    return_route: AckReturnRoute = field(kw_only=True)
+    producer: ProcessIdentity = field(kw_only=True)
     status: str = "success"  # 'success', 'error', etc.
     timestamp: Optional[float] = None  # When it was processed
     error: Optional[str] = None  # Error message if status='error'
@@ -1259,6 +1318,8 @@ class ImageAck:
             MessageFields.VIEWER_PORT: self.viewer_port,
             MessageFields.VIEWER_TYPE: self.viewer_type,
             MessageFields.STATUS: self.status,
+            "ack_return_route": self.return_route.to_dict(),
+            "ack_producer": self.producer.to_dict(),
         }
         if self.timestamp is not None:
             result[MessageFields.TIMESTAMP] = self.timestamp
@@ -1272,6 +1333,8 @@ class ImageAck:
             image_id=data[MessageFields.IMAGE_ID],
             viewer_port=data[MessageFields.VIEWER_PORT],
             viewer_type=data[MessageFields.VIEWER_TYPE],
+            return_route=AckReturnRoute.from_dict(data["ack_return_route"]),
+            producer=ProcessIdentity.from_dict(data["ack_producer"]),
             status=data.get(MessageFields.STATUS, "success"),
             timestamp=data.get(MessageFields.TIMESTAMP),
             error=data.get(MessageFields.ERROR),

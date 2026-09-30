@@ -104,8 +104,12 @@ class ZMQConfig:
     ipc_socket_extension: NonBlankString = ".sock"
     """Filename suffix appended to generated IPC data and control socket paths."""
 
-    shared_ack_port: TcpPort = 7555
-    """Data port reserved for the shared acknowledgement endpoint used by streamers."""
+    shared_ack_port: SocketPort = 0
+    """Producer-process ACK bind request: zero allocates an owned destination.
+
+    A nonzero value explicitly reserves that port and fails truthfully if occupied.
+    Receivers use the bound return route in each transfer, never this bind request.
+    """
 
     app_name: NonBlankString = "zmqruntime"
     """Application namespace included in generated transport identities and paths."""

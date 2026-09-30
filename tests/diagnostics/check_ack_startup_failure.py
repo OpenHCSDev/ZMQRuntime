@@ -44,7 +44,7 @@ class AckStartupFailureDiagnostic(unittest.TestCase):
             patch.object(ack_listener.threading, "Thread", side_effect=self._inline_thread)
         )
         self.listener = ack_listener.GlobalAckListener()
-        self.config = ZMQConfig()
+        self.config = ZMQConfig(shared_ack_port=7555)
 
     def _inline_thread(self, *, target, args=(), **options):
         thread = Mock()
