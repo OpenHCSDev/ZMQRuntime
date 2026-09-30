@@ -169,7 +169,7 @@ class TransportDeclaration(ABC, metaclass=AutoRegisterMeta):
         config: ZMQConfig,
         owner: ProcessIdentity,
     ) -> None:
-        """Publish one spawned child while holding the existing startup lock."""
+        """Publish an exact invoker or child reservation under the held startup lock."""
         with cls.startup_lock_path(port, config).open("r+b") as stream:
             stream.seek(0)
             stream.write(json.dumps(owner.to_dict()).encode("utf-8"))
