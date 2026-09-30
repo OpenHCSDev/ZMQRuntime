@@ -84,13 +84,16 @@ class StreamingVisualizerServer(ZMQServer, ABC):
         self.viewer_type = viewer_type
 
     def send_ack(
-        self, transfer: ImageTransferIdentity, status: str = "success", error: str | None = None,
+        self, transfer: ImageTransferIdentity | None, status: str = "success", error: str | None = None,
     ) -> bool:
         """Return a bounded per-image ACK to its original producer incarnation.
 
         Sockets belong to the calling thread, including deferred GUI callbacks.
         No global destination, cross-thread socket or unbounded route cache exists.
+        Genuinely untracked items have no transfer contract and send no ACK.
         """
+        if transfer is None:
+            return False
         socket = None
         try:
             socket = zmq.Context.instance().socket(zmq.PUSH)

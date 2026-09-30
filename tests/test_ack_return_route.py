@@ -153,6 +153,14 @@ def test_required_return_route_has_no_legacy_reader():
                                viewer_type="fixture"))
 
 
+def test_untracked_item_does_not_open_an_ack_socket(monkeypatch):
+    def forbidden_context():
+        pytest.fail("Untracked item opened a transport context")
+
+    monkeypatch.setattr(zmq.Context, "instance", forbidden_context)
+    assert not InfrastructureViewer(12345, "fixture").send_ack(None)
+
+
 @pytest.mark.parametrize("mode", [TransportMode.TCP, TransportMode.IPC])
 def test_occupied_explicit_destination_fails_without_stealing_owner(mode, tmp_path_factory):
     if not mode.declaration.is_supported():
