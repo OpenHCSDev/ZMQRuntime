@@ -329,3 +329,35 @@ def test_typed_ack_callback_can_stop_its_own_worker_without_self_join(harness):
     assert received == [ack]
     assert not harness.listener._running
     assert harness.listener.startup_status.phase is EndpointStartupPhase.DISCONNECTED
+
+
+def test_stop_before_listener_thread_launch_is_bounded_without_joining_unstarted_thread(
+    harness, monkeypatch
+):
+    before_launch = threading.Event()
+    release_launch = threading.Event()
+    original_start = threading.Thread.start
+
+    def gated_start(thread):
+        if thread.name == "AckListener":
+            before_launch.set()
+            if not release_launch.wait(1):
+                raise TimeoutError("Test did not release listener launch")
+        return original_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", gated_start)
+    caller, returned, errors = harness.start_in_caller_thread()
+    try:
+        assert before_launch.wait(1)
+        with pytest.raises(OperationTimeoutError):
+            harness.listener.stop(timeout_ms=20)
+        assert not harness.listener._running
+    finally:
+        release_launch.set()
+    assert returned.wait(1)
+    caller.join(timeout=1)
+    assert len(errors) == 1
+    assert "cancelled before startup" in str(errors[0])
+    harness.listener.stop(timeout_ms=750)
+    assert harness.listener._thread is None
+    assert not harness.contexts

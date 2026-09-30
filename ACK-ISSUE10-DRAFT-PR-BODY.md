@@ -43,7 +43,7 @@ is supplied. This is an ACK operation budget, not a changed endpoint default.
 
 ### Executed source evidence
 
-17 focused checks PASS in 0.39s: 12 real-thread controlled-socket ACK cases plus
+18 focused checks PASS in 0.41s: 13 real-thread controlled-socket ACK cases plus
 existing queue/config tests. Retained inline witness: all 3 PASS in 0.013s.
 Original two failures and cleanup pass remain preserved at baseline 4a7864b.
 No xfail or weakened readiness assertion. Fixtures check every socket operation

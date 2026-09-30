@@ -38,14 +38,15 @@ Premature mutable _running, the separate port/host/mode fields and the fatal
 receive-error retry path are removed in place, without compatibility fallbacks.
 The original ImageAck decoder and queue callback behavior remain unchanged.
 
-Verification: 17 focused checks passed in 0.39 seconds (12 ACK real-thread
+Verification: 18 focused checks passed in 0.41 seconds (13 ACK real-thread
 controlled-socket cases plus existing queue/config checks). The retained inline
 bind-failure witness passes all three checks; baseline 4a7864b still retains its
 two failures and cleanup pass. Real-thread cases cover delayed bind/lock
 inversion, original bind error plus retry, same/different endpoint reuse, fatal
 receive, bounded stop during bind, attaching-caller timeout isolation, expired
 budget, context/thread construction/launch failures, launch-owner timeout and
-self-stop after original typed ACK decode. Fixture teardown proves every fake
+self-stop after original typed ACK decode, and stop before listener thread
+launch without joining an unstarted thread. Fixture teardown proves every fake
 socket call and context termination uses its original listener thread.
 
 No real endpoint or native/viewer process is opened by these tests. The source
@@ -69,6 +70,13 @@ ownership and any caller changes require direct agreement with Lovelace/current
 viewer owner. Concurrent native TCP/IPC ACK-ID/queue accounting and shutdown
 isolation remain unverified until resource gate and explicit slot release.
 Frozen biology, installed 295e and user viewer5690 are untouched.
+
+The working checkpoint supersedes the draft's diagnostic-only status. Initial
+source implementation commit: 859070c7b8b12460b01140ff040399ce38b90cd5.
+Subsequent private refinements query Thread.is_alive through its original owner
+instead of reconstructing launch state from Thread.ident, and preserve original
+worker timeout errors while using the canonical deadline for a wait-timeout race.
+Ruff E/F checks and git diff --check pass. No endpoint bind occurs in any test.
 
 ## Historical diagnostic checkpoint (through 4a7864b)
 

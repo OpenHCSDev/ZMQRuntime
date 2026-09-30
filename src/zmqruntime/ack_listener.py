@@ -151,7 +151,9 @@ class GlobalAckListener:
             startup.result(timeout=deadline.remaining_seconds_or_zero())
         except FutureTimeoutError:
             if startup.done():
-                raise
+                # Preserve a real worker exception; a completion racing the
+                # wait timeout must still use the caller's canonical deadline.
+                startup.result()
             if launch is not None:
                 with self._condition:
                     if self._startup is startup:
@@ -191,7 +193,7 @@ class GlobalAckListener:
             startup.exception(timeout=deadline.remaining_seconds_or_zero())
         except FutureTimeoutError:
             raise deadline.timeout_error() from None
-        if thread.ident is None:
+        if not thread.is_alive():
             return
         thread.join(timeout=deadline.remaining_seconds_or_zero())
         if thread.is_alive():
