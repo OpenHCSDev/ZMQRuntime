@@ -124,3 +124,39 @@ identity-proven close are historical partial evidence, not valid3D acceptance.
 Remaining: Dirac shared-surface acknowledgement, parent reviewed dependency pin,
 successful corrected volume compile/execute/full readback under admission, and
 actual installed user-entrypoint acceptance. No Closes251 or global clean claim.
+
+## Subsequent normal viewer-main integration and scoped comment correction
+
+Normally merged native main2aa6d21c000d18bd75647f998794015ba8f54710 at6e4242d3.
+Incoming source only viewer_state.py and its tests, disjoint from the bootstrap
+write set. No competing viewer/ACK edit. Corrected one misleading own docstring
+at84b93a0: record_startup_owner publishes an exact provisional invoker OR child,
+not only a spawned child. The real callers are TransportEndpoint.reserve_startup_owner
+and post-spawn record_startup_owner. Their existing identity/rollback controls
+prove both stages; no test of docstring spelling or new policy/codec/reader.
+Retained useful uncertainty, incarnation, lock-inode and one-budget explanations.
+This is a scoped source-comment drift correction, not a global slop census.
+
+At paired OpenHCS source260e5941b (normally integrated currentmaincad1ed2bd),
+**187 source casesPASS5.51s**, process6.41s/265012KiB/exit0, zero skips/deselections.
+Original181 bootstrap/pair controls plus6 original viewer-state controls.
+Controlled visualizers and one bounded lock-probe thread, not a GUI/native viewer;
+source roots explicitly override the separately installed viewer-live authority.
+JUnit viewer-main-source-tests.xml/resources retained in paired OpenHCS receipt.
+
+Original packaged native ratchet against2aa6d21c->84b93a0: **PASS188 metrics,
+zero positive deltas,4.48s/48772KiB/exit0**, client excess delta-3 only.
+JSON/resources issue251_viewer_main_ratchet_20260930.json and
+issue251_viewer_main_ratchet_resources_20260930.txt. The parent's earlier native
+viewer screening lead is not waived/reclassified; this comparison uses current
+viewer main as its base and measures own introduced delta. No R1/full NRA proof.
+An initial ad-hoc report summary queried plural deltas and failed KeyError;
+the original ratchet itself exited0. Corrected read of its actual delta field
+with jq confirmed188 metrics/no positives. Original tool output remains distinct.
+
+Resource helper WARNING/exit2, swap14.4GiB/RAM17.4GiB/home20.1GiB.
+No native/MCP/JVM/GUI, heavy/parallel job, install, ABI copy or foreign process
+interaction. Original attempts and BLOCKED S1 remain preserved. R0/L0 landed
+does not complete full archive S1-S8. Wider owner unknown; direct TransportEndpoint
+crossing acknowledgement remains unverified. Parent integration/live ownership
+and remaining valid-volume/installed acceptance gates remain as above.
