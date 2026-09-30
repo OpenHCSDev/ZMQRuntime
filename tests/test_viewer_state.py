@@ -1,6 +1,6 @@
 import pytest
 
-from zmqruntime.viewer_state import ViewerStateManager
+from zmqruntime.viewer_state import ViewerReuseAdmissionABC, ViewerStateManager
 
 
 class RecordingVisualizer:
@@ -9,11 +9,14 @@ class RecordingVisualizer:
         self.stop_calls = 0
         self.force_stop_calls = 0
         self.ready_timeouts = []
-        self.running = True
+        self.running = False
+        self.start_calls = 0
 
     def start(self):
+        self.start_calls += 1
         if self.fail_start:
             raise RuntimeError("start failed")
+        self.running = True
         return None
 
     def wait_for_ready(self, timeout: float) -> bool:
@@ -96,3 +99,50 @@ def test_viewer_state_subscription_owns_idempotent_release(viewer_manager):
     viewer_manager.release_viewer("napari", 5700)
 
     assert len(observed) == 2
+
+
+def test_reuse_admission_runs_atomically_and_preserves_rejected_viewer(viewer_manager):
+    import threading
+
+    existing = RecordingVisualizer()
+    viewer_manager.get_or_create_viewer("napari", 5700, lambda: existing)
+    observations = []
+
+    class RejectReuse(ViewerReuseAdmissionABC):
+        def require_reusable(self, visualizer):
+            # A second thread cannot acquire the owner's lock during admission.
+            def probe():
+                acquired = viewer_manager._lock.acquire(blocking=False)
+                observations.append(acquired)
+                if acquired:
+                    viewer_manager._lock.release()
+
+            thread = threading.Thread(target=probe)
+            thread.start()
+            thread.join(timeout=1)
+            assert not thread.is_alive()
+            assert visualizer is existing
+            raise ValueError("incompatible launch request")
+
+    def forbidden_factory():
+        raise AssertionError("rejected reuse must not construct or restart")
+
+    with pytest.raises(ValueError, match="incompatible launch request"):
+        viewer_manager.get_or_create_viewer(
+            "napari", 5700, forbidden_factory, reuse_admission=RejectReuse()
+        )
+    assert observations == [False]
+    assert viewer_manager.get_viewer("napari", 5700) is existing
+    assert existing.force_stop_calls == 0
+    assert existing.start_calls == 1
+
+
+def test_live_external_factory_is_registered_without_start(viewer_manager):
+    existing = RecordingVisualizer(fail_start=True)
+    existing.running = True
+    acquired, created = viewer_manager.get_or_create_viewer(
+        "fiji", 5701, lambda: existing
+    )
+    assert acquired is existing and created is True
+    assert viewer_manager.get_viewer("fiji", 5701) is existing
+    assert existing.start_calls == 0
