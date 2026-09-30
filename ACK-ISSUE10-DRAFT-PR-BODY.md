@@ -52,6 +52,12 @@ declarations own semantics; consumers derive them. No copied defaults,
 duplicate registry/decoder/launcher, arbitrary port assignment or compatibility
 delivery path. Relevant reviewed patterns are recorded in the receipt.
 
+Exact ownership requests posted to the existing owner PRs:
+[Lovelace/native PR9](https://github.com/OpenHCSDev/ZMQRuntime/pull/9#issuecomment-5908226428),
+[viewer PR159](https://github.com/OpenHCSDev/openhcs/pull/159#issuecomment-5908226994).
+Posting is verified; owner receipt/agreement is not yet verified. Production
+files remain untouched pending explicit single-editor agreement.
+
 ## Remaining acceptance
 
 After direct file agreements, implement truthful startup/liveness and correctly

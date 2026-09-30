@@ -193,6 +193,25 @@ fail on the unmodified production baseline. A nonzero exit is the retained
 defect evidence, not a timeout or a passing readiness claim. This checkpoint
 does not resolve delivery ownership or issue 10 and must not close the issue.
 
+Published draft: https://github.com/OpenHCSDev/ZMQRuntime/pull/11.
+Initial diagnostic commit: fe52fce8317576ecb23f3c363662d2d8ce6091e4.
+Publication verified OPEN and isDraft=true, with only the diagnostic and two
+receipt/body documents. The final diagnostic run executed three checks in
+0.013 seconds; one passed and two failed, exit 1. Git diff --check passed.
+
+Substantive single-editor requests were posted directly on the existing owner
+PRs, not through a guessed agent-comms identity:
+
+- Lovelace/native bootstrap: https://github.com/OpenHCSDev/ZMQRuntime/pull/9#issuecomment-5908226428
+- Current viewer owner: https://github.com/OpenHCSDev/openhcs/pull/159#issuecomment-5908226994
+
+The requests identify exact retained/proposed file claims, ask about unpublished
+overlap, and propose requesting shared declaration/caller extensions from the
+existing editor. Posting is confirmed; receipt by an agent and owner agreement
+are NOT confirmed. No reply polling or production/shared-file edit occurred.
+The installed stack, frozen scientific artifacts, and the user viewer at 5690
+remain untouched. Parent retains paired gitlink integration.
+
 After claims are reconciled: implement truthful bind readiness/failure and
 correctly owned ACK delivery using existing typed declaration/transport owners;
 delete the replaced delivery mechanism, without compatibility routing/defaults.
