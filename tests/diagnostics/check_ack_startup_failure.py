@@ -1,27 +1,27 @@
-"""Provider-free issue 10 readiness diagnostic; exits nonzero until fixed.
+"""Retained provider-free issue 10 bind-failure witness.
 
-Run with the existing interpreter. This is deliberately not pytest-discovered:
-it is a visible failing acceptance witness, not an xfail or a passing fix claim.
+Run with the existing interpreter and PYTHONPATH pointing at this tree's src.
+This is deliberately not pytest-discovered:
+it retains the original failing contracts and now passes with the source fix.
 The real ACK startup/loop runs against a controlled failing socket and inline
 test thread. No real endpoint, listener thread, native process or viewer opens.
+The separate real-thread tests cover lifecycle locks and worker-owned cleanup.
 """
 
 from __future__ import annotations
 
 import errno
-import sys
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 
-SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src"
-sys.path.insert(0, str(SOURCE_ROOT))
-
 from zmqruntime import ack_listener
 from zmqruntime.config import TransportMode, ZMQConfig
 
+
+SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src"
 
 if not Path(ack_listener.__file__).resolve().is_relative_to(SOURCE_ROOT):
     raise RuntimeError("Diagnostic must exercise this worktree's ACK listener")
@@ -46,9 +46,9 @@ class AckStartupFailureDiagnostic(unittest.TestCase):
         self.listener = ack_listener.GlobalAckListener()
         self.config = ZMQConfig()
 
-    def _inline_thread(self, *, target, **options):
+    def _inline_thread(self, *, target, args=(), **options):
         thread = Mock()
-        thread.start.side_effect = target
+        thread.start.side_effect = lambda: target(*args)
         return thread
 
     def _start(self) -> None:
@@ -83,7 +83,7 @@ class AckStartupFailureDiagnostic(unittest.TestCase):
         self.socket.bind.assert_called_once_with(
             f"tcp://*:{self.config.shared_ack_port}"
         )
-        self.socket.close.assert_called_once_with()
+        self.socket.close.assert_called_once_with(linger=0)
         self.context.term.assert_called_once_with()
 
 

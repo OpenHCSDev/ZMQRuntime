@@ -1,5 +1,77 @@
 # Issue 10: source investigation and ownership checkpoint
 
+## Current checkpoint: ACK-private startup/liveness implementation
+
+The latest owner instruction explicitly permits moving the disjoint private
+source fix forward. Published ZMQ9 (28d9ed6) claims only client.py,
+execution/server.py, messages.py and transport_modes.py in production;
+OpenHCS159 (d45ebbb) claims no ACK listener/queue tracker/streaming-server source.
+Parent additionally confirmed both relevant external worktrees clean and notified
+Lovelace directly of the boundary. No claim or edit is inferred for those trees.
+
+Dirac claims and edits src/zmqruntime/ack_listener.py, tests/test_ack_listener.py,
+the retained diagnostic and these receipts on fix/ack-delivery-owner-20260930.
+No queue routing, streaming server, shared declaration, config, PolyStore,
+OpenHCS caller or paired gitlink edit is in this checkpoint. Parent owns paired
+gitlink integration; Lovelace retains shared bootstrap/declaration work.
+
+Working behavior: start waits finitely for bind and propagates the original
+failure after cleanup. BINDING does not claim readiness; _running is derived
+from the original EndpointStartupPhase.accepts_requests declaration. Fatal
+receive failures also retire readiness rather than loop forever. Same-address
+calls share the startup outcome; different-address reuse is rejected. An
+attaching caller's short wait does not cancel the launch owner's attempt.
+Explicit retry is allowed only after the previous worker relinquishes ownership.
+Stop cancels and joins only the owned listener, with finite wait and no self-join.
+
+Address semantics are delegated to existing TransportEndpoint.data_url and
+TransportDeclaration; there is no ACK endpoint/default/routing catalog. Typed
+EndpointStartupStatus/Phase, OperationCancellation and OperationDeadline remain
+their original owners and are consumed without changing those declarations.
+Future conveys the worker's bind outcome, not another lifecycle or registry.
+The optional deadline uses the existing owner; 5000ms is the finite per-call
+ACK startup/shutdown budget, not an endpoint default or timeout inflation.
+
+All context/socket creation, bind, receive and cleanup occurs on the listener
+thread. Launch, Future wait and thread join happen outside the lifecycle lock.
+Premature mutable _running, the separate port/host/mode fields and the fatal
+receive-error retry path are removed in place, without compatibility fallbacks.
+The original ImageAck decoder and queue callback behavior remain unchanged.
+
+Verification: 17 focused checks passed in 0.39 seconds (12 ACK real-thread
+controlled-socket cases plus existing queue/config checks). The retained inline
+bind-failure witness passes all three checks; baseline 4a7864b still retains its
+two failures and cleanup pass. Real-thread cases cover delayed bind/lock
+inversion, original bind error plus retry, same/different endpoint reuse, fatal
+receive, bounded stop during bind, attaching-caller timeout isolation, expired
+budget, context/thread construction/launch failures, launch-owner timeout and
+self-stop after original typed ACK decode. Fixture teardown proves every fake
+socket call and context termination uses its original listener thread.
+
+No real endpoint or native/viewer process is opened by these tests. The source
+interpreter is the existing OpenHCS Python, with thread limits=1, pytest plugin
+autoload disabled, cache provider disabled, and an outer timeout of 10 seconds.
+
+The resource guard remains critical: swap 16.4 GiB, RAM available 18.2 GiB,
+home free 25.5 GiB. Only tiny serial source tests and a 0.50-second static debt
+census ran. The full NRA package/dependency scan and live TCP/IPC acceptance
+are deferred under the explicit no-heavy/no-native gate. This is not a global
+NRA proof, zero-debt claim or installed-readiness claim.
+
+The authoritative repo refactor-audit.skill, NRA skill and relevant complete
+catalog chapters were read before coding. Reviewed applicable guards: IDEN-3/6
+(one lifecycle/address identity), IMPL-13 (reuse original lifecycle/transport),
+BOUND-1/2 (retain original decode boundary), TIME-1/7/9 (remove replaced path,
+no copied endpoint defaults or compatibility adapter).
+
+Remaining issue10 work is distinct: shared cross-process ACK route/config
+ownership and any caller changes require direct agreement with Lovelace/current
+viewer owner. Concurrent native TCP/IPC ACK-ID/queue accounting and shutdown
+isolation remain unverified until resource gate and explicit slot release.
+Frozen biology, installed 295e and user viewer5690 are untouched.
+
+## Historical diagnostic checkpoint (through 4a7864b)
+
 Date: 2026-09-30. Independent task owner: Dirac.
 Issue: https://github.com/OpenHCSDev/ZMQRuntime/issues/10
 Worktree: /home/ts/wt/zmqruntime-ack-delivery-owner-20260930

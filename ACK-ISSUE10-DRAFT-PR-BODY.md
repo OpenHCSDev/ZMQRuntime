@@ -1,69 +1,75 @@
-## Diagnostic checkpoint only; not merge-ready or the ACK fix
+## Working ACK-private startup/liveness checkpoint; issue 10 remains incomplete
 
-Tracks #10. This draft makes the source reproducer and ownership receipt
-visible while direct production-file agreements and the finite live slot are
-pending. It does **not** fix or close #10.
+Tracks #10 without closing it. This draft now includes a production readiness
+fix, bounded real-thread controlled-socket tests, the retained original witness
+and the ownership/validation receipt.
 
-Changed files only:
+### Claims and declaration owners
 
-- `tests/diagnostics/check_ack_startup_failure.py`
-- `ACK-ISSUE10-OWNERSHIP-RECEIPT.md`
-- this draft body
+Dirac owns src/zmqruntime/ack_listener.py, tests/test_ack_listener.py, the
+retained diagnostic and these receipts on fix/ack-delivery-owner-20260930.
+Fresh published ZMQ9/159 production claims are disjoint. Parent also confirmed
+the relevant external trees clean and notified Lovelace of the private boundary.
 
-Production source, configuration, transport declarations, PolyStore, viewers,
-installed packages and paired gitlinks are unchanged. Parent owns paired
-gitlink integration. Lovelace retains bootstrap and the assigned native slot;
-the existing OpenHCS159 owner retains viewer configuration/protocol/server work.
+- Lovelace/ZMQ9 retains client.py, execution/server.py, messages.py,
+  transport_modes.py and paired declaration work.
+- No config.py, transport declaration, queue routing, streaming server,
+  PolyStore, OpenHCS viewer/caller or paired gitlink change is made here.
+- Shared routing/config/caller changes still need one agreed editor.
+- Parent owns coherent paired gitlink integration.
 
-## Executed evidence
+Existing TransportEndpoint/TransportDeclaration own address derivation.
+Existing EndpointStartupStatus/Phase, OperationDeadline and OperationCancellation
+own lifecycle/budget/cancellation semantics. Future conveys the worker bind
+outcome, not another registry or lifecycle family. No second endpoint authority,
+port/default catalog, decoder, launcher or compatibility route is introduced.
 
-The existing OpenHCS interpreter runs three serial provider-free checks against
-this worktree's real ACK start/loop with mocked Context and inline test Thread:
+### Working behavior
 
-- controlled socket/context cleanup passes;
-- caller-visible bind failure fails (`ZMQError not raised`);
-- truthful failed-listener state fails (`_running` remains true).
+- start waits for bind and propagates the original failure after cleanup.
+- _running derives from the original lifecycle declaration: binding and fatal
+  failures never report ready; fatal receive errors retire the worker.
+- Same-address starts share the outcome; different-address reuse is rejected.
+- A short joining-caller wait cannot cancel the launch owner's attempt.
+- Explicit retry is safe after ownership retires; no automatic replay.
+- Stop cancels and joins only its worker, finitely and without self-join.
+- Context/socket create, bind, receive and close remain on the listener thread.
+- Launch, Future wait and join occur outside the lifecycle lock.
+- Premature running flag, separate host/port/mode fields and fatal-error retry
+  path are removed in place.
 
-The failing checks are retained without xfail or weaker assertions. The script
-is an explicit diagnostic, not part of automatic pytest discovery. Its nonzero
-exit demonstrates the current defect, not a completed fix. No real endpoint,
-listener thread, native process, viewer or provider call is opened.
+Per-call waits are bounded by 5000ms unless an existing typed operation deadline
+is supplied. This is an ACK operation budget, not a changed endpoint default.
 
-The resource guard remains critical (swap 16.6 GiB). No native/heavy job ran;
-the diagnostic is bounded by 10 seconds and numerical-library thread limits=1.
+### Executed source evidence
 
-## Shared-file agreement required before production edits
+17 focused checks PASS in 0.39s: 12 real-thread controlled-socket ACK cases plus
+existing queue/config tests. Retained inline witness: all 3 PASS in 0.013s.
+Original two failures and cleanup pass remain preserved at baseline 4a7864b.
+No xfail or weakened readiness assertion. Fixtures check every socket operation
+and context termination occurs on its original worker; no real endpoint opens.
 
-Proposed ACK implementation owner: Dirac, with unpublished claims still to be
-confirmed for `ack_listener.py`, `streaming/server.py`, `queue_tracker.py` and
-focused ACK tests.
+Run with the existing OpenHCS interpreter, PYTHONPATH pointing to this tree's
+src, PYTHONDONTWRITEBYTECODE=1, numerical-library thread limits=1, pytest plugin
+autoload disabled and cache provider disabled, bounded by timeout 10s:
 
-- Lovelace / ZMQ9 retains `client.py`, `messages.py`, `transport_modes.py`,
-  `execution/server.py`. Any ACK declaration/transport extension must have one
-  agreed editor; no competing bootstrap will be implemented.
-- `config.py` needs an explicit editor agreement if endpoint semantics change.
-- OpenHCS159 retains its config/factory/streaming service, viewer protocol and
-  Fiji/Napari visualizers/servers. Any caller change needs that owner's agreement.
-- PolyStore sender/batch-envelope changes also need a named single editor.
-- ZMQ6 wait policy and ZMQ7 viewer state are outside this checkpoint.
+    python -m pytest -q -p no:cacheprovider tests/test_ack_listener.py tests/test_queue_tracker.py tests/test_config.py
+    python tests/diagnostics/check_ack_startup_failure.py
 
-NRA/refactor-audit ownership decision: original endpoint/transport/message
-declarations own semantics; consumers derive them. No copied defaults,
-duplicate registry/decoder/launcher, arbitrary port assignment or compatibility
-delivery path. Relevant reviewed patterns are recorded in the receipt.
+Critical swap remains (16.4 GiB). No heavy/native/provider job, installed change,
+foreign process close, scientific replay or biology artifact change occurred.
+Full NRA scan and installed/live acceptance are deferred, not certified.
 
-Exact ownership requests posted to the existing owner PRs:
+### Shared coordination and remaining acceptance
+
+Existing substantive ownership requests:
 [Lovelace/native PR9](https://github.com/OpenHCSDev/ZMQRuntime/pull/9#issuecomment-5908226428),
 [viewer PR159](https://github.com/OpenHCSDev/openhcs/pull/159#issuecomment-5908226994).
-Posting is verified; owner receipt/agreement is not yet verified. Production
-files remain untouched pending explicit single-editor agreement.
+Posting is confirmed; shared editor agreement is not yet confirmed.
 
-## Remaining acceptance
-
-After direct file agreements, implement truthful startup/liveness and correctly
-owned ACK delivery, then run focused source tests. After an explicit resource
-gate and slot release, verify concurrent controlled TCP and applicable IPC
-streaming owners, each owner's ACK IDs/queue counts, bind failure visibility,
-and stopping one owner while the other continues. Source diagnostics do not
-establish installed or concurrent-native readiness. Frozen science, original
-collision evidence and the user's preserved viewer remain untouched.
+Cross-process ACK return-route/config semantics and any PolyStore/OpenHCS caller
+changes remain unfinished. After direct file agreement and explicit resource
+gate/slot release, verify concurrent TCP/applicable IPC streaming owners,
+their own ACK IDs/queue counts, occupied-endpoint failure and stopping one while
+the other continues. Source checks do not prove installed readiness or issue10
+completion. Frozen biology, installed295e and user viewer5690 remain untouched.
