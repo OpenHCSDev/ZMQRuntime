@@ -913,11 +913,19 @@ class ZMQClient(ABC):
                 )
                 if self._connection_cancelled():
                     raise EndpointConnectionCancelledError("Startup cancelled before spawn")
-                # Reserve before the side effect. A failed child publication
-                # must leave an active claim, not invite a concurrent replay.
-                for port in ports:
-                    declaration.record_startup_owner(port, self.config, ProcessIdentity.current())
-                operation_deadline.remaining_seconds()
+                # Roll back only while no spawn has been attempted. Once the
+                # side effect starts, claims preserve uncertainty, not replay.
+                invoker = ProcessIdentity.current()
+                try:
+                    for port in ports:
+                        declaration.record_startup_owner(port, self.config, invoker)
+                    operation_deadline.remaining_seconds()
+                    if self._connection_cancelled():
+                        raise EndpointConnectionCancelledError("Startup cancelled before spawn")
+                except BaseException:
+                    for port in ports:
+                        declaration.release_startup_owner(port, self.config, invoker)
+                    raise
                 process = endpoint_process(self._spawn_server_process())
                 try:
                     for port in ports:

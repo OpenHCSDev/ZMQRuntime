@@ -63,3 +63,43 @@ BOUND-1/2 decode the incarnation once into its original declaration before
 effects; TIME-7 admits native lifecycle paths before acquiring locks. No full
 NRA/global equivalence claim. Native cross-process and installed acceptance
 remain gated on the parent's released serial slot and paired integration.
+
+## Pre-spawn rollback correction (parent review, September30)
+
+Parent's pinned9a93bbe reproducer expires the original deadline immediately after
+both provisional invoker records: zero spawn calls, but both records remain owned
+by the live invoker and reject a fresh independent startup. Original receipt is
+preserved at the batch's pr256-prebind-review-20260930/receipt.json; not replayed.
+
+ZMQClient now rolls back only the provisional publication/deadline/cancellation
+section, while both existing startup locks are still held. TransportDeclaration
+owns exact ProcessIdentity comparison and in-place truncation of a proven record.
+Unknown/malformed/different-incarnation/child records are not cleared. No lock
+inode is unlinked, no new launcher/reservation store/codec is introduced, and
+exceptions retain their original disposition. The spawn call is outside rollback:
+spawn exceptions and failed child publication retain claims/uncertainty, with no
+automatic restart, shutdown or retry. No timeout increase.
+
+Thirteen new source regression cases cover post-reservation expiry, second-write
+failure before and after complete publication, cancellation, partial unknown
+publication, real flock exclusion on both held inodes, explicit independent
+startup admission after proven no-child rollback, post-spawn uncertainty, and
+TCP/IPC inherited exact-owner release. Native spawn, occupancy and availability
+are intercepted; ProcessIdentity, lock acquisition and record I/O are canonical.
+Tests use named persistent scratch; no native/MCP/GUI/Java/science launch.
+
+Focused dependency shard:45 passed in0.40s, whole process3.68s/362564KiB RSS/exit0.
+Combined paired source shard:136 passed,2 actual-MCP cases deselected in10.64s,
+whole process14.18s/432464KiB RSS/exit0. Source paths verified before execution.
+An initial fixture-path mkdir failure (44 passed,1 failed) is retained, corrected
+by placing projected locks in their own subdirectory; no assertion was weakened.
+Actual logs/resource captures are in paired OpenHCS256:
+docs/validation/runtime_bootstrap_20260930/pre-spawn-rollback/.
+
+Pattern review: IMPL-13 keeps startup/rollback at the existing canonical client
+and transport owners; IDEN-8 compares the original PID+creation-time value, not
+bare PID/liveness; BOUND-2 reuses startup_owner/ProcessIdentity decoding rather
+than a consumer JSON parser or filename store. Same transport-family ancestor
+serves TCP and IPC; no leaf registry/case switch was added. This is focused
+source evidence, not broad NRA/ratchet, native cross-process, installed or live
+acceptance. Parent owns those later tiers; OpenHCS256 remains draft for issue251.

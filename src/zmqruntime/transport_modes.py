@@ -177,6 +177,29 @@ class TransportDeclaration(ABC, metaclass=AutoRegisterMeta):
             stream.flush()
 
     @classmethod
+    def release_startup_owner(
+        cls,
+        port: int,
+        config: ZMQConfig,
+        owner: ProcessIdentity,
+    ) -> bool:
+        """Release an exact provisional owner before spawn, under startup_lock.
+
+        Unknown or changed records stay intact. Truncate the held lock's inode;
+        unlinking it would let another caller bypass the process-shared lock.
+        """
+        try:
+            recorded_owner = cls.startup_owner(port, config)
+        except (ValueError, TypeError, KeyError):
+            return False
+        if recorded_owner != owner:
+            return False
+        with cls.startup_lock_path(port, config).open("r+b") as stream:
+            stream.truncate(0)
+            stream.flush()
+        return True
+
+    @classmethod
     @abstractmethod
     def data_control_pair_is_available(
         cls,
