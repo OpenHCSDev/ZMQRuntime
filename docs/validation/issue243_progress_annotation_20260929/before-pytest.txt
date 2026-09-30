@@ -1,0 +1,315 @@
+FFFFFFF                                                                  [100%]
+=================================== FAILURES ===================================
+_ test_progress_annotations_resolve_without_caller_supplied_namespace[ExecutionProgressObservation] _
+
+declaration = <class 'zmqruntime.execution.progress_stream.ExecutionProgressObservation'>
+
+    @pytest.mark.parametrize(
+        "declaration",
+        (
+            ExecutionProgressObservation,
+            ExecutionProgressObservation.first,
+            ExecutionProgressObservation.followed_by,
+            ExecutionProgressObservation.from_wire,
+        ),
+    )
+    def test_progress_annotations_resolve_without_caller_supplied_namespace(declaration):
+>       assert get_type_hints(declaration, include_extras=True)
+
+tests/test_progress_annotation.py:24: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:2244: in get_type_hints
+    value = _eval_type(value, base_globals, base_locals)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:414: in _eval_type
+    return t._evaluate(globalns, localns, recursive_guard)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:929: in _evaluate
+    self.__forward_value__ = _eval_type(
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:414: in _eval_type
+    return t._evaluate(globalns, localns, recursive_guard)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:924: in _evaluate
+    eval(self.__forward_code__, globalns, localns),
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   NameError: name 'WireValue' is not defined
+
+<string>:1: NameError
+__ test_progress_annotations_resolve_without_caller_supplied_namespace[first] __
+
+declaration = <bound method ExecutionProgressObservation.first of <class 'zmqruntime.execution.progress_stream.ExecutionProgressObservation'>>
+
+    @pytest.mark.parametrize(
+        "declaration",
+        (
+            ExecutionProgressObservation,
+            ExecutionProgressObservation.first,
+            ExecutionProgressObservation.followed_by,
+            ExecutionProgressObservation.from_wire,
+        ),
+    )
+    def test_progress_annotations_resolve_without_caller_supplied_namespace(declaration):
+>       assert get_type_hints(declaration, include_extras=True)
+
+tests/test_progress_annotation.py:24: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:2281: in get_type_hints
+    hints[name] = _eval_type(value, globalns, localns)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:414: in _eval_type
+    return t._evaluate(globalns, localns, recursive_guard)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:929: in _evaluate
+    self.__forward_value__ = _eval_type(
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:414: in _eval_type
+    return t._evaluate(globalns, localns, recursive_guard)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:924: in _evaluate
+    eval(self.__forward_code__, globalns, localns),
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   NameError: name 'WireValue' is not defined
+
+<string>:1: NameError
+_ test_progress_annotations_resolve_without_caller_supplied_namespace[followed_by] _
+
+declaration = <function ExecutionProgressObservation.followed_by at 0x7f761df85e40>
+
+    @pytest.mark.parametrize(
+        "declaration",
+        (
+            ExecutionProgressObservation,
+            ExecutionProgressObservation.first,
+            ExecutionProgressObservation.followed_by,
+            ExecutionProgressObservation.from_wire,
+        ),
+    )
+    def test_progress_annotations_resolve_without_caller_supplied_namespace(declaration):
+>       assert get_type_hints(declaration, include_extras=True)
+
+tests/test_progress_annotation.py:24: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:2281: in get_type_hints
+    hints[name] = _eval_type(value, globalns, localns)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:414: in _eval_type
+    return t._evaluate(globalns, localns, recursive_guard)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:929: in _evaluate
+    self.__forward_value__ = _eval_type(
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:414: in _eval_type
+    return t._evaluate(globalns, localns, recursive_guard)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:924: in _evaluate
+    eval(self.__forward_code__, globalns, localns),
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   NameError: name 'WireValue' is not defined
+
+<string>:1: NameError
+_ test_progress_annotations_resolve_without_caller_supplied_namespace[from_wire] _
+
+declaration = <bound method ExecutionProgressObservation.from_wire of <class 'zmqruntime.execution.progress_stream.ExecutionProgressObservation'>>
+
+    @pytest.mark.parametrize(
+        "declaration",
+        (
+            ExecutionProgressObservation,
+            ExecutionProgressObservation.first,
+            ExecutionProgressObservation.followed_by,
+            ExecutionProgressObservation.from_wire,
+        ),
+    )
+    def test_progress_annotations_resolve_without_caller_supplied_namespace(declaration):
+>       assert get_type_hints(declaration, include_extras=True)
+
+tests/test_progress_annotation.py:24: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:2281: in get_type_hints
+    hints[name] = _eval_type(value, globalns, localns)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:414: in _eval_type
+    return t._evaluate(globalns, localns, recursive_guard)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:929: in _evaluate
+    self.__forward_value__ = _eval_type(
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:414: in _eval_type
+    return t._evaluate(globalns, localns, recursive_guard)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:924: in _evaluate
+    eval(self.__forward_code__, globalns, localns),
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   NameError: name 'WireValue' is not defined
+
+<string>:1: NameError
+___ test_progress_mapping_decode_preserves_wire_and_immutable_nested_values ____
+
+    def test_progress_mapping_decode_preserves_wire_and_immutable_nested_values():
+        event = progress_event()
+        original = ExecutionProgressObservation.first(event)
+        payload = json.loads(json.dumps(original.as_wire()))
+>       decoded = dataclass_from_mapping(ExecutionProgressObservation, payload)
+
+tests/test_progress_annotation.py:58: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+../openhcs-custom-function-admission-20260929/external/python-introspect/src/python_introspect/dataclass_projection.py:54: in dataclass_from_mapping
+    annotations = get_type_hints(target_type, include_extras=True)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:2244: in get_type_hints
+    value = _eval_type(value, base_globals, base_locals)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:414: in _eval_type
+    return t._evaluate(globalns, localns, recursive_guard)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:929: in _evaluate
+    self.__forward_value__ = _eval_type(
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in _eval_type
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:428: in <genexpr>
+    ev_args = tuple(_eval_type(a, globalns, localns, recursive_guard) for a in t.__args__)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:414: in _eval_type
+    return t._evaluate(globalns, localns, recursive_guard)
+../../.pyenv/versions/3.12.3/lib/python3.12/typing.py:924: in _evaluate
+    eval(self.__forward_code__, globalns, localns),
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   NameError: name 'WireValue' is not defined
+
+<string>:1: NameError
+_ test_real_openhcs_job_status_decodes_nested_progress[ExecutionStatus.RUNNING] _
+
+status = <ExecutionStatus.RUNNING: 'running'>
+
+    @pytest.mark.parametrize("status", (ExecutionStatus.RUNNING, ExecutionStatus.COMPLETE))
+    def test_real_openhcs_job_status_decodes_nested_progress(status):
+        # Optional downstream integration, not a dependency or copied DTO in ZMQRuntime.
+>       execution = pytest.importorskip("openhcs.agent.dto.execution")
+
+tests/test_progress_annotation.py:73: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+../openhcs-custom-function-admission-20260929/openhcs/__init__.py:23: in <module>
+    ensure_source_checkout_external_paths()
+../openhcs-custom-function-admission-20260929/openhcs/_source_dependencies.py:24: in ensure_source_checkout_external_paths
+    _reject_stale_loaded_externals(paths)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+import_roots = (PosixPath('/home/ts/wt/openhcs-custom-function-admission-20260929/external/ObjectState/src'), PosixPath('/home/ts/wt/...al/pycodify/src'), PosixPath('/home/ts/wt/openhcs-custom-function-admission-20260929/external/pyqt-reactive/src'), ...)
+
+    def _reject_stale_loaded_externals(import_roots: tuple[Path, ...]) -> None:
+        roots_by_package = _external_roots_by_package(import_roots)
+        for package_name, roots in roots_by_package.items():
+            module = sys.modules.get(package_name)
+            if module is None:
+                continue
+            origin = _module_origin(module)
+            if origin is None:
+                continue
+            if any(_is_relative_to(origin, root) for root in roots):
+                continue
+>           raise RuntimeError(
+                f"External package {package_name!r} was imported from {origin} "
+                "before OpenHCS source-checkout externals were activated. "
+                "Start the process with the OpenHCS checkout on sys.path first, "
+                f"or import OpenHCS before {package_name!r}. Expected one of: "
+                f"{', '.join(str(root) for root in roots)}"
+            )
+E           RuntimeError: External package 'zmqruntime' was imported from /home/ts/wt/zmqruntime-progress-annotation-20260929/src/zmqruntime/__init__.py before OpenHCS source-checkout externals were activated. Start the process with the OpenHCS checkout on sys.path first, or import OpenHCS before 'zmqruntime'. Expected one of: /home/ts/wt/openhcs-custom-function-admission-20260929/external/zmqruntime/src
+
+../openhcs-custom-function-admission-20260929/openhcs/_source_dependencies.py:152: RuntimeError
+_ test_real_openhcs_job_status_decodes_nested_progress[ExecutionStatus.COMPLETE] _
+
+status = <ExecutionStatus.COMPLETE: 'complete'>
+
+    @pytest.mark.parametrize("status", (ExecutionStatus.RUNNING, ExecutionStatus.COMPLETE))
+    def test_real_openhcs_job_status_decodes_nested_progress(status):
+        # Optional downstream integration, not a dependency or copied DTO in ZMQRuntime.
+>       execution = pytest.importorskip("openhcs.agent.dto.execution")
+
+tests/test_progress_annotation.py:73: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+../openhcs-custom-function-admission-20260929/openhcs/__init__.py:23: in <module>
+    ensure_source_checkout_external_paths()
+../openhcs-custom-function-admission-20260929/openhcs/_source_dependencies.py:24: in ensure_source_checkout_external_paths
+    _reject_stale_loaded_externals(paths)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+import_roots = (PosixPath('/home/ts/wt/openhcs-custom-function-admission-20260929/external/ObjectState/src'), PosixPath('/home/ts/wt/...al/pycodify/src'), PosixPath('/home/ts/wt/openhcs-custom-function-admission-20260929/external/pyqt-reactive/src'), ...)
+
+    def _reject_stale_loaded_externals(import_roots: tuple[Path, ...]) -> None:
+        roots_by_package = _external_roots_by_package(import_roots)
+        for package_name, roots in roots_by_package.items():
+            module = sys.modules.get(package_name)
+            if module is None:
+                continue
+            origin = _module_origin(module)
+            if origin is None:
+                continue
+            if any(_is_relative_to(origin, root) for root in roots):
+                continue
+>           raise RuntimeError(
+                f"External package {package_name!r} was imported from {origin} "
+                "before OpenHCS source-checkout externals were activated. "
+                "Start the process with the OpenHCS checkout on sys.path first, "
+                f"or import OpenHCS before {package_name!r}. Expected one of: "
+                f"{', '.join(str(root) for root in roots)}"
+            )
+E           RuntimeError: External package 'zmqruntime' was imported from /home/ts/wt/zmqruntime-progress-annotation-20260929/src/zmqruntime/__init__.py before OpenHCS source-checkout externals were activated. Start the process with the OpenHCS checkout on sys.path first, or import OpenHCS before 'zmqruntime'. Expected one of: /home/ts/wt/openhcs-custom-function-admission-20260929/external/zmqruntime/src
+
+../openhcs-custom-function-admission-20260929/openhcs/_source_dependencies.py:152: RuntimeError
+=========================== short test summary info ============================
+FAILED tests/test_progress_annotation.py::test_progress_annotations_resolve_without_caller_supplied_namespace[ExecutionProgressObservation]
+FAILED tests/test_progress_annotation.py::test_progress_annotations_resolve_without_caller_supplied_namespace[first]
+FAILED tests/test_progress_annotation.py::test_progress_annotations_resolve_without_caller_supplied_namespace[followed_by]
+FAILED tests/test_progress_annotation.py::test_progress_annotations_resolve_without_caller_supplied_namespace[from_wire]
+FAILED tests/test_progress_annotation.py::test_progress_mapping_decode_preserves_wire_and_immutable_nested_values
+FAILED tests/test_progress_annotation.py::test_real_openhcs_job_status_decodes_nested_progress[ExecutionStatus.RUNNING]
+FAILED tests/test_progress_annotation.py::test_real_openhcs_job_status_decodes_nested_progress[ExecutionStatus.COMPLETE]
+7 failed in 1.39s
