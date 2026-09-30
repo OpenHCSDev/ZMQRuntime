@@ -1,0 +1,8 @@
+test_controlled_reproducer_releases_its_socket_and_context (__main__.AckStartupFailureDiagnostic.test_controlled_reproducer_releases_its_socket_and_context) ... ok
+test_failed_bind_is_reported_to_start_caller (__main__.AckStartupFailureDiagnostic.test_failed_bind_is_reported_to_start_caller) ... ok
+test_failed_listener_does_not_claim_running (__main__.AckStartupFailureDiagnostic.test_failed_listener_does_not_claim_running) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.013s
+
+OK

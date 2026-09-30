@@ -1,6 +1,12 @@
 # Issue 10: ACK return-route follow-up
 
-Status: ownership/acceptance checkpoint only, no delivery implementation.
+Status: superseded by tested source delivery on this same PR12. See
+[final delivery receipt](../../ACK-RETURN-ROUTE-DELIVERY-20260930.rst).
+The original checkpoint below is historical; its old ownership/resource holds
+are not current. ACK ownership was explicitly reassigned to the fresh worker;
+parent now owns final integration and serialized installed acceptance.
+
+Historical status: ownership/acceptance checkpoint only, no delivery implementation.
 Base: main 3374aa881dd9a8d0382ac6a56f764eb118744a7b, merged startup PR11.
 Issue: https://github.com/OpenHCSDev/ZMQRuntime/issues/10
 Owner: Dirac. Integration and paired gitlinks: parent.
