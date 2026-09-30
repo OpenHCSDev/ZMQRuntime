@@ -13,7 +13,7 @@ from zmqruntime.client import (
     EndpointProcess,
     ZMQClient,
 )
-from zmqruntime.messages import PongResponse, ProcessExit, ServerRole
+from zmqruntime.messages import PongResponse, ProcessExit, ProcessIdentity, ServerRole
 from zmqruntime.startup import (
     EndpointStartupCancellationObserver,
     EndpointStartupObserver,
@@ -46,6 +46,8 @@ class _PresentationTarget(EndpointStartupPresentationTarget):
 
 
 class _EndpointProcess(EndpointProcess):
+    identity = ProcessIdentity(pid=1, create_time=1.0)
+
     def is_alive(self) -> bool:
         return True
 

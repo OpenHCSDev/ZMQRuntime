@@ -84,6 +84,8 @@ class BlockingExecutionServer(ExecutionServer):
 
 
 class StubEndpointProcess(EndpointProcess):
+    identity = ProcessIdentity(pid=1, create_time=1.0)
+
     def __init__(self) -> None:
         self.alive = True
         self.stop_count = 0

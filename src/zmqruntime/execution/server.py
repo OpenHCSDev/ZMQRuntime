@@ -21,6 +21,7 @@ from zmqruntime.messages import (
     ControlMessageType,
     EndpointApplication,
     EndpointControlCapability,
+    EndpointShutdownRequest,
     ExecuteRequest,
     ExecuteResponse,
     ExecutionRecord,
@@ -381,7 +382,10 @@ class ExecutionServer(ZMQServer, ABC):
 
         return self._kill_worker_processes()
 
-    def _shutdown_workers(self, force=False):
+    def _shutdown_workers(self, msg: dict[str, Any], force: bool = False) -> dict[str, Any]:
+        _request, error = self._validate_and_parse(msg, EndpointShutdownRequest)
+        if error:
+            return error
         self._cancel_all_executions()
         killed = self._kill_worker_processes()
         if force:
@@ -395,10 +399,10 @@ class ExecutionServer(ZMQServer, ABC):
         }
 
     def _handle_shutdown(self, msg):
-        return self._shutdown_workers(force=False)
+        return self._shutdown_workers(msg, force=False)
 
     def _handle_force_shutdown(self, msg):
-        return self._shutdown_workers(force=True)
+        return self._shutdown_workers(msg, force=True)
 
     def _handle_register_progress(self, msg):
         request, error = self._validate_and_parse(msg, ProgressRegistrationRequest)

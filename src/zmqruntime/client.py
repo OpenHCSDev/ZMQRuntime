@@ -9,7 +9,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
@@ -25,8 +25,10 @@ from zmqruntime.messages import (
     ControlMessageType,
     EndpointApplicationCompatibility,
     EndpointControlCapability,
+    EndpointShutdownRequest,
     MessageFields,
     PongResponse,
+    ProcessIdentity,
     ProcessExit,
     ResponseType,
 )
@@ -42,7 +44,6 @@ from zmqruntime.timeouts import OperationCancellation, OperationDeadline
 from zmqruntime.transport import (
     TransportEndpoint,
     endpoint_startup_lock,
-    get_control_port,
     is_port_in_use,
     request_control_ping,
     resolve_transport_mode,
@@ -84,6 +85,14 @@ class EndpointConnectionPolicy(Enum):
 
 class EndpointConnectionCancelledError(RuntimeError):
     """Raised when the owner cancels one exact endpoint connection attempt."""
+
+
+class EndpointStartupUncertainError(RuntimeError):
+    """The child exists, but publishing its pre-bind reservation failed."""
+
+    def __init__(self, process: EndpointProcess) -> None:
+        self.process = process
+        super().__init__("Child spawned; reservation publication uncertain. Do not replay startup.")
 
 
 class EndpointConnectionAttempt:
@@ -180,6 +189,11 @@ class ClientEndpointConnection(ABC):
 class EndpointProcess(ABC):
     """Nominal process operations required by an owned endpoint connection."""
 
+    @property
+    @abstractmethod
+    def identity(self) -> ProcessIdentity:
+        """Return the exact process incarnation captured from the native handle."""
+
     @abstractmethod
     def is_alive(self) -> bool:
         """Return whether the exact spawned process remains alive."""
@@ -245,13 +259,23 @@ class _ObservedEndpointProcess(EndpointProcess, ABC):
         repr=False,
         compare=False,
     )
+    _identity: ProcessIdentity = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "_identity", self._capture_identity())
         object.__setattr__(
             self,
             "_exit_observation",
             _EndpointProcessExitObservation(self._wait_and_resolve_exit),
         )
+
+    @property
+    def identity(self) -> ProcessIdentity:
+        return self._identity
+
+    @abstractmethod
+    def _capture_identity(self) -> ProcessIdentity:
+        """Capture identity before the owned process reaper can release the PID."""
 
     @abstractmethod
     def _wait_and_resolve_exit(self) -> ProcessExit:
@@ -269,6 +293,9 @@ class MultiprocessingEndpointProcess(_ObservedEndpointProcess):
     """Endpoint process backed by multiprocessing."""
 
     process: BaseProcess
+
+    def _capture_identity(self) -> ProcessIdentity:
+        return ProcessIdentity.for_pid(self.process.pid)
 
     def _wait_and_resolve_exit(self) -> ProcessExit:
         self.process.join()
@@ -301,6 +328,9 @@ class SubprocessEndpointProcess(_ObservedEndpointProcess):
     """Endpoint process backed by subprocess.Popen."""
 
     process: subprocess.Popen
+
+    def _capture_identity(self) -> ProcessIdentity:
+        return ProcessIdentity.for_pid(self.process.pid)
 
     def _wait_and_resolve_exit(self) -> ProcessExit:
         return ProcessExit(self.process.wait())
@@ -504,10 +534,18 @@ class AttachedEndpointConnection(ClientEndpointConnection):
 
 @dataclass(frozen=True, slots=True)
 class EndpointShutdownResult:
-    """Observed outcome of one endpoint shutdown operation."""
+    """Endpoint disappearance and exact process exit are separate observations.
+
+    request_attempted records one wire send attempt, not proof of delivery.
+    process_exited=None means no local incarnation proof, never success at exit.
+    """
 
     succeeded: bool
     endpoint_terminated: bool
+    process_identity: ProcessIdentity | None = None
+    process_exited: bool | None = None
+    request_attempted: bool = False
+    acknowledged: bool = False
 
 
 @dataclass(slots=True)
@@ -515,10 +553,82 @@ class _EndpointShutdownOperation:
     """State and mechanics for one endpoint shutdown request."""
 
     target: TransportEndpoint
-    timeout: float
+    deadline: OperationDeadline
     config: ZMQConfig
-    endpoint: PongResponse | None
+    process_identity: ProcessIdentity | None
     acknowledged: bool
+    request_attempted: bool
+
+    @classmethod
+    def run(
+        cls,
+        target: TransportEndpoint,
+        config: ZMQConfig,
+        mode: EndpointShutdownMode,
+        *,
+        deadline: OperationDeadline,
+        expected_process_identity: ProcessIdentity | None,
+    ) -> EndpointShutdownResult:
+        """Admit one native request and complete it through the selected mode.
+
+        Dispatch, acknowledgement uncertainty and terminal observation belong
+        to this same operation. Neither a client nor a completion leaf resends.
+        """
+        endpoint = target.ping(
+            config, timeout_ms=min(deadline.remaining_milliseconds(), 1000),
+        )
+        if (
+            expected_process_identity is not None
+            and endpoint is not None
+            and endpoint.process_identity != expected_process_identity
+        ):
+            raise RuntimeError("Endpoint incarnation changed before shutdown; no dispatch")
+        process_identity = (
+            expected_process_identity
+            if expected_process_identity is not None
+            else (None if endpoint is None else endpoint.process_identity)
+        )
+        if endpoint is None and process_identity is None and not target.occupied_ports(config):
+            return EndpointShutdownResult(succeeded=True, endpoint_terminated=True)
+        if endpoint is not None and mode.required_capability not in endpoint.control_capabilities:
+            return EndpointShutdownResult(succeeded=False, endpoint_terminated=False)
+        if endpoint is None and expected_process_identity is None:
+            return EndpointShutdownResult(succeeded=False, endpoint_terminated=False)
+
+        acknowledged = False
+        request_attempted = False
+        sock = None
+        try:
+            # A missing listener cannot receive an RPC. Reconcile the proven
+            # incarnation without another request or implicit replacement.
+            if endpoint is not None and (
+                expected_process_identity is None or expected_process_identity.is_alive() is True
+            ):
+                ctx = zmq.Context.instance()
+                sock = ctx.socket(zmq.REQ)
+                sock.setsockopt(zmq.LINGER, 0)
+                sock.connect(target.control_url(config))
+                sock.setsockopt(zmq.SNDTIMEO, min(deadline.remaining_milliseconds(), 1000))
+                request_attempted = True
+                sock.send(EndpointShutdownRequest(
+                    mode.control_message_type, process_identity,
+                ).to_wire_payload())
+                sock.setsockopt(zmq.RCVTIMEO, min(deadline.remaining_milliseconds(), 1000))
+                ack = pickle.loads(sock.recv())
+                acknowledged = ack.get(MessageFields.TYPE) == ResponseType.SHUTDOWN_ACK.value
+        except (
+            EOFError, KeyError, OSError, TypeError, pickle.PickleError,
+            TimeoutError, zmq.ZMQError,
+        ):
+            acknowledged = False
+        finally:
+            if sock is not None:
+                sock.close(linger=0)
+        return mode.complete(cls(
+            target=target, deadline=deadline, config=config,
+            process_identity=process_identity,
+            acknowledged=acknowledged, request_attempted=request_attempted,
+        ))
 
     def acknowledgement_result(self) -> EndpointShutdownResult:
         """Report whether a non-terminating shutdown request was acknowledged."""
@@ -526,36 +636,74 @@ class _EndpointShutdownOperation:
         return EndpointShutdownResult(
             succeeded=self.acknowledged,
             endpoint_terminated=False,
+            process_identity=self.process_identity,
+            process_exited=self._process_exited(),
+            request_attempted=self.request_attempted,
+            acknowledged=self.acknowledged,
         )
 
     def termination_result(self) -> EndpointShutdownResult:
-        """Prove endpoint termination, escalating through owned process identity."""
+        """Complete FORCE through the existing exact-process owner, never replay."""
 
-        deadline = time.monotonic() + self.timeout
-        while time.monotonic() < deadline:
-            if not self._endpoint_responds():
-                return self._terminated_result()
-            time.sleep(0.05)
-
-        process_identity = None if self.endpoint is None else self.endpoint.process_identity
-        if (
-            process_identity is not None
-            and self.target.transport_mode.declaration.endpoint_is_local(
-                self.target.host,
-                self.target.control_port(self.config),
+        # Reserve part of this SAME deadline for process-owner escalation.
+        grace_end = time.monotonic() + self.deadline.remaining_seconds_or_zero() / 2
+        while time.monotonic() < grace_end:
+            if self._process_exited() is True:
+                break
+            remaining = self.deadline.remaining_seconds_or_zero()
+            if remaining <= 0:
+                break
+            pong = self.target.ping(
+                self.config,
+                timeout_ms=min(100, max(1, int(remaining * 1000))),
             )
-            and process_identity.terminate(timeout=self.timeout)
+            if pong is None:
+                break
+            if self.process_identity is not None and pong.process_identity != self.process_identity:
+                # A shutdown request may already have arrived at the original
+                # child. Retain that disposition, but never signal a successor.
+                return EndpointShutdownResult(
+                    succeeded=False,
+                    endpoint_terminated=False,
+                    process_identity=self.process_identity,
+                    process_exited=self._process_exited(),
+                    request_attempted=self.request_attempted,
+                    acknowledged=self.acknowledged,
+                )
+            time.sleep(min(0.05, self.deadline.remaining_seconds_or_zero()))
+
+        exited = self._process_exited()
+        remaining = self.deadline.remaining_seconds_or_zero()
+        if self.process_identity is not None and exited is False and remaining > 0:
+            # This is exact-incarnation OS cleanup, NOT another shutdown RPC.
+            self.process_identity.terminate(timeout=remaining)
+            exited = self._process_exited()
+        if exited is True:
+            # IPC address files can outlive their listener. Remove only what
+            # the existing transport owner proves stale, not a foreign socket.
+            self.target.cleanup_stale_addresses(self.config)
+        endpoint_terminated = not self.target.occupied_ports(self.config)
+        # Remote/unidentified endpoints can prove transport cessation only.
+        succeeded = endpoint_terminated and (exited is True or self.process_identity is None)
+        return EndpointShutdownResult(
+            succeeded=succeeded,
+            endpoint_terminated=endpoint_terminated,
+            process_identity=self.process_identity,
+            process_exited=exited,
+            request_attempted=self.request_attempted,
+            acknowledged=self.acknowledged,
+        )
+
+    def _process_exited(self) -> bool | None:
+        if (
+            self.process_identity is None
+            or not self.target.transport_mode.declaration.endpoint_is_local(
+                self.target.host, self.target.port
+            )
         ):
-            return self._terminated_result()
-
-        return EndpointShutdownResult(succeeded=False, endpoint_terminated=False)
-
-    def _endpoint_responds(self) -> bool:
-        return self.target.ping(self.config, timeout_ms=100) is not None
-
-    def _terminated_result(self) -> EndpointShutdownResult:
-        self.target.cleanup(self.config)
-        return EndpointShutdownResult(succeeded=True, endpoint_terminated=True)
+            return None
+        alive = self.process_identity.is_alive()
+        return None if alive is None else not alive
 
 
 class EndpointShutdownMode(str, Enum):
@@ -607,6 +755,27 @@ class EndpointShutdownMode(str, Enum):
         """Execute this member's completion leaf."""
 
         return self._completion(operation)
+
+    def close_owned_process(
+        self,
+        target: TransportEndpoint,
+        config: ZMQConfig,
+        process_identity: ProcessIdentity,
+        *,
+        operation_deadline: OperationDeadline,
+    ) -> EndpointShutdownResult:
+        """Admit this pair's exact owner before the one shutdown operation."""
+        if not target.transport_mode.declaration.endpoint_is_local(target.host, target.port):
+            raise ValueError("Owned process close requires a local endpoint")
+        with target.startup_lock(config, operation_deadline=operation_deadline) as acquired:
+            if not acquired:
+                raise EndpointConnectionCancelledError("Close cancelled before dispatch")
+            target.require_startup_owner(config, process_identity)
+            operation_deadline.remaining_seconds()
+            return _EndpointShutdownOperation.run(
+                target, config, self, deadline=operation_deadline,
+                expected_process_identity=process_identity,
+            )
 
 
 class ZMQClient(ABC):
@@ -783,6 +952,71 @@ class ZMQClient(ABC):
                 )
                 raise
 
+    def start_owned_process(
+        self,
+        *,
+        operation_deadline: OperationDeadline,
+    ) -> EndpointProcess:
+        """Spawn once at an empty local pair, without attaching or warming.
+
+        The returned platform handle remains authoritative even before readiness.
+        Unlike connect(), this operation never replaces, cleans, or adopts an
+        existing address. Readiness is a subsequent read-only observation.
+        """
+        declaration = self.transport_mode.declaration
+        if not declaration.endpoint_is_local(self.host, self.port):
+            raise ValueError("Explicit startup requires a local endpoint")
+        with self._ensure_connection_attempt(), self._lock:
+            if self._connection is not None:
+                raise RuntimeError("Explicit startup cannot adopt an existing connection")
+            with self.endpoint.startup_lock(
+                self.config,
+                operation_deadline=operation_deadline,
+                cancellation=self._connection_cancellation.get(),
+            ) as acquired:
+                if not acquired:
+                    raise EndpointConnectionCancelledError("Startup cancelled before spawn")
+                operation_deadline.remaining_seconds()
+                self.endpoint.require_available_startup(self.config)
+                operation_deadline.remaining_seconds()
+                self._emit_connection_status(
+                    EndpointStartupPhase.STARTING_PROCESS,
+                    f"Starting explicitly owned server on port {self.port}",
+                )
+                if self._connection_cancelled():
+                    raise EndpointConnectionCancelledError("Startup cancelled before spawn")
+                # Roll back only while no spawn has been attempted. Once the
+                # side effect starts, claims preserve uncertainty, not replay.
+                if not self.endpoint.reserve_startup_owner(
+                    self.config, ProcessIdentity.current(),
+                    operation_deadline=operation_deadline,
+                    cancellation=self._connection_cancellation.get(),
+                ):
+                    raise EndpointConnectionCancelledError("Startup cancelled before spawn")
+                process = endpoint_process(self._spawn_server_process())
+                try:
+                    self.endpoint.record_startup_owner(self.config, process.identity)
+                except Exception as error:
+                    raise EndpointStartupUncertainError(process) from error
+                return process
+
+    def close_owned_process(
+        self,
+        process_identity: ProcessIdentity,
+        *,
+        mode: EndpointShutdownMode,
+        operation_deadline: OperationDeadline,
+    ) -> EndpointShutdownResult:
+        """Close only a child proven by this pair's existing startup reservations.
+
+        No attach/start, port-owner killing, second process store, or RPC retry.
+        Caller-supplied PID/creation time alone is not ownership admission.
+        """
+        return mode.close_owned_process(
+            self.endpoint, self.config, process_identity,
+            operation_deadline=operation_deadline,
+        )
+
     def _connect_locked(
         self,
         timeout: float,
@@ -796,9 +1030,7 @@ class ZMQClient(ABC):
             return True
         if self._connection_cancelled():
             return self._cancelled_connection_result()
-        with endpoint_startup_lock(
-            self.port,
-            self.transport_mode,
+        with self.endpoint.startup_lock(
             self.config,
             operation_deadline=operation_deadline,
             cancellation=self._connection_cancellation.get(),
@@ -815,9 +1047,11 @@ class ZMQClient(ABC):
                     return True
                 if self._connection_cancelled():
                     return self._cancelled_connection_result()
-                if self.transport_mode.declaration.preserve_unresponsive_endpoint(
-                    self.port,
-                    self.config,
+                if self.endpoint.has_live_startup_owner(self.config) or (
+                    self.transport_mode.declaration.preserve_unresponsive_endpoint(
+                        self.port,
+                        self.config,
+                    )
                 ):
                     self._emit_connection_status(
                         EndpointStartupPhase.FAILED,
@@ -832,6 +1066,8 @@ class ZMQClient(ABC):
                     time.sleep(min(0.5, operation_deadline.remaining_seconds()))
             if self._connection_cancelled():
                 return self._cancelled_connection_result()
+            if self.endpoint.has_live_startup_owner(self.config):
+                return False
             self._emit_connection_status(
                 EndpointStartupPhase.STARTING_PROCESS,
                 f"Starting server process for port {self.port}",
@@ -1087,39 +1323,10 @@ class ZMQClient(ABC):
     ):
         config = config or ZMQConfig()
         transport_mode = resolve_transport_mode(transport_mode)
-        ports = tuple(ports)
-        if not ports:
-            return []
-
-        def scan_port(port):
-            pong = request_control_ping(
-                port,
-                transport_mode,
-                host=host,
-                config=config,
-                timeout_ms=timeout_ms,
-            )
-            if pong is None:
-                return None
-            return replace(
-                pong,
-                port=port,
-                control_port=get_control_port(port, config),
-            )
-
-        servers = []
-        worker_count = min(len(ports), 32)
-        executor = ThreadPoolExecutor(max_workers=worker_count)
-        try:
-            futures = tuple(executor.submit(scan_port, port) for port in ports)
-            done, _ = wait(futures, timeout=max(timeout_ms / 1000, 0.001))
-            for future in done:
-                server = future.result()
-                if server is not None:
-                    servers.append(server)
-        finally:
-            executor.shutdown(wait=False, cancel_futures=True)
-        return sorted(servers, key=lambda server: ports.index(server.port))
+        return TransportEndpoint.scan(
+            tuple(ports), host=host, transport_mode=transport_mode,
+            config=config, timeout_ms=timeout_ms,
+        )
 
     @staticmethod
     def shutdown_endpoint_on_port(
@@ -1129,64 +1336,25 @@ class ZMQClient(ABC):
         transport_mode: TransportMode | None = None,
         host: str = "localhost",
         config: ZMQConfig | None = None,
+        *,
+        expected_process_identity: ProcessIdentity | None = None,
+        operation_deadline: OperationDeadline | None = None,
     ) -> EndpointShutdownResult:
         config = config or ZMQConfig()
         transport_mode = resolve_transport_mode(transport_mode)
         if not isinstance(mode, EndpointShutdownMode):
             raise TypeError("Shutdown mode must be an EndpointShutdownMode instance.")
+        deadline = operation_deadline or OperationDeadline.after_milliseconds(
+            max(1, int(timeout * 1000)), operation="endpoint shutdown"
+        )
         target = TransportEndpoint(
             host=host,
             port=port,
             transport_mode=transport_mode,
         )
-        endpoint = target.ping(
-            config,
-            timeout_ms=min(max(int(timeout * 1000), 100), 1000),
-        )
-        if endpoint is None and not target.is_in_use(config):
-            return EndpointShutdownResult(succeeded=True, endpoint_terminated=True)
-        if endpoint is None or mode.required_capability not in endpoint.control_capabilities:
-            return EndpointShutdownResult(succeeded=False, endpoint_terminated=False)
-
-        acknowledged = False
-        sock = None
-        try:
-            control_url = target.control_url(config)
-
-            ctx = zmq.Context.instance()
-            sock = ctx.socket(zmq.REQ)
-            sock.setsockopt(zmq.LINGER, 0)
-            sock.connect(control_url)
-            sock.setsockopt(zmq.SNDTIMEO, min(int(timeout * 1000), 1000))
-            sock.setsockopt(zmq.RCVTIMEO, min(int(timeout * 1000), 1000))
-            sock.send(
-                pickle.dumps(
-                    {MessageFields.TYPE: mode.control_message_type.value},
-                )
-            )
-            ack = pickle.loads(sock.recv())
-            acknowledged = ack.get(MessageFields.TYPE) == ResponseType.SHUTDOWN_ACK.value
-        except (
-            EOFError,
-            KeyError,
-            OSError,
-            TypeError,
-            pickle.PickleError,
-            zmq.ZMQError,
-        ):
-            acknowledged = False
-        finally:
-            if sock is not None:
-                sock.close(linger=0)
-
-        return mode.complete(
-            _EndpointShutdownOperation(
-                target=target,
-                timeout=timeout,
-                config=config,
-                endpoint=endpoint,
-                acknowledged=acknowledged,
-            )
+        return _EndpointShutdownOperation.run(
+            target, config, mode, deadline=deadline,
+            expected_process_identity=expected_process_identity,
         )
 
     @staticmethod

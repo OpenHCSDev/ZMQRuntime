@@ -17,6 +17,7 @@ from enum import Enum
 from typing import Any, Dict, Optional, Tuple
 
 import psutil
+from zmqruntime.timeouts import OperationDeadline
 
 logger = logging.getLogger(__name__)
 
@@ -315,6 +316,12 @@ class ProcessIdentity:
         process = psutil.Process()
         return cls(pid=process.pid, create_time=process.create_time())
 
+    @classmethod
+    def for_pid(cls, pid: int) -> "ProcessIdentity":
+        """Capture the OS creation time at the process-handle boundary."""
+        process = psutil.Process(pid)
+        return cls(pid=process.pid, create_time=process.create_time())
+
     def to_dict(self) -> Dict[str, Any]:
         return {"pid": self.pid, "create_time": self.create_time}
 
@@ -336,18 +343,30 @@ class ProcessIdentity:
             return None
 
     def terminate(self, timeout: float = 5.0) -> bool:
-        """Terminate this exact local process without crossing PID reuse."""
+        """Terminate this incarnation within one budget, including escalation."""
 
+        if timeout <= 0:
+            return self.is_alive() is False
+        deadline = OperationDeadline.after_milliseconds(
+            max(1, int(timeout * 1000)), operation="exact process termination"
+        )
         try:
             process = psutil.Process(self.pid)
             if process.create_time() != self.create_time:
                 return True
+            if not process.is_running() or process.status() == psutil.STATUS_ZOMBIE:
+                return True
+            if deadline.expired():
+                return False
             process.terminate()
             try:
-                process.wait(timeout=timeout)
+                # Leave budget for the existing force escalation and its wait.
+                process.wait(timeout=deadline.remaining_seconds_or_zero() / 2)
             except psutil.TimeoutExpired:
+                if not process.is_running():
+                    return True
                 process.kill()
-                process.wait(timeout=timeout)
+                process.wait(timeout=deadline.remaining_seconds_or_zero())
             return True
         except psutil.NoSuchProcess:
             return True
@@ -415,6 +434,35 @@ class ControlRequestHeader:
 
     def to_wire_payload(self) -> bytes:
         return pickle.dumps(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
+class EndpointShutdownRequest(ControlRequestHeader):
+    """Bind shutdown to its observed native incarnation, before mutation."""
+
+    process_identity: ProcessIdentity | None = None
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, object]) -> EndpointShutdownRequest:
+        header = ControlRequestHeader.from_dict(payload)
+        identity_data = payload.get(MessageFields.PROCESS_IDENTITY)
+        if identity_data is not None and not isinstance(identity_data, dict):
+            raise TypeError("Shutdown process identity must be a mapping")
+        return cls(
+            header.message_type,
+            None if identity_data is None else ProcessIdentity.from_dict(identity_data),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = ControlRequestHeader.to_dict(self)
+        if self.process_identity is not None:
+            payload[MessageFields.PROCESS_IDENTITY] = self.process_identity.to_dict()
+        return payload
+
+    def validate(self) -> str | None:
+        if self.process_identity is not None and self.process_identity != ProcessIdentity.current():
+            return "Shutdown addressed a different native process incarnation; no mutation"
+        return None
 
 
 class ResponseType(Enum):
