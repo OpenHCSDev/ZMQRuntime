@@ -12,12 +12,13 @@ import pickle
 import signal
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from enum import Enum
 from typing import Any, Dict, Optional, Tuple
 from uuid import UUID
 
 import psutil
+from python_introspect import dataclass_from_mapping
 from zmqruntime.timeouts import OperationDeadline
 
 logger = logging.getLogger(__name__)
@@ -1254,13 +1255,11 @@ class AckReturnRoute:
             raise TypeError("ACK route requires a ProcessIdentity")
 
     def to_dict(self) -> dict[str, Any]:
-        return dict(url=self.url, incarnation=self.incarnation, owner=self.owner.to_dict())
+        return asdict(self)
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "AckReturnRoute":
-        values = dict(data)
-        values["owner"] = ProcessIdentity.from_dict(values["owner"])
-        return cls(**values)
+        return dataclass_from_mapping(cls, data)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1278,13 +1277,11 @@ class ImageTransferIdentity:
             raise TypeError("Image transfer requires an AckReturnRoute")
 
     def to_dict(self) -> dict[str, Any]:
-        return dict(image_id=self.image_id, ack_return_route=self.return_route.to_dict(),
-                    ack_producer=self.producer.to_dict())
+        return asdict(self)
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "ImageTransferIdentity":
-        return cls(data["image_id"], AckReturnRoute.from_dict(data["ack_return_route"]),
-                   ProcessIdentity.from_dict(data["ack_producer"]))
+        return dataclass_from_mapping(cls, {member.name: data[member.name] for member in fields(cls)})
 
     @classmethod
     def from_item(cls, data: Mapping[str, Any]) -> "ImageTransferIdentity | None":
@@ -1312,33 +1309,15 @@ class ImageAck:
     error: Optional[str] = None  # Error message if status='error'
 
     def to_dict(self):
-        result = {
-            MessageFields.TYPE: "image_ack",
-            MessageFields.IMAGE_ID: self.image_id,
-            MessageFields.VIEWER_PORT: self.viewer_port,
-            MessageFields.VIEWER_TYPE: self.viewer_type,
-            MessageFields.STATUS: self.status,
-            "ack_return_route": self.return_route.to_dict(),
-            "ack_producer": self.producer.to_dict(),
-        }
-        if self.timestamp is not None:
-            result[MessageFields.TIMESTAMP] = self.timestamp
-        if self.error is not None:
-            result[MessageFields.ERROR] = self.error
-        return result
+        return {MessageFields.TYPE: "image_ack", **asdict(self)}
 
     @classmethod
     def from_dict(cls, data):
-        return cls(
-            image_id=data[MessageFields.IMAGE_ID],
-            viewer_port=data[MessageFields.VIEWER_PORT],
-            viewer_type=data[MessageFields.VIEWER_TYPE],
-            return_route=AckReturnRoute.from_dict(data["ack_return_route"]),
-            producer=ProcessIdentity.from_dict(data["ack_producer"]),
-            status=data.get(MessageFields.STATUS, "success"),
-            timestamp=data.get(MessageFields.TIMESTAMP),
-            error=data.get(MessageFields.ERROR),
-        )
+        if data.get(MessageFields.TYPE) != "image_ack":
+            raise ValueError("ImageAck requires type=image_ack")
+        return dataclass_from_mapping(cls, {
+            member.name: data[member.name] for member in fields(cls) if member.name in data
+        })
 
 
 @dataclass(frozen=True)

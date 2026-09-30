@@ -145,10 +145,11 @@ def test_stale_incarnation_unknown_late_and_explicit_worker_accounting(tmp_path)
 
 
 def test_required_return_route_has_no_legacy_reader():
-    with pytest.raises(KeyError, match="ack_return_route"):
+    with pytest.raises(KeyError, match="return_route"):
         ImageTransferIdentity.from_dict({"image_id": "missing-route"})
-    with pytest.raises(KeyError, match="ack_return_route"):
-        ImageAck.from_dict(dict(image_id="missing", viewer_port=1, viewer_type="fixture"))
+    with pytest.raises(ValueError, match="return_route"):
+        ImageAck.from_dict(dict(type="image_ack", image_id="missing", viewer_port=1,
+                               viewer_type="fixture"))
 
 
 def delegated_worker(pipe, route):
