@@ -27,6 +27,7 @@ from zmqruntime.messages import (
     EndpointControlCapability,
     MessageFields,
     PongResponse,
+    ProcessIdentity,
     ProcessExit,
     ResponseType,
 )
@@ -84,6 +85,14 @@ class EndpointConnectionPolicy(Enum):
 
 class EndpointConnectionCancelledError(RuntimeError):
     """Raised when the owner cancels one exact endpoint connection attempt."""
+
+
+class EndpointStartupUncertainError(RuntimeError):
+    """The child exists, but publishing its pre-bind reservation failed."""
+
+    def __init__(self, process: EndpointProcess) -> None:
+        self.process = process
+        super().__init__("Child spawned; reservation publication uncertain. Do not replay startup.")
 
 
 class EndpointConnectionAttempt:
@@ -180,6 +189,11 @@ class ClientEndpointConnection(ABC):
 class EndpointProcess(ABC):
     """Nominal process operations required by an owned endpoint connection."""
 
+    @property
+    @abstractmethod
+    def identity(self) -> ProcessIdentity:
+        """Return the exact process incarnation captured from the native handle."""
+
     @abstractmethod
     def is_alive(self) -> bool:
         """Return whether the exact spawned process remains alive."""
@@ -245,13 +259,23 @@ class _ObservedEndpointProcess(EndpointProcess, ABC):
         repr=False,
         compare=False,
     )
+    _identity: ProcessIdentity = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "_identity", self._capture_identity())
         object.__setattr__(
             self,
             "_exit_observation",
             _EndpointProcessExitObservation(self._wait_and_resolve_exit),
         )
+
+    @property
+    def identity(self) -> ProcessIdentity:
+        return self._identity
+
+    @abstractmethod
+    def _capture_identity(self) -> ProcessIdentity:
+        """Capture identity before the owned process reaper can release the PID."""
 
     @abstractmethod
     def _wait_and_resolve_exit(self) -> ProcessExit:
@@ -269,6 +293,9 @@ class MultiprocessingEndpointProcess(_ObservedEndpointProcess):
     """Endpoint process backed by multiprocessing."""
 
     process: BaseProcess
+
+    def _capture_identity(self) -> ProcessIdentity:
+        return ProcessIdentity.for_pid(self.process.pid)
 
     def _wait_and_resolve_exit(self) -> ProcessExit:
         self.process.join()
@@ -301,6 +328,9 @@ class SubprocessEndpointProcess(_ObservedEndpointProcess):
     """Endpoint process backed by subprocess.Popen."""
 
     process: subprocess.Popen
+
+    def _capture_identity(self) -> ProcessIdentity:
+        return ProcessIdentity.for_pid(self.process.pid)
 
     def _wait_and_resolve_exit(self) -> ProcessExit:
         return ProcessExit(self.process.wait())
@@ -783,6 +813,56 @@ class ZMQClient(ABC):
                 )
                 raise
 
+    def start_owned_process(
+        self,
+        *,
+        operation_deadline: OperationDeadline,
+    ) -> EndpointProcess:
+        """Spawn once at an empty local pair, without attaching or warming.
+
+        The returned platform handle remains authoritative even before readiness.
+        Unlike connect(), this operation never replaces, cleans, or adopts an
+        existing address. Readiness is a subsequent read-only observation.
+        """
+        declaration = self.transport_mode.declaration
+        if not declaration.endpoint_is_local(self.host, self.port):
+            raise ValueError("Explicit startup requires a local endpoint")
+        with self._ensure_connection_attempt(), self._lock:
+            if self._connection is not None:
+                raise RuntimeError("Explicit startup cannot adopt an existing connection")
+            with endpoint_startup_lock(
+                self.port,
+                self.transport_mode,
+                self.config,
+                operation_deadline=operation_deadline,
+                cancellation=self._connection_cancellation.get(),
+            ) as acquired:
+                if not acquired:
+                    raise EndpointConnectionCancelledError("Startup cancelled before spawn")
+                operation_deadline.remaining_seconds()
+                prior_owner = declaration.startup_owner(self.port, self.config)
+                if prior_owner is not None and prior_owner.is_alive() is not False:
+                    raise RuntimeError("An existing startup owner reserves this endpoint")
+                if self.endpoint.occupied_ports(self.config):
+                    raise RuntimeError("Explicit startup requires an empty data/control pair")
+                if not declaration.data_control_pair_is_available(
+                    self.port,
+                    self.control_port,
+                    self.host,
+                    self.config,
+                ):
+                    raise RuntimeError("Execution endpoint pair is unavailable")
+                self._emit_connection_status(
+                    EndpointStartupPhase.STARTING_PROCESS,
+                    f"Starting explicitly owned server on port {self.port}",
+                )
+                process = endpoint_process(self._spawn_server_process())
+                try:
+                    declaration.record_startup_owner(self.port, self.config, process.identity)
+                except Exception as error:
+                    raise EndpointStartupUncertainError(process) from error
+                return process
+
     def _connect_locked(
         self,
         timeout: float,
@@ -832,6 +912,9 @@ class ZMQClient(ABC):
                     time.sleep(min(0.5, operation_deadline.remaining_seconds()))
             if self._connection_cancelled():
                 return self._cancelled_connection_result()
+            prior_owner = self.transport_mode.declaration.startup_owner(self.port, self.config)
+            if prior_owner is not None and prior_owner.is_alive() is not False:
+                return False
             self._emit_connection_status(
                 EndpointStartupPhase.STARTING_PROCESS,
                 f"Starting server process for port {self.port}",

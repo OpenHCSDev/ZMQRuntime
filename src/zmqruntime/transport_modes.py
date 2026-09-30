@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import platform
+import json
 import socket
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
@@ -17,6 +18,7 @@ from metaclass_registry import AutoRegisterMeta
 
 from .config import TransportMode, ZMQConfig
 from .timeouts import OperationCancellation, OperationDeadline
+from .messages import ProcessIdentity
 
 
 class TransportDeclaration(ABC, metaclass=AutoRegisterMeta):
@@ -149,6 +151,30 @@ class TransportDeclaration(ABC, metaclass=AutoRegisterMeta):
                 yield True
             finally:
                 portalocker.unlock(lock_file)
+
+    @classmethod
+    def startup_owner(cls, port: int, config: ZMQConfig) -> ProcessIdentity | None:
+        """Read the exact pre-bind reservation from the existing startup lock.
+
+        Call under startup_lock. Invalid records fail closed, never as absence.
+        """
+        path = cls.startup_lock_path(port, config)
+        source = path.read_text(encoding="utf-8") if path.exists() else ""
+        return ProcessIdentity.from_dict(json.loads(source)) if source else None
+
+    @classmethod
+    def record_startup_owner(
+        cls,
+        port: int,
+        config: ZMQConfig,
+        owner: ProcessIdentity,
+    ) -> None:
+        """Publish one spawned child while holding the existing startup lock."""
+        with cls.startup_lock_path(port, config).open("r+b") as stream:
+            stream.seek(0)
+            stream.write(json.dumps(owner.to_dict()).encode("utf-8"))
+            stream.truncate()
+            stream.flush()
 
     @classmethod
     @abstractmethod

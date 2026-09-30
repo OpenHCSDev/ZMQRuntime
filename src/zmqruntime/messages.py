@@ -315,6 +315,12 @@ class ProcessIdentity:
         process = psutil.Process()
         return cls(pid=process.pid, create_time=process.create_time())
 
+    @classmethod
+    def for_pid(cls, pid: int) -> "ProcessIdentity":
+        """Capture the OS creation time at the process-handle boundary."""
+        process = psutil.Process(pid)
+        return cls(pid=process.pid, create_time=process.create_time())
+
     def to_dict(self) -> Dict[str, Any]:
         return {"pid": self.pid, "create_time": self.create_time}
 
