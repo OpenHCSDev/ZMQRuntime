@@ -78,6 +78,18 @@ instead of reconstructing launch state from Thread.ident, and preserve original
 worker timeout errors while using the canonical deadline for a wait-timeout race.
 Ruff E/F checks and git diff --check pass. No endpoint bind occurs in any test.
 
+Static source census at aff9fc8 versus 4a7864b, root src/zmqruntime, measures
+the touched production file after minus before: code lines +121; own None
+identity checks +7; broad exception boundaries +2. All measured changes for
+type-identity checks, long chains/terms, codec subclasses, foreign absence
+probes, string/type dispatch and their arms, raw string-key reads/gets,
+getattr/default probes, long functions, classes/ABCs/enums are zero. The extra
+None checks describe this owner's optional endpoint/thread/deadline and local
+cleanup resources. The two extra exception boundaries report owned thread
+construction/launch failures through the startup outcome rather than hide them.
+No densities are inferred from under 500 net changed code lines. These syntax
+counts are screening evidence, not zero debt, R1 proof or semantic equivalence.
+
 ## Historical diagnostic checkpoint (through 4a7864b)
 
 Date: 2026-09-30. Independent task owner: Dirac.
