@@ -19,7 +19,7 @@ def test_zmq_config_defaults():
     assert config.ipc_socket_dir == "ipc"
     assert config.ipc_socket_prefix == "zmq"
     assert config.ipc_socket_extension == ".sock"
-    assert config.shared_ack_port == 7555
+    assert config.shared_ack_port == 0
     assert config.app_name == "zmqruntime"
 
 

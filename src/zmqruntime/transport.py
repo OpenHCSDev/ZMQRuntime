@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import pickle
 import time
-from collections.abc import Collection
-from contextlib import contextmanager
-from dataclasses import dataclass
+from collections.abc import Collection, Iterator
+from concurrent.futures import ThreadPoolExecutor, wait
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import zmq
 
 from zmqruntime.config import TransportMode, ZMQConfig
-from zmqruntime.messages import ControlMessageType, ControlRequestHeader, PongResponse
+from zmqruntime.messages import ControlMessageType, ControlRequestHeader, PongResponse, ProcessIdentity
 from zmqruntime.startup import (
     IDLE_ENDPOINT_STARTUP_OBSERVER,
     EndpointStartupObserver,
@@ -42,6 +43,121 @@ class TransportEndpoint:
     host: str
     port: int
     transport_mode: TransportMode
+
+    @contextmanager
+    def startup_lock(
+        self,
+        config: ZMQConfig,
+        *,
+        operation_deadline: OperationDeadline | None = None,
+        cancellation: OperationCancellation | None = None,
+    ) -> Iterator[bool]:
+        """Hold this entire pair in canonical order through its transport owner."""
+        with ExitStack() as locks:
+            for port in sorted(self.port_pair(config).ports):
+                acquired = locks.enter_context(endpoint_startup_lock(
+                    port, self.transport_mode, config,
+                    operation_deadline=operation_deadline, cancellation=cancellation,
+                ))
+                if not acquired:
+                    yield False
+                    return
+            yield True
+
+    def require_available_startup(self, config: ZMQConfig) -> None:
+        """Admit a new child under both held locks, never adopt a live owner."""
+        declaration = self.transport_mode.declaration
+        if self.has_live_startup_owner(config):
+            raise RuntimeError("An existing startup owner reserves this endpoint")
+        if self.occupied_ports(config):
+            raise RuntimeError("Explicit startup requires an empty data/control pair")
+        if not declaration.data_control_pair_is_available(
+            self.port, self.control_port(config), self.host, config,
+        ):
+            raise RuntimeError("Execution endpoint pair is unavailable")
+
+    def has_live_startup_owner(self, config: ZMQConfig) -> bool:
+        """Observe pending ownership across both held addresses, fail closed."""
+        for port in sorted(self.port_pair(config).ports):
+            owner = self.transport_mode.declaration.startup_owner(port, config)
+            if owner is not None and owner.is_alive() is not False:
+                return True
+        return False
+
+    def record_startup_owner(self, config: ZMQConfig, owner: ProcessIdentity) -> None:
+        """Publish the same incarnation to both existing records under held locks."""
+        for port in sorted(self.port_pair(config).ports):
+            self.transport_mode.declaration.record_startup_owner(port, config, owner)
+
+    def reserve_startup_owner(
+        self,
+        config: ZMQConfig,
+        owner: ProcessIdentity,
+        *,
+        operation_deadline: OperationDeadline,
+        cancellation: OperationCancellation | None,
+    ) -> bool:
+        """Publish provisional ownership before spawn; undo only this no-child stage.
+
+        Caller holds both locks. The declaration releases only an exact match
+        and retains the inode. Child/unknown records and all post-spawn failures
+        remain outside this transaction; no launch or retry belongs here.
+        """
+        reserved = False
+        try:
+            self.record_startup_owner(config, owner)
+            operation_deadline.remaining_seconds()
+            reserved = cancellation is None or not cancellation.requested()
+            return reserved
+        finally:
+            if not reserved:
+                for port in sorted(self.port_pair(config).ports):
+                    self.transport_mode.declaration.release_startup_owner(port, config, owner)
+
+    def require_startup_owner(self, config: ZMQConfig, owner: ProcessIdentity) -> None:
+        """Require this exact incarnation at both addresses under held locks."""
+        for port in sorted(self.port_pair(config).ports):
+            if self.transport_mode.declaration.startup_owner(port, config) != owner:
+                raise RuntimeError("Endpoint pair is not reserved by this exact child")
+
+    def discovery_response(
+        self, config: ZMQConfig, *, timeout_ms: int,
+    ) -> PongResponse | None:
+        """Project a typed discovery heartbeat onto its queried address owner."""
+        pong = self.ping(config, timeout_ms=timeout_ms)
+        return None if pong is None else replace(
+            pong, port=self.port, control_port=self.control_port(config),
+        )
+
+    @classmethod
+    def scan(
+        cls,
+        ports: Collection[int],
+        *,
+        host: str,
+        transport_mode: TransportMode,
+        config: ZMQConfig,
+        timeout_ms: int,
+    ) -> list[PongResponse]:
+        """Collect bounded endpoint-owned observations in original query order."""
+        ports = tuple(ports)
+        if not ports:
+            return []
+        targets = tuple(cls(host, port, transport_mode) for port in ports)
+        servers = []
+        executor = ThreadPoolExecutor(max_workers=min(len(ports), 32))
+        try:
+            futures = tuple(executor.submit(
+                target.discovery_response, config, timeout_ms=timeout_ms,
+            ) for target in targets)
+            done, _ = wait(futures, timeout=max(timeout_ms / 1000, 0.001))
+            for future in done:
+                server = future.result()
+                if server is not None:
+                    servers.append(server)
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+        return sorted(servers, key=lambda server: ports.index(server.port))
 
     def data_url(self, config: ZMQConfig | None = None) -> str:
         """Return this endpoint's data socket URL."""

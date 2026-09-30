@@ -12,11 +12,14 @@ import pickle
 import signal
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from enum import Enum
 from typing import Any, Dict, Optional, Tuple
+from uuid import UUID
 
 import psutil
+from python_introspect import dataclass_from_mapping
+from zmqruntime.timeouts import OperationDeadline
 
 logger = logging.getLogger(__name__)
 
@@ -315,6 +318,12 @@ class ProcessIdentity:
         process = psutil.Process()
         return cls(pid=process.pid, create_time=process.create_time())
 
+    @classmethod
+    def for_pid(cls, pid: int) -> "ProcessIdentity":
+        """Capture the OS creation time at the process-handle boundary."""
+        process = psutil.Process(pid)
+        return cls(pid=process.pid, create_time=process.create_time())
+
     def to_dict(self) -> Dict[str, Any]:
         return {"pid": self.pid, "create_time": self.create_time}
 
@@ -336,18 +345,30 @@ class ProcessIdentity:
             return None
 
     def terminate(self, timeout: float = 5.0) -> bool:
-        """Terminate this exact local process without crossing PID reuse."""
+        """Terminate this incarnation within one budget, including escalation."""
 
+        if timeout <= 0:
+            return self.is_alive() is False
+        deadline = OperationDeadline.after_milliseconds(
+            max(1, int(timeout * 1000)), operation="exact process termination"
+        )
         try:
             process = psutil.Process(self.pid)
             if process.create_time() != self.create_time:
                 return True
+            if not process.is_running() or process.status() == psutil.STATUS_ZOMBIE:
+                return True
+            if deadline.expired():
+                return False
             process.terminate()
             try:
-                process.wait(timeout=timeout)
+                # Leave budget for the existing force escalation and its wait.
+                process.wait(timeout=deadline.remaining_seconds_or_zero() / 2)
             except psutil.TimeoutExpired:
+                if not process.is_running():
+                    return True
                 process.kill()
-                process.wait(timeout=timeout)
+                process.wait(timeout=deadline.remaining_seconds_or_zero())
             return True
         except psutil.NoSuchProcess:
             return True
@@ -415,6 +436,35 @@ class ControlRequestHeader:
 
     def to_wire_payload(self) -> bytes:
         return pickle.dumps(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
+class EndpointShutdownRequest(ControlRequestHeader):
+    """Bind shutdown to its observed native incarnation, before mutation."""
+
+    process_identity: ProcessIdentity | None = None
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, object]) -> EndpointShutdownRequest:
+        header = ControlRequestHeader.from_dict(payload)
+        identity_data = payload.get(MessageFields.PROCESS_IDENTITY)
+        if identity_data is not None and not isinstance(identity_data, dict):
+            raise TypeError("Shutdown process identity must be a mapping")
+        return cls(
+            header.message_type,
+            None if identity_data is None else ProcessIdentity.from_dict(identity_data),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = ControlRequestHeader.to_dict(self)
+        if self.process_identity is not None:
+            payload[MessageFields.PROCESS_IDENTITY] = self.process_identity.to_dict()
+        return payload
+
+    def validate(self) -> str | None:
+        if self.process_identity is not None and self.process_identity != ProcessIdentity.current():
+            return "Shutdown addressed a different native process incarnation; no mutation"
+        return None
 
 
 class ResponseType(Enum):
@@ -1189,45 +1239,85 @@ class PongResponse(ControlResponse):
 # =============================================================================
 
 
+@dataclass(frozen=True, slots=True)
+class AckReturnRoute:
+    """Bound producer destination and exact listener incarnation, not a viewer port."""
+
+    url: str
+    incarnation: str
+    owner: ProcessIdentity
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.url, str) or not self.url:
+            raise ValueError("ACK destination must be a nonempty transport URL")
+        UUID(self.incarnation)
+        if not isinstance(self.owner, ProcessIdentity):
+            raise TypeError("ACK route requires a ProcessIdentity")
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "AckReturnRoute":
+        return dataclass_from_mapping(cls, data)
+
+
+@dataclass(frozen=True, slots=True)
+class ImageTransferIdentity:
+    """Per-image return contract carried unchanged through deferred viewer work."""
+
+    image_id: str
+    return_route: AckReturnRoute
+    producer: ProcessIdentity = field(default_factory=ProcessIdentity.current)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.image_id, str) or not self.image_id:
+            raise ValueError("Image transfer requires a nonempty image ID")
+        if not isinstance(self.return_route, AckReturnRoute):
+            raise TypeError("Image transfer requires an AckReturnRoute")
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "ImageTransferIdentity":
+        return dataclass_from_mapping(cls, {member.name: data[member.name] for member in fields(cls)})
+
+    @classmethod
+    def from_item(cls, data: Mapping[str, Any]) -> "ImageTransferIdentity | None":
+        """Untracked control items have no image identity; tracked items require a route."""
+        if data.get("image_id") is None:
+            return None
+        return cls.from_dict(data)
+
+
 @dataclass(frozen=True)
 class ImageAck:
     """Acknowledgment message sent by viewers after processing an image.
 
-    Sent via PUSH socket from viewer to shared ack port (7555).
+    Sent via PUSH socket to the original image's producer return route.
     Used to track real-time queue depth and show progress like '3/10 images processed'.
     """
 
     image_id: str  # UUID of the processed image
     viewer_port: int  # Port of the viewer that processed it (for routing)
     viewer_type: str  # 'napari' or 'fiji'
+    return_route: AckReturnRoute = field(kw_only=True)
+    producer: ProcessIdentity = field(kw_only=True)
     status: str = "success"  # 'success', 'error', etc.
     timestamp: Optional[float] = None  # When it was processed
     error: Optional[str] = None  # Error message if status='error'
 
     def to_dict(self):
-        result = {
-            MessageFields.TYPE: "image_ack",
-            MessageFields.IMAGE_ID: self.image_id,
-            MessageFields.VIEWER_PORT: self.viewer_port,
-            MessageFields.VIEWER_TYPE: self.viewer_type,
-            MessageFields.STATUS: self.status,
-        }
-        if self.timestamp is not None:
-            result[MessageFields.TIMESTAMP] = self.timestamp
-        if self.error is not None:
-            result[MessageFields.ERROR] = self.error
-        return result
+        return {MessageFields.TYPE: "image_ack", **asdict(self)}
 
     @classmethod
     def from_dict(cls, data):
-        return cls(
-            image_id=data[MessageFields.IMAGE_ID],
-            viewer_port=data[MessageFields.VIEWER_PORT],
-            viewer_type=data[MessageFields.VIEWER_TYPE],
-            status=data.get(MessageFields.STATUS, "success"),
-            timestamp=data.get(MessageFields.TIMESTAMP),
-            error=data.get(MessageFields.ERROR),
-        )
+        if data.get(MessageFields.TYPE) != "image_ack":
+            raise ValueError("ImageAck requires type=image_ack")
+        return dataclass_from_mapping(cls, {
+            member.name: data[member.name] for member in fields(cls) if member.name in data
+        })
 
 
 @dataclass(frozen=True)

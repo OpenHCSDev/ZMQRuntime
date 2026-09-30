@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest" errors="1" failures="0" skipped="0" tests="1" time="0.422" timestamp="2026-09-30T15:21:32.575581-04:00" hostname="desktop"><testcase classname="" name="tests.test_streaming_return_route" time="0.000"><error message="collection failure">ImportError while importing test module '/home/ts/wt/polystore-ack-return-route-20260930/tests/test_streaming_return_route.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+../../.pyenv/versions/3.12.3/lib/python3.12/importlib/__init__.py:90: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+tests/test_streaming_return_route.py:9: in &lt;module&gt;
+    from polystore.streaming.handlers.fiji_rois import FijiROIWireItem
+src/polystore/streaming/handlers/__init__.py:10: in &lt;module&gt;
+    from metaclass_registry.lazy import LazyDiscoveryDict
+E   ModuleNotFoundError: No module named 'metaclass_registry.lazy'</error></testcase></testsuite></testsuites>

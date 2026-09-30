@@ -8,9 +8,9 @@ import logging
 import threading
 import time
 from typing import Dict, Tuple, Optional, Set
-from typing import Any
 
 from zmqruntime.viewer_state import ViewerStateManager
+from zmqruntime.messages import ProcessIdentity
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +36,10 @@ class QueueTracker:
         self.viewer_type = viewer_type
         self.timeout_seconds = timeout_seconds
 
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._pending: Dict[str, float] = {}  # {image_id: timestamp_sent}
         self._processed: Set[str] = set()  # {image_id}
+        self._workers: set[ProcessIdentity] = set()
         self._total_sent = 0
         self._total_processed = 0
 
@@ -49,6 +50,8 @@ class QueueTracker:
             image_id: UUID of the sent image
         """
         with self._lock:
+            if image_id in self._pending or image_id in self._processed:
+                return
             self._pending[image_id] = time.time()
             self._total_sent += 1
             logger.debug(
@@ -86,19 +89,24 @@ class QueueTracker:
                 mgr = ViewerStateManager.get_instance()
                 mgr.increment_processed(self.viewer_type, self.viewer_port)
                 mgr.update_queued_images(self.viewer_type, self.viewer_port, len(self._pending))
-            else:
-                # Image was not registered (likely sent from worker process with separate registry)
-                # Still count it as processed so UI can track progress
-                if image_id not in self._processed:
-                    self._processed.add(image_id)
-                    self._total_processed += 1
-                    self._total_sent += 1  # Retroactively count as sent
-                    logger.debug(
-                        f"[{self.viewer_type}:{self.viewer_port}] Received ack for unregistered image {image_id}, counted retroactively (processed: {self._total_processed}/{self._total_sent})"
-                    )
-                    mgr = ViewerStateManager.get_instance()
-                    mgr.increment_processed(self.viewer_type, self.viewer_port)
-                    mgr.update_queued_images(self.viewer_type, self.viewer_port, len(self._pending))
+
+    def register_worker(self, producer: ProcessIdentity) -> None:
+        """Admit an exact worker incarnation for this batch's delegated receipts."""
+        with self._lock:
+            self._workers.add(producer)
+
+    def register_worker_processed(self, image_id: str, producer: ProcessIdentity) -> None:
+        """Explicitly account a delegated worker receipt, never an unknown local ACK.
+
+        Listener dispatch requires this batch's admitted worker incarnation.
+        Local ACKs can only complete previously registered IDs.
+        """
+        with self._lock:
+            if producer not in self._workers:
+                return
+            # Admission and accounting share the batch's reset boundary.
+            self.register_sent(image_id)
+            self.mark_processed(image_id)
 
     def get_progress(self) -> Tuple[int, int]:
         """Get current progress.
@@ -151,6 +159,7 @@ class QueueTracker:
         with self._lock:
             self._pending.clear()
             self._processed.clear()
+            self._workers.clear()
             self._total_sent = 0
             self._total_processed = 0
             logger.debug(f"[{self.viewer_type}:{self.viewer_port}] Cleared queue tracker")
@@ -166,6 +175,7 @@ class QueueTracker:
         with self._lock:
             self._pending.clear()
             self._processed.clear()
+            self._workers.clear()
             self._total_sent = 0
             self._total_processed = 0
             logger.debug(

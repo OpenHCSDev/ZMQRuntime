@@ -15,12 +15,12 @@ import zmq
 from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.messages import (
     ImageAck,
+    ImageTransferIdentity,
     PongResponse,
     ProcessResourceUsage,
     ServerRole,
 )
 from zmqruntime.server import ZMQServer
-from zmqruntime.transport import get_zmq_transport_url
 
 logger = logging.getLogger(__name__)
 
@@ -42,21 +42,21 @@ class StreamingVisualizerServer(ZMQServer, ABC):
             shape = tuple(image_info.get("shape"))
             dtype = np.dtype(image_info.get("dtype"))
             metadata = image_info.get("metadata", {})
-            image_id = image_info.get("image_id")
+            transfer = ImageTransferIdentity.from_item(image_info)
 
             try:
                 shm = shared_memory.SharedMemory(name=shm_name)
                 np_data = np.ndarray(shape, dtype=dtype, buffer=shm.buf).copy()
                 shm.close()
                 shm.unlink()
-                image_data_list.append(
-                    {"data": np_data, "metadata": metadata, "image_id": image_id}
-                )
+                copied = dict(image_info)
+                copied.update(data=np_data, metadata=metadata)
+                image_data_list.append(copied)
             except Exception as error:
                 logger.error("Failed to read shared memory %s: %s", shm_name, error)
-                if error_callback and image_id:
+                if error_callback and transfer is not None:
                     error_callback(
-                        image_id,
+                        transfer,
                         "error",
                         f"Failed to read shared memory: {error}",
                     )
@@ -72,7 +72,6 @@ class StreamingVisualizerServer(ZMQServer, ABC):
         data_socket_type=None,
         transport_mode: TransportMode | None = None,
         config: ZMQConfig | None = None,
-        ack_host: str = "localhost",
     ):
         super().__init__(
             port,
@@ -83,43 +82,43 @@ class StreamingVisualizerServer(ZMQServer, ABC):
             config=config,
         )
         self.viewer_type = viewer_type
-        self._ack_host = ack_host
-        self.ack_socket = None
-        self._setup_ack_socket()
 
-    def _setup_ack_socket(self):
-        """Setup PUSH socket for sending acknowledgments."""
-        try:
-            ack_url = get_zmq_transport_url(
-                self.config.shared_ack_port,
-                host=self._ack_host,
-                mode=self.transport_mode,
-                config=self.config,
-            )
-            context = zmq.Context.instance()
-            self.ack_socket = context.socket(zmq.PUSH)
-            self.ack_socket.connect(ack_url)
-            logger.info("Connected ack socket to %s", ack_url)
-        except Exception as e:
-            logger.warning("Failed to setup ack socket: %s", e)
-            self.ack_socket = None
+    def send_ack(
+        self, transfer: ImageTransferIdentity | None, status: str = "success", error: str | None = None,
+    ) -> bool:
+        """Return a bounded per-image ACK to its original producer incarnation.
 
-    def send_ack(self, image_id: str, status: str = "success", error: str | None = None):
-        """Send acknowledgment that an image was processed."""
-        if not self.ack_socket:
-            return
+        Sockets belong to the calling thread, including deferred GUI callbacks.
+        No global destination, cross-thread socket or unbounded route cache exists.
+        Genuinely untracked items have no transfer contract and send no ACK.
+        """
+        if transfer is None:
+            return False
+        socket = None
         try:
+            socket = zmq.Context.instance().socket(zmq.PUSH)
+            socket.setsockopt(zmq.LINGER, 1000)
+            socket.setsockopt(zmq.SNDTIMEO, 1000)
+            socket.setsockopt(zmq.IMMEDIATE, 1)
+            socket.connect(transfer.return_route.url)
             ack = ImageAck(
-                image_id=image_id,
+                image_id=transfer.image_id,
                 viewer_port=self.port,
                 viewer_type=self.viewer_type,
                 status=status,
                 timestamp=time.time(),
                 error=error,
+                return_route=transfer.return_route,
+                producer=transfer.producer,
             )
-            self.ack_socket.send_json(ack.to_dict())
+            socket.send_json(ack.to_dict())
+            return True
         except Exception as e:
-            logger.warning("Failed to send ack for %s: %s", image_id, e)
+            logger.warning("Failed to send ack for %s: %s", transfer.image_id, e)
+            return False
+        finally:
+            if socket is not None:
+                socket.close()
 
     def _create_pong_response(self) -> PongResponse:
         """Extend the shared heartbeat with current viewer-process usage."""

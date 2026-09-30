@@ -15,6 +15,8 @@ from zmqruntime.messages import ImageAck
 from zmqruntime.startup import EndpointStartupPhase
 from zmqruntime.timeouts import OperationDeadline, OperationTimeoutError
 
+TEST_CONFIG = ZMQConfig(shared_ack_port=7555)
+
 
 class ControlledAckSocket:
     def __init__(self, owner):
@@ -97,7 +99,7 @@ class AckLifecycleHarness:
         def start():
             try:
                 self.listener.start(
-                    ZMQConfig().shared_ack_port,
+                    TEST_CONFIG.shared_ack_port,
                     transport_mode=TransportMode.TCP,
                     timeout_ms=750,
                     **kwargs,
@@ -135,7 +137,7 @@ def harness(monkeypatch):
 
 
 def start(listener, **kwargs):
-    config = ZMQConfig()
+    config = TEST_CONFIG
     listener.start(
         config.shared_ack_port,
         transport_mode=TransportMode.TCP,
@@ -189,7 +191,7 @@ def test_same_endpoint_reuse_and_different_endpoint_rejection(harness):
     assert len(harness.contexts) == 1
     with pytest.raises(ValueError, match="different endpoint"):
         harness.listener.start(
-            ZMQConfig().shared_ack_port + 1,
+            TEST_CONFIG.shared_ack_port + 1,
             transport_mode=TransportMode.TCP,
             timeout_ms=750,
         )
@@ -234,7 +236,7 @@ def test_joining_caller_timeout_does_not_cancel_existing_start_owner(harness):
     assert harness.contexts[0].controlled_socket.bound.wait(1)
     with pytest.raises(OperationTimeoutError):
         harness.listener.start(
-            ZMQConfig().shared_ack_port,
+            TEST_CONFIG.shared_ack_port,
             transport_mode=TransportMode.TCP,
             timeout_ms=20,
         )
@@ -294,7 +296,7 @@ def test_start_owner_timeout_cancels_only_its_attempt_then_allows_explicit_retry
     harness.release_bind.clear()
     with pytest.raises(OperationTimeoutError):
         harness.listener.start(
-            ZMQConfig().shared_ack_port,
+            TEST_CONFIG.shared_ack_port,
             transport_mode=TransportMode.TCP,
             timeout_ms=20,
         )
@@ -319,7 +321,9 @@ def test_typed_ack_callback_can_stop_its_own_worker_without_self_join(harness):
     harness.listener.register_callback(stop_from_callback)
     start(harness.listener)
     context = harness.contexts[0]
-    ack = ImageAck("controlled-image", ZMQConfig().shared_ack_port, "controlled-viewer")
+    ack = ImageAck("controlled-image", TEST_CONFIG.shared_ack_port, "controlled-viewer",
+                   return_route=harness.listener.return_route,
+                   producer=harness.listener.return_route.owner)
     # A rejected malformed frame must not kill the healthy listener or introduce
     # another decoder. The subsequent valid record uses the original wire owner.
     context.controlled_socket.incoming.put({})
