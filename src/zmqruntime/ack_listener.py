@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Callable, Optional
 
 import zmq
@@ -12,7 +14,9 @@ import zmq
 from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.messages import ImageAck
 from zmqruntime.queue_tracker import GlobalQueueTrackerRegistry
-from zmqruntime.transport import get_zmq_transport_url, resolve_transport_mode
+from zmqruntime.startup import EndpointStartupPhase, EndpointStartupStatus
+from zmqruntime.timeouts import OperationCancellation, OperationDeadline
+from zmqruntime.transport import TransportEndpoint, resolve_transport_mode
 from zmqruntime.viewer_state import ViewerStateManager
 
 logger = logging.getLogger(__name__)
@@ -32,17 +36,38 @@ class GlobalAckListener:
             return cls._instance
 
     def __init__(self):
-        if self._initialized:
-            return
-        self._callbacks: list[Callable[[ImageAck], None]] = []
-        self._running = False
-        self._thread: Optional[threading.Thread] = None
-        self._transport_mode: TransportMode | None = None
-        self._config: ZMQConfig | None = None
-        self._port: int | None = None
-        self._host: str = "*"
-        self._initialized = True
-        self._register_default_callback()
+        with self._lock:
+            if self._initialized:
+                return
+            self._condition = threading.Condition()
+            self._callbacks: list[Callable[[ImageAck], None]] = []
+            self._thread: Optional[threading.Thread] = None
+            self._endpoint: TransportEndpoint | None = None
+            self._config = ZMQConfig()
+            self._cancellation = OperationCancellation()
+            self._startup: Future[None] = Future()
+            self._status = EndpointStartupStatus(
+                EndpointStartupPhase.DISCONNECTED, "Ack listener stopped"
+            )
+            self._register_default_callback()
+            self._initialized = True
+
+    @property
+    def startup_status(self) -> EndpointStartupStatus:
+        """Return the listener-owned lifecycle, including terminal failure."""
+        with self._condition:
+            return self._status
+
+    @property
+    def _running(self) -> bool:
+        """Derive readiness from the existing lifecycle declaration."""
+        return self.startup_status.phase.accepts_requests
+
+    def _set_status(self, phase: EndpointStartupPhase, message: str) -> None:
+        with self._condition:
+            self._status = EndpointStartupStatus(
+                phase, message, self._status.sequence + 1, time.time()
+            )
 
     def _register_default_callback(self) -> None:
         def _mark_processed(ack: ImageAck) -> None:
@@ -61,7 +86,8 @@ class GlobalAckListener:
 
     def register_callback(self, callback: Callable[[ImageAck], None]) -> None:
         """Register callback for ack messages."""
-        self._callbacks.append(callback)
+        with self._condition:
+            self._callbacks.append(callback)
 
     def start(
         self,
@@ -69,48 +95,136 @@ class GlobalAckListener:
         transport_mode: TransportMode | None = None,
         host: str = "*",
         config: ZMQConfig | None = None,
+        *,
+        timeout_ms: int = 5000,
+        operation_deadline: OperationDeadline | None = None,
     ) -> None:
-        """Start listening on given port."""
-        with self._lock:
-            if self._running:
-                logger.debug("Ack listener already running")
-                return
-            self._transport_mode = resolve_transport_mode(transport_mode)
-            self._config = config or ZMQConfig()
-            self._port = port
-            self._host = host
-            self._running = True
-            self._thread = threading.Thread(
-                target=self._listener_loop,
-                daemon=True,
-                name="AckListener",
-            )
-            self._thread.start()
+        """Return only after bind succeeds, or propagate the actual failure.
 
-    def stop(self) -> None:
-        """Stop the listener."""
-        with self._lock:
-            if not self._running:
-                return
-            self._running = False
-
-    def _listener_loop(self) -> None:
-        context = zmq.Context()
-        socket = None
+        Concurrent callers for the same address share its startup outcome. An
+        already-owned different address is rejected rather than silently reused.
+        The finite wait uses the existing operation deadline/cancellation owners.
+        """
+        endpoint = TransportEndpoint(host, port, resolve_transport_mode(transport_mode))
+        config = config or ZMQConfig()
+        deadline = operation_deadline or OperationDeadline.after_milliseconds(
+            timeout_ms, operation="ACK listener startup"
+        )
+        deadline.remaining_seconds()
+        launch = None
+        with self._condition:
+            if self._thread is not None:
+                assert self._endpoint is not None
+                if self._endpoint.data_url(self._config) != endpoint.data_url(config):
+                    raise ValueError("Ack listener already owns a different endpoint")
+                if self._cancellation.requested():
+                    raise RuntimeError("Ack listener is still stopping")
+            else:
+                self._endpoint = endpoint
+                self._config = config
+                self._cancellation = OperationCancellation()
+                self._startup = Future()
+                self._set_status(EndpointStartupPhase.BINDING_ENDPOINT, endpoint.data_url(config))
+                try:
+                    self._thread = threading.Thread(
+                        target=self._listener_loop,
+                        args=(endpoint, config, self._cancellation, self._startup),
+                        daemon=True,
+                        name="AckListener",
+                    )
+                except Exception as error:
+                    self._set_status(EndpointStartupPhase.FAILED, str(error))
+                    self._startup.set_exception(error)
+                launch = self._thread
+            startup = self._startup
+            cancellation = self._cancellation
+        # Neither thread launch nor outcome/cleanup waits hold the lifecycle lock.
+        if launch is not None:
+            try:
+                launch.start()
+            except Exception as error:
+                with self._condition:
+                    self._thread = None
+                    self._set_status(EndpointStartupPhase.FAILED, str(error))
+                    startup.set_exception(error)
         try:
+            startup.result(timeout=deadline.remaining_seconds_or_zero())
+        except FutureTimeoutError:
+            if startup.done():
+                # Preserve a real worker exception; a completion racing the
+                # wait timeout must still use the caller's canonical deadline.
+                startup.result()
+            if launch is not None:
+                with self._condition:
+                    if self._startup is startup:
+                        cancellation.cancel()
+                        self._set_status(
+                            EndpointStartupPhase.FAILED, str(deadline.timeout_error())
+                        )
+            raise deadline.timeout_error() from None
+        with self._condition:
+            if self._startup is not startup or not self._running:
+                raise RuntimeError(
+                    f"Ack listener stopped during startup: {self._status.message}"
+                )
+
+    def stop(
+        self,
+        *,
+        timeout_ms: int = 5000,
+        operation_deadline: OperationDeadline | None = None,
+    ) -> None:
+        """Cancel and join only this listener; its thread closes its resources."""
+        deadline = operation_deadline or OperationDeadline.after_milliseconds(
+            timeout_ms, operation="ACK listener shutdown"
+        )
+        with self._condition:
+            thread = self._thread
+            if thread is None:
+                return
+            startup = self._startup
+            self._cancellation.cancel()
+            self._set_status(EndpointStartupPhase.DISCONNECTED, "Ack listener stopping")
+        if thread is threading.current_thread():
+            return
+        # A concurrent stop may arrive before start() launches the stored thread.
+        # Its startup outcome certifies launch or failure before join is legal.
+        try:
+            startup.exception(timeout=deadline.remaining_seconds_or_zero())
+        except FutureTimeoutError:
+            raise deadline.timeout_error() from None
+        if not thread.is_alive():
+            return
+        thread.join(timeout=deadline.remaining_seconds_or_zero())
+        if thread.is_alive():
+            raise deadline.timeout_error()
+
+    def _listener_loop(
+        self,
+        endpoint: TransportEndpoint,
+        config: ZMQConfig,
+        cancellation: OperationCancellation,
+        startup: Future[None],
+    ) -> None:
+        context = None
+        socket = None
+        failure = None
+        try:
+            if cancellation.requested():
+                raise RuntimeError("Ack listener cancelled before startup")
+            context = zmq.Context()
             socket = context.socket(zmq.PULL)
-            if self._port is None:
-                raise RuntimeError("Ack listener port not set")
-            ack_url = get_zmq_transport_url(
-                self._port,
-                host=self._host,
-                mode=self._transport_mode,
-                config=self._config,
-            )
+            socket.setsockopt(zmq.LINGER, 0)
+            ack_url = endpoint.data_url(config)
             socket.bind(ack_url)
+            with self._condition:
+                if cancellation.requested():
+                    raise RuntimeError("Ack listener cancelled before readiness")
+                self._set_status(EndpointStartupPhase.CONNECTED, ack_url)
+                startup.set_result(None)
             logger.info("Ack listener bound to %s", ack_url)
 
-            while self._running:
+            while not cancellation.requested():
                 try:
                     if socket.poll(timeout=1000):
                         ack_dict = socket.recv_json()
@@ -119,25 +233,41 @@ class GlobalAckListener:
                         except Exception as e:
                             logger.error("Failed to parse ack message: %s", e, exc_info=True)
                             continue
-                        for callback in list(self._callbacks):
+                        with self._condition:
+                            callbacks = tuple(self._callbacks)
+                        for callback in callbacks:
                             try:
                                 callback(ack)
                             except Exception as e:
                                 logger.error("Ack callback error: %s", e, exc_info=True)
-                except zmq.ZMQError as e:
-                    if self._running:
-                        logger.error("ZMQ error in ack listener: %s", e)
-                        time.sleep(0.1)
+                except zmq.ZMQError:
+                    if not cancellation.requested():
+                        raise
         except Exception as e:
+            failure = e
+            self._set_status(EndpointStartupPhase.FAILED, str(e))
             logger.error("Fatal error in ack listener: %s", e, exc_info=True)
         finally:
-            if socket:
+            if socket is not None:
                 try:
-                    socket.close()
-                except Exception:
-                    pass
-            try:
-                context.term()
-            except Exception:
-                pass
+                    socket.close(linger=0)
+                except Exception as error:
+                    failure = failure or error
+                    logger.error("Ack socket cleanup failed: %s", error, exc_info=True)
+            if context is not None:
+                try:
+                    context.term()
+                except Exception as error:
+                    failure = failure or error
+                    logger.error("Ack context cleanup failed: %s", error, exc_info=True)
+            with self._condition:
+                self._thread = None
+                if failure is not None:
+                    self._set_status(EndpointStartupPhase.FAILED, str(failure))
+                else:
+                    self._set_status(EndpointStartupPhase.DISCONNECTED, "Ack listener stopped")
+                if not startup.done():
+                    startup.set_exception(
+                        failure or RuntimeError("Ack listener stopped before readiness")
+                    )
             logger.info("Ack listener stopped")
