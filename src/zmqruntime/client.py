@@ -1047,9 +1047,11 @@ class ZMQClient(ABC):
                     return True
                 if self._connection_cancelled():
                     return self._cancelled_connection_result()
-                if self.transport_mode.declaration.preserve_unresponsive_endpoint(
-                    self.port,
-                    self.config,
+                if self.endpoint.has_live_startup_owner(self.config) or (
+                    self.transport_mode.declaration.preserve_unresponsive_endpoint(
+                        self.port,
+                        self.config,
+                    )
                 ):
                     self._emit_connection_status(
                         EndpointStartupPhase.FAILED,

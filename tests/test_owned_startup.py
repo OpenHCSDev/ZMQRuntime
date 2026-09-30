@@ -135,7 +135,11 @@ def test_expired_budget_never_spawns(client):
 
 
 @pytest.mark.parametrize("control", [False, True])
-def test_ordinary_connect_preserves_both_pending_address_owners(client, monkeypatch, control):
+@pytest.mark.parametrize("occupied", [False, True])
+@pytest.mark.parametrize("alive", [True, None])
+def test_ordinary_connect_preserves_both_pending_address_owners(
+    client, monkeypatch, control, occupied, alive
+):
     declaration = client.transport_mode.declaration
     reserved_port = client.control_port if control else client.port
     path = declaration.startup_lock_path(reserved_port, client.config)
@@ -144,11 +148,59 @@ def test_ordinary_connect_preserves_both_pending_address_owners(client, monkeypa
     owner = ProcessIdentity.current()
     declaration.record_startup_owner(reserved_port, client.config, owner)
     inode = path.stat().st_ino
-    monkeypatch.setattr(client, "_is_port_in_use", lambda *_: False)
+    monkeypatch.setattr(client, "_is_port_in_use", lambda *_: occupied)
+    monkeypatch.setattr(client, "_attach_existing_endpoint", Mock(return_value=False))
+    monkeypatch.setattr(ProcessIdentity, "is_alive", lambda *_: alive)
     kill = Mock(side_effect=AssertionError("A pending child is not replaceable"))
     monkeypatch.setattr(client, "_kill_processes_on_port", kill)
     assert client.connect(timeout=0.01) is False
     assert declaration.startup_owner(reserved_port, client.config) == owner
+    assert path.stat().st_ino == inode
+    client.spawn.assert_not_called()
+    kill.assert_not_called()
+
+
+@pytest.mark.parametrize("control", [False, True])
+def test_ordinary_connect_can_attach_healthy_reserved_endpoint(client, monkeypatch, control):
+    declaration = client.transport_mode.declaration
+    reserved_port = client.control_port if control else client.port
+    path = declaration.startup_lock_path(reserved_port, client.config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()
+    owner = ProcessIdentity.current()
+    declaration.record_startup_owner(reserved_port, client.config, owner)
+    inode = path.stat().st_ino
+    monkeypatch.setattr(client, "_is_port_in_use", lambda *_: True)
+    attach = Mock(return_value=True)
+    monkeypatch.setattr(client, "_attach_existing_endpoint", attach)
+    kill = Mock(side_effect=AssertionError("Healthy endpoint is not replaceable"))
+    monkeypatch.setattr(client, "_kill_processes_on_port", kill)
+    assert client.connect(timeout=0.01) is True
+    attach.assert_called_once_with(0.01)
+    assert declaration.startup_owner(reserved_port, client.config) == owner
+    assert path.stat().st_ino == inode
+    client.spawn.assert_not_called()
+    kill.assert_not_called()
+
+
+@pytest.mark.parametrize("control", [False, True])
+def test_ordinary_connect_preserves_occupied_endpoint_with_partial_reservation(
+    client, monkeypatch, control
+):
+    declaration = client.transport_mode.declaration
+    reserved_port = client.control_port if control else client.port
+    path = declaration.startup_lock_path(reserved_port, client.config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    source = "unknown partial reservation"
+    path.write_text(source, encoding="utf-8")
+    inode = path.stat().st_ino
+    monkeypatch.setattr(client, "_is_port_in_use", lambda *_: True)
+    monkeypatch.setattr(client, "_attach_existing_endpoint", Mock(return_value=False))
+    kill = Mock(side_effect=AssertionError("Unknown reservation is not replaceable"))
+    monkeypatch.setattr(client, "_kill_processes_on_port", kill)
+    with pytest.raises(ValueError):
+        client.connect(timeout=0.01)
+    assert path.read_text(encoding="utf-8") == source
     assert path.stat().st_ino == inode
     client.spawn.assert_not_called()
     kill.assert_not_called()
