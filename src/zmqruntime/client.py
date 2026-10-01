@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import pickle
 import subprocess
@@ -28,8 +29,8 @@ from zmqruntime.messages import (
     EndpointShutdownRequest,
     MessageFields,
     PongResponse,
-    ProcessIdentity,
     ProcessExit,
+    ProcessIdentity,
     ResponseType,
 )
 from zmqruntime.startup import (
@@ -37,6 +38,7 @@ from zmqruntime.startup import (
     EndpointStartupCancellationObserver,
     EndpointStartupObserver,
     EndpointStartupPhase,
+    EndpointStartupProcessObserver,
     EndpointStartupStatus,
     EndpointStartupStatusCallback,
 )
@@ -47,7 +49,7 @@ from zmqruntime.transport import (
     is_port_in_use,
     request_control_ping,
     resolve_transport_mode,
-    wait_for_server_ready,
+    wait_for_endpoint_ready,
 )
 
 
@@ -126,6 +128,27 @@ class EndpointConnectionAttempt:
             "Endpoint connection attempt was cancelled by its owner."
         )
 
+    async def connect_async(self, policy: EndpointConnectionPolicy, timeout: float) -> bool:
+        """Await this same attempt without abandoning its worker on cancellation."""
+        worker = asyncio.get_running_loop().run_in_executor(
+            None, self.connect, policy, timeout
+        )
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError as cancelled:
+            self.cancel()
+            reaped = asyncio.create_task(asyncio.wait((worker,)))
+            while not worker.done():
+                try:
+                    await asyncio.shield(reaped)
+                except asyncio.CancelledError:
+                    self.cancel()
+            try:
+                worker.result()
+            except EndpointConnectionCancelledError:
+                pass
+            raise cancelled
+
 
 class EndpointCompatibilityClientABC(ABC):
     """Nominal client contract able to prove endpoint application identity."""
@@ -188,6 +211,10 @@ class ClientEndpointConnection(ABC):
 
 class EndpointProcess(ABC):
     """Nominal process operations required by an owned endpoint connection."""
+
+    def startup_observer(self, observed: EndpointStartupObserver) -> EndpointStartupObserver:
+        """Give every native process leaf the same exact-work startup mechanism."""
+        return EndpointStartupProcessObserver(self.identity, observed)
 
     @property
     @abstractmethod
@@ -1247,11 +1274,11 @@ class ZMQClient(ABC):
         timeout: float,
         operation_deadline: OperationDeadline,
     ) -> PongResponse | None:
-        """Preserve the readiness hook while applying a total caller deadline."""
-
-        return self._wait_for_endpoint_ready(
+        """Apply a total deadline without changing the inactivity policy."""
+        return self._wait_for_endpoint_ready_observed(
             process,
-            timeout=operation_deadline.cap_seconds(timeout),
+            timeout=timeout,
+            operation_deadline=operation_deadline,
         )
 
     def _wait_for_endpoint_ready(
@@ -1259,36 +1286,39 @@ class ZMQClient(ABC):
         process: EndpointProcess,
         timeout: float = 10.0,
     ) -> PongResponse | None:
-        """Return the handshake after the established readiness extension point.
+        """Return the one authoritative startup handshake."""
+        return self._wait_for_endpoint_ready_observed(process, timeout=timeout)
 
-        ``_wait_for_server_ready`` remains the lifecycle hook so clients built
-        against earlier zmqruntime releases keep their startup observers.  New
-        clients that need the first typed PONG can override this adapter
-        directly.
-        """
-
-        if not self._wait_for_server_ready(process, timeout=timeout):
-            return None
-        return self._try_connect_to_existing(
-            self.port,
-            timeout_ms=self._existing_endpoint_probe_timeout_ms(timeout),
-        )
-
-    def _wait_for_server_ready(
+    def _wait_for_endpoint_ready_observed(
         self,
         process: EndpointProcess,
-        timeout: float = 10.0,
-    ) -> bool:
-        """Wait for readiness through the stable client extension point."""
-
-        return wait_for_server_ready(
+        *,
+        timeout: float,
+        operation_deadline: OperationDeadline | None = None,
+    ) -> PongResponse | None:
+        """Shared exact-child activity, cancellation and handshake algorithm."""
+        endpoint = wait_for_endpoint_ready(
             self.port,
             self.transport_mode,
             host=self.host,
             config=self.config,
             timeout=timeout,
-            startup_observer=self._connection_startup_observer(),
+            poll_interval=self.config.server_poll_interval_seconds,
+            startup_observer=self._connection_startup_observer(
+                process.startup_observer(self._endpoint_startup_observer(process))
+            ),
+            operation_deadline=operation_deadline,
         )
+        if endpoint is not None:
+            self._endpoint_ready_observed(endpoint)
+        return endpoint
+
+    def _endpoint_startup_observer(self, process: EndpointProcess) -> EndpointStartupObserver:
+        """Domain hook: generic endpoints have no child status journal."""
+        return IDLE_ENDPOINT_STARTUP_OBSERVER
+
+    def _endpoint_ready_observed(self, endpoint: PongResponse) -> None:
+        """Domain hook for releasing startup evidence after readiness."""
 
     def _connection_startup_observer(
         self,

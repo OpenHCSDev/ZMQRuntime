@@ -19,6 +19,7 @@ from uuid import UUID
 
 import psutil
 from python_introspect import dataclass_from_mapping
+
 from zmqruntime.timeouts import OperationDeadline
 
 logger = logging.getLogger(__name__)
@@ -343,6 +344,34 @@ class ProcessIdentity:
             return False
         except psutil.AccessDenied:
             return None
+
+    def work_snapshot(self) -> dict[ProcessIdentity, float]:
+        """Measure CPU work of this incarnation and its current descendants.
+
+        An OS work counter is activity, not a readiness or ownership proof.
+        Inaccessible/exited processes supply no new work. Each sample carries
+        creation time, so a reused PID cannot refresh another child's wait.
+        """
+        samples: dict[ProcessIdentity, float] = {}
+        try:
+            process = psutil.Process(self.pid)
+            if process.create_time() != self.create_time:
+                return samples
+            processes = (process, *process.children(recursive=True))
+            for current in processes:
+                try:
+                    identity = ProcessIdentity(current.pid, current.create_time())
+                    cpu = current.cpu_times()
+                    if ProcessIdentity.for_pid(current.pid) == identity:
+                        samples[identity] = cpu.user + cpu.system
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    return {}
+            # The ancestry projection is valid only while its exact root remains.
+            if ProcessIdentity.for_pid(self.pid) != self:
+                return {}
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return {}
+        return samples
 
     def terminate(self, timeout: float = 5.0) -> bool:
         """Terminate this incarnation within one budget, including escalation."""

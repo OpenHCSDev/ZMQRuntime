@@ -13,6 +13,7 @@ from zmqruntime.client import (
     EndpointProcess,
     ZMQClient,
 )
+from zmqruntime.config import TransportMode
 from zmqruntime.messages import PongResponse, ProcessExit, ProcessIdentity, ServerRole
 from zmqruntime.startup import (
     EndpointStartupCancellationObserver,
@@ -25,6 +26,14 @@ from zmqruntime.startup import (
 )
 from zmqruntime.timeouts import OperationCancellation
 from zmqruntime.transport import get_default_transport_mode, wait_for_server_ready
+
+
+@pytest.fixture(autouse=True)
+def isolated_startup_lock_paths(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        TransportMode.TCP.declaration, "startup_lock_path",
+        classmethod(lambda cls, port, config: tmp_path / f"{port}.startup.lock"),
+    )
 
 
 @pytest.mark.parametrize("phase", EndpointStartupPhase)
@@ -83,47 +92,6 @@ class _StartupClient(ZMQClient):
         self,
         process,
         timeout: float = 10.0,
-    ) -> PongResponse:
-        return PongResponse(
-            port=self.port,
-            control_port=self.control_port,
-            ready=True,
-            server=type(self).__name__,
-            server_role=ServerRole.GENERIC,
-        )
-
-    def _setup_client_sockets(self) -> None:
-        return None
-
-    def send_data(self, data) -> None:
-        return None
-
-
-class _LegacyStartupClient(ZMQClient):
-    """Client exercising the readiness hook published before typed PONGs."""
-
-    def __init__(self, statuses) -> None:
-        super().__init__(5555, connection_status_callback=statuses.append)
-        self.readiness_observed = False
-
-    def _is_port_in_use(self, port: int) -> bool:
-        return False
-
-    def _spawn_server_process(self):
-        return _EndpointProcess()
-
-    def _wait_for_server_ready(
-        self,
-        process,
-        timeout: float = 10.0,
-    ) -> bool:
-        self.readiness_observed = True
-        return True
-
-    def _try_connect_to_existing(
-        self,
-        port: int,
-        timeout_ms: int = 500,
     ) -> PongResponse:
         return PongResponse(
             port=self.port,
@@ -298,15 +266,6 @@ def test_concurrent_attempts_use_their_exact_cancellation_tokens() -> None:
     assert len(results) == 2
     assert EndpointConnectionCancelledError in results
     assert True in results
-
-
-def test_typed_handshake_preserves_legacy_readiness_extension_point() -> None:
-    client = _LegacyStartupClient([])
-
-    assert client.connect(timeout=1.0) is True
-    assert client.readiness_observed is True
-    assert client.connected_endpoint is not None
-    assert client.connected_endpoint.server == "_LegacyStartupClient"
 
 
 def test_each_startup_phase_executes_its_owned_presentation_leaf() -> None:

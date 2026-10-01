@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
 
+from zmqruntime.messages import ProcessIdentity
 from zmqruntime.timeouts import OperationCancellation
 
 
@@ -254,6 +255,33 @@ class IdleEndpointStartupObserver(EndpointStartupObserver):
 
 
 IDLE_ENDPOINT_STARTUP_OBSERVER = IdleEndpointStartupObserver()
+
+
+class EndpointStartupProcessObserver(EndpointStartupObserver):
+    """Compose exact-child work with domain activity, never with readiness."""
+
+    def __init__(
+        self,
+        identity: ProcessIdentity,
+        observed: EndpointStartupObserver,
+    ) -> None:
+        self._identity = identity
+        self._observed = observed
+        self._work = identity.work_snapshot()
+
+    def poll_activity(self) -> bool:
+        activity = self._observed.poll_activity()
+        work = self._identity.work_snapshot()
+        advanced = any(
+            seconds > self._work.get(identity, 0.0)
+            for identity, seconds in work.items()
+        )
+        if work:
+            self._work = work
+        return activity or advanced
+
+    def should_abort(self) -> bool:
+        return self._observed.should_abort() or self._identity.is_alive() is False
 
 
 class EndpointStartupCancellationObserver(EndpointStartupObserver):
