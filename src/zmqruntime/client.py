@@ -13,7 +13,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from enum import Enum
 from functools import singledispatch
 from multiprocessing.process import BaseProcess
@@ -866,8 +866,7 @@ class ZMQClient(ABC):
             sequence=self._connection_status_sequence,
             timestamp=time.time(),
         )
-        if self._connection_status_callback is not None:
-            self._connection_status_callback(status)
+        status.publish(self._connection_status_callback)
 
     @contextmanager
     def _bind_connection_attempt(
