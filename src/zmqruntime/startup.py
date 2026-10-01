@@ -7,10 +7,14 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
+from typing import ClassVar
 
+from zmqruntime.messages import ProcessIdentity
 from zmqruntime.timeouts import OperationCancellation
 
 
@@ -143,6 +147,28 @@ class EndpointStartupStatus:
     sequence: int = 0
     timestamp: float = 0.0
 
+    _callback: ClassVar[ContextVar[EndpointStartupStatusCallback | None]] = ContextVar(
+        "endpoint_startup_status_callback", default=None
+    )
+
+    @classmethod
+    @contextmanager
+    def callback_scope(cls, callback: EndpointStartupStatusCallback):
+        """Bind one request's observer, including its context-propagating workers."""
+        token = cls._callback.set(callback)
+        try:
+            yield
+        finally:
+            cls._callback.reset(token)
+
+    def publish(self, callback: EndpointStartupStatusCallback | None = None) -> None:
+        """Deliver this original status to the explicit and request-local observers."""
+        if callback is not None:
+            callback(self)
+        scoped_callback = self._callback.get()
+        if scoped_callback is not None and scoped_callback is not callback:
+            scoped_callback(self)
+
     def present(
         self,
         target: EndpointStartupPresentationTarget,
@@ -254,6 +280,33 @@ class IdleEndpointStartupObserver(EndpointStartupObserver):
 
 
 IDLE_ENDPOINT_STARTUP_OBSERVER = IdleEndpointStartupObserver()
+
+
+class EndpointStartupProcessObserver(EndpointStartupObserver):
+    """Compose exact-child work with domain activity, never with readiness."""
+
+    def __init__(
+        self,
+        identity: ProcessIdentity,
+        observed: EndpointStartupObserver,
+    ) -> None:
+        self._identity = identity
+        self._observed = observed
+        self._work = identity.work_snapshot()
+
+    def poll_activity(self) -> bool:
+        activity = self._observed.poll_activity()
+        work = self._identity.work_snapshot()
+        advanced = any(
+            seconds > self._work.get(identity, 0.0)
+            for identity, seconds in work.items()
+        )
+        if work:
+            self._work = work
+        return activity or advanced
+
+    def should_abort(self) -> bool:
+        return self._observed.should_abort() or self._identity.is_alive() is False
 
 
 class EndpointStartupCancellationObserver(EndpointStartupObserver):

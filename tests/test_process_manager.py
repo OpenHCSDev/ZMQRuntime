@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import subprocess
-
 import pytest
 
+from zmqruntime.client import EndpointProcess
 from zmqruntime.streaming.process_manager import VisualizerProcessManager
 
 
@@ -12,7 +11,7 @@ class ConcreteVisualizerProcessManager(VisualizerProcessManager):
         del timeout
         return True
 
-    def start(self, detached: bool = True) -> subprocess.Popen:
+    def start(self, detached: bool = True) -> EndpointProcess:
         del detached
         raise RuntimeError("test launch authority")
 

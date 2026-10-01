@@ -1,0 +1,374 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-8.3.5, pluggy-1.6.0 -- /home/ts/wt/openhcs-generated-inputs-installed-parent-20261001/.venv/bin/python
+rootdir: /home/ts/wt/zmqruntime-cold-start-355-20261001
+configfile: pyproject.toml
+collecting ... collected 13 items
+
+tests/test_viewer_process_ownership.py::test_stop_delegates_once_and_retains_exact_exit[AuditBeforeViewer] FAILED [  7%]
+tests/test_viewer_process_ownership.py::test_stop_delegates_once_and_retains_exact_exit[AuditAfterViewer] FAILED [ 15%]
+tests/test_viewer_process_ownership.py::test_readiness_observation_timeout_preserves_active_handle[AuditBeforeViewer] FAILED [ 23%]
+tests/test_viewer_process_ownership.py::test_readiness_observation_timeout_preserves_active_handle[AuditAfterViewer] FAILED [ 30%]
+tests/test_viewer_process_ownership.py::test_failed_acquisition_cleanup_retains_child_after_manager_removal[AuditBeforeViewer] FAILED [ 38%]
+tests/test_viewer_process_ownership.py::test_failed_acquisition_cleanup_retains_child_after_manager_removal[AuditAfterViewer] FAILED [ 46%]
+tests/test_viewer_process_ownership.py::test_unfinished_stop_does_not_discard_or_replace_child[AuditBeforeViewer] FAILED [ 53%]
+tests/test_viewer_process_ownership.py::test_unfinished_stop_does_not_discard_or_replace_child[AuditAfterViewer] FAILED [ 61%]
+tests/test_viewer_process_ownership.py::test_preexisting_terminal_status_survives_cleanup[AuditBeforeViewer] FAILED [ 69%]
+tests/test_viewer_process_ownership.py::test_preexisting_terminal_status_survives_cleanup[AuditAfterViewer] FAILED [ 76%]
+tests/test_viewer_process_ownership.py::test_unstarted_viewer_never_fabricates_an_incarnation[AuditBeforeViewer] PASSED [ 84%]
+tests/test_viewer_process_ownership.py::test_unstarted_viewer_never_fabricates_an_incarnation[AuditAfterViewer] PASSED [ 92%]
+tests/test_viewer_process_ownership.py::test_shared_initialization_reaches_independent_downstream_capability FAILED [100%]
+
+=================================== FAILURES ===================================
+______ test_stop_delegates_once_and_retains_exact_exit[AuditBeforeViewer] ______
+
+viewer_type = <class 'test_viewer_process_ownership.AuditBeforeViewer'>
+
+    @pytest.mark.parametrize("viewer_type", VIEWERS)
+    def test_stop_delegates_once_and_retains_exact_exit(viewer_type):
+        child = DeclaredChild()
+        viewer = viewer_type(child)
+        assert viewer.start() is child
+>       assert viewer.is_running
+
+tests/test_viewer_process_ownership.py:88: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <test_viewer_process_ownership.AuditBeforeViewer object at 0x7f435861ce90>
+
+    @property
+    def is_running(self) -> bool:
+        if not self.process:
+            return False
+>       return self.process.poll() is None
+E       AttributeError: 'DeclaredChild' object has no attribute 'poll'
+
+src/zmqruntime/streaming/process_manager.py:48: AttributeError
+______ test_stop_delegates_once_and_retains_exact_exit[AuditAfterViewer] _______
+
+viewer_type = <class 'test_viewer_process_ownership.AuditAfterViewer'>
+
+    @pytest.mark.parametrize("viewer_type", VIEWERS)
+    def test_stop_delegates_once_and_retains_exact_exit(viewer_type):
+        child = DeclaredChild()
+        viewer = viewer_type(child)
+        assert viewer.start() is child
+>       assert viewer.is_running
+
+tests/test_viewer_process_ownership.py:88: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <test_viewer_process_ownership.AuditAfterViewer object at 0x7f435861d460>
+
+    @property
+    def is_running(self) -> bool:
+        if not self.process:
+            return False
+>       return self.process.poll() is None
+E       AttributeError: 'DeclaredChild' object has no attribute 'poll'
+
+src/zmqruntime/streaming/process_manager.py:48: AttributeError
+_ test_readiness_observation_timeout_preserves_active_handle[AuditBeforeViewer] _
+
+viewer_type = <class 'test_viewer_process_ownership.AuditBeforeViewer'>
+
+    @pytest.mark.parametrize("viewer_type", VIEWERS)
+    def test_readiness_observation_timeout_preserves_active_handle(viewer_type):
+        child = DeclaredChild()
+        viewer = viewer_type(child)
+        viewer.start()
+        assert not viewer.wait_for_ready(timeout=30)
+        assert viewer.ready_observations == [30]
+>       assert viewer.process is child and viewer.is_running
+
+tests/test_viewer_process_ownership.py:105: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <test_viewer_process_ownership.AuditBeforeViewer object at 0x7f435861da60>
+
+    @property
+    def is_running(self) -> bool:
+        if not self.process:
+            return False
+>       return self.process.poll() is None
+E       AttributeError: 'DeclaredChild' object has no attribute 'poll'
+
+src/zmqruntime/streaming/process_manager.py:48: AttributeError
+_ test_readiness_observation_timeout_preserves_active_handle[AuditAfterViewer] _
+
+viewer_type = <class 'test_viewer_process_ownership.AuditAfterViewer'>
+
+    @pytest.mark.parametrize("viewer_type", VIEWERS)
+    def test_readiness_observation_timeout_preserves_active_handle(viewer_type):
+        child = DeclaredChild()
+        viewer = viewer_type(child)
+        viewer.start()
+        assert not viewer.wait_for_ready(timeout=30)
+        assert viewer.ready_observations == [30]
+>       assert viewer.process is child and viewer.is_running
+
+tests/test_viewer_process_ownership.py:105: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <test_viewer_process_ownership.AuditAfterViewer object at 0x7f435861e2a0>
+
+    @property
+    def is_running(self) -> bool:
+        if not self.process:
+            return False
+>       return self.process.poll() is None
+E       AttributeError: 'DeclaredChild' object has no attribute 'poll'
+
+src/zmqruntime/streaming/process_manager.py:48: AttributeError
+_ test_failed_acquisition_cleanup_retains_child_after_manager_removal[AuditBeforeViewer] _
+
+viewer_type = <class 'test_viewer_process_ownership.AuditBeforeViewer'>
+
+    @pytest.mark.parametrize("viewer_type", VIEWERS)
+    def test_failed_acquisition_cleanup_retains_child_after_manager_removal(viewer_type):
+        ViewerStateManager._instance = None
+        manager = ViewerStateManager.get_instance()
+        child = DeclaredChild()
+        viewer = viewer_type(child)
+        try:
+            with pytest.raises(TimeoutError, match="after 30s"):
+>               manager.get_or_create_viewer("declaration-only", 5999, lambda: viewer,
+                                             ready_timeout=30)
+
+tests/test_viewer_process_ownership.py:118: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/zmqruntime/viewer_state.py:222: in get_or_create_viewer
+    self._start_and_wait(instance, wait_for_ready, ready_timeout)
+src/zmqruntime/viewer_state.py:251: in _start_and_wait
+    self._wait_for_viewer_ready(instance, timeout)
+src/zmqruntime/viewer_state.py:274: in _wait_for_viewer_ready
+    if not instance.visualizer.is_running:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <test_viewer_process_ownership.AuditBeforeViewer object at 0x7f435861ef60>
+
+    @property
+    def is_running(self) -> bool:
+        if not self.process:
+            return False
+>       return self.process.poll() is None
+E       AttributeError: 'DeclaredChild' object has no attribute 'poll'
+
+src/zmqruntime/streaming/process_manager.py:48: AttributeError
+------------------------------ Captured log call -------------------------------
+WARNING  zmqruntime.viewer_state:viewer_state.py:295 Error stopping viewer during removal: 'DeclaredChild' object has no attribute 'poll'
+_ test_failed_acquisition_cleanup_retains_child_after_manager_removal[AuditAfterViewer] _
+
+viewer_type = <class 'test_viewer_process_ownership.AuditAfterViewer'>
+
+    @pytest.mark.parametrize("viewer_type", VIEWERS)
+    def test_failed_acquisition_cleanup_retains_child_after_manager_removal(viewer_type):
+        ViewerStateManager._instance = None
+        manager = ViewerStateManager.get_instance()
+        child = DeclaredChild()
+        viewer = viewer_type(child)
+        try:
+            with pytest.raises(TimeoutError, match="after 30s"):
+>               manager.get_or_create_viewer("declaration-only", 5999, lambda: viewer,
+                                             ready_timeout=30)
+
+tests/test_viewer_process_ownership.py:118: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/zmqruntime/viewer_state.py:222: in get_or_create_viewer
+    self._start_and_wait(instance, wait_for_ready, ready_timeout)
+src/zmqruntime/viewer_state.py:251: in _start_and_wait
+    self._wait_for_viewer_ready(instance, timeout)
+src/zmqruntime/viewer_state.py:274: in _wait_for_viewer_ready
+    if not instance.visualizer.is_running:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <test_viewer_process_ownership.AuditAfterViewer object at 0x7f435861fc20>
+
+    @property
+    def is_running(self) -> bool:
+        if not self.process:
+            return False
+>       return self.process.poll() is None
+E       AttributeError: 'DeclaredChild' object has no attribute 'poll'
+
+src/zmqruntime/streaming/process_manager.py:48: AttributeError
+------------------------------ Captured log call -------------------------------
+WARNING  zmqruntime.viewer_state:viewer_state.py:295 Error stopping viewer during removal: 'DeclaredChild' object has no attribute 'poll'
+__ test_unfinished_stop_does_not_discard_or_replace_child[AuditBeforeViewer] ___
+
+viewer_type = <class 'test_viewer_process_ownership.AuditBeforeViewer'>
+
+    @pytest.mark.parametrize("viewer_type", VIEWERS)
+    def test_unfinished_stop_does_not_discard_or_replace_child(viewer_type):
+        child = UnfinishedChild()
+        viewer = viewer_type(child)
+        viewer.start()
+        with pytest.raises(TimeoutError, match="controlled exact-child stop timeout"):
+>           viewer.force_stop(timeout=0.25)
+
+tests/test_viewer_process_ownership.py:137: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/zmqruntime/streaming/process_manager.py:42: in force_stop
+    self.stop(timeout=timeout)
+tests/test_viewer_process_ownership.py:67: in stop
+    return super().stop(timeout=timeout)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <test_viewer_process_ownership.AuditBeforeViewer object at 0x7f43586b4470>
+timeout = 0.25
+
+    def stop(self, timeout: float = 5.0):
+        """Stop the visualizer subprocess."""
+        with self._lock:
+            if not self.process:
+                return
+>           if self.process.poll() is None:
+E           AttributeError: 'UnfinishedChild' object has no attribute 'poll'
+
+src/zmqruntime/streaming/process_manager.py:32: AttributeError
+___ test_unfinished_stop_does_not_discard_or_replace_child[AuditAfterViewer] ___
+
+viewer_type = <class 'test_viewer_process_ownership.AuditAfterViewer'>
+
+    @pytest.mark.parametrize("viewer_type", VIEWERS)
+    def test_unfinished_stop_does_not_discard_or_replace_child(viewer_type):
+        child = UnfinishedChild()
+        viewer = viewer_type(child)
+        viewer.start()
+        with pytest.raises(TimeoutError, match="controlled exact-child stop timeout"):
+>           viewer.force_stop(timeout=0.25)
+
+tests/test_viewer_process_ownership.py:137: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/zmqruntime/streaming/process_manager.py:42: in force_stop
+    self.stop(timeout=timeout)
+tests/test_viewer_process_ownership.py:67: in stop
+    return super().stop(timeout=timeout)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <test_viewer_process_ownership.AuditAfterViewer object at 0x7f43586b4c80>
+timeout = 0.25
+
+    def stop(self, timeout: float = 5.0):
+        """Stop the visualizer subprocess."""
+        with self._lock:
+            if not self.process:
+                return
+>           if self.process.poll() is None:
+E           AttributeError: 'UnfinishedChild' object has no attribute 'poll'
+
+src/zmqruntime/streaming/process_manager.py:32: AttributeError
+_____ test_preexisting_terminal_status_survives_cleanup[AuditBeforeViewer] _____
+
+viewer_type = <class 'test_viewer_process_ownership.AuditBeforeViewer'>
+
+    @pytest.mark.parametrize("viewer_type", VIEWERS)
+    def test_preexisting_terminal_status_survives_cleanup(viewer_type):
+        child = DeclaredChild()
+        child.alive = False
+        child.terminal = ProcessExit(7)
+        viewer = viewer_type(child)
+        viewer.start()
+>       viewer.stop()
+
+tests/test_viewer_process_ownership.py:151: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_viewer_process_ownership.py:67: in stop
+    return super().stop(timeout=timeout)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <test_viewer_process_ownership.AuditBeforeViewer object at 0x7f435861fef0>
+timeout = 5.0
+
+    def stop(self, timeout: float = 5.0):
+        """Stop the visualizer subprocess."""
+        with self._lock:
+            if not self.process:
+                return
+>           if self.process.poll() is None:
+E           AttributeError: 'DeclaredChild' object has no attribute 'poll'
+
+src/zmqruntime/streaming/process_manager.py:32: AttributeError
+_____ test_preexisting_terminal_status_survives_cleanup[AuditAfterViewer] ______
+
+viewer_type = <class 'test_viewer_process_ownership.AuditAfterViewer'>
+
+    @pytest.mark.parametrize("viewer_type", VIEWERS)
+    def test_preexisting_terminal_status_survives_cleanup(viewer_type):
+        child = DeclaredChild()
+        child.alive = False
+        child.terminal = ProcessExit(7)
+        viewer = viewer_type(child)
+        viewer.start()
+>       viewer.stop()
+
+tests/test_viewer_process_ownership.py:151: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_viewer_process_ownership.py:67: in stop
+    return super().stop(timeout=timeout)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <test_viewer_process_ownership.AuditAfterViewer object at 0x7f435861fbf0>
+timeout = 5.0
+
+    def stop(self, timeout: float = 5.0):
+        """Stop the visualizer subprocess."""
+        with self._lock:
+            if not self.process:
+                return
+>           if self.process.poll() is None:
+E           AttributeError: 'DeclaredChild' object has no attribute 'poll'
+
+src/zmqruntime/streaming/process_manager.py:32: AttributeError
+_____ test_shared_initialization_reaches_independent_downstream_capability _____
+
+    def test_shared_initialization_reaches_independent_downstream_capability():
+        class InitializedCapability:
+            def __init__(self):
+                super().__init__()
+                self.capability_initialized = True
+    
+        class AnotherDeclaredViewer(DeclaredViewer, InitializedCapability):
+            pass
+    
+        viewer = AnotherDeclaredViewer(DeclaredChild())
+>       assert viewer.capability_initialized
+E       AttributeError: 'AnotherDeclaredViewer' object has no attribute 'capability_initialized'
+
+tests/test_viewer_process_ownership.py:177: AttributeError
+=========================== short test summary info ============================
+FAILED tests/test_viewer_process_ownership.py::test_stop_delegates_once_and_retains_exact_exit[AuditBeforeViewer]
+FAILED tests/test_viewer_process_ownership.py::test_stop_delegates_once_and_retains_exact_exit[AuditAfterViewer]
+FAILED tests/test_viewer_process_ownership.py::test_readiness_observation_timeout_preserves_active_handle[AuditBeforeViewer]
+FAILED tests/test_viewer_process_ownership.py::test_readiness_observation_timeout_preserves_active_handle[AuditAfterViewer]
+FAILED tests/test_viewer_process_ownership.py::test_failed_acquisition_cleanup_retains_child_after_manager_removal[AuditBeforeViewer]
+FAILED tests/test_viewer_process_ownership.py::test_failed_acquisition_cleanup_retains_child_after_manager_removal[AuditAfterViewer]
+FAILED tests/test_viewer_process_ownership.py::test_unfinished_stop_does_not_discard_or_replace_child[AuditBeforeViewer]
+FAILED tests/test_viewer_process_ownership.py::test_unfinished_stop_does_not_discard_or_replace_child[AuditAfterViewer]
+FAILED tests/test_viewer_process_ownership.py::test_preexisting_terminal_status_survives_cleanup[AuditBeforeViewer]
+FAILED tests/test_viewer_process_ownership.py::test_preexisting_terminal_status_survives_cleanup[AuditAfterViewer]
+FAILED tests/test_viewer_process_ownership.py::test_shared_initialization_reaches_independent_downstream_capability
+========================= 11 failed, 2 passed in 0.31s =========================
+Command exited with non-zero status 1
+	Command being timed: "timeout --signal=TERM --kill-after=3s 60s taskset -c 0 /home/ts/wt/openhcs-generated-inputs-installed-parent-20261001/.venv/bin/python -I -B -c import sys; sys.path.insert(0,"/home/ts/wt/zmqruntime-cold-start-355-20261001/src"); import pytest; raise SystemExit(pytest.main(["-v","-o","addopts=","-p","no:cacheprovider","--basetemp=/home/ts/.cache/agent-scratch/zmqruntime-viewer-owner-385-20261001/pytest-red","tests/test_viewer_process_ownership.py"]))"
+	User time (seconds): 0.49
+	System time (seconds): 0.06
+	Percent of CPU this job got: 102%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.55
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 45644
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 10532
+	Voluntary context switches: 33
+	Involuntary context switches: 92
+	Swaps: 0
+	File system inputs: 72
+	File system outputs: 48
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 1
