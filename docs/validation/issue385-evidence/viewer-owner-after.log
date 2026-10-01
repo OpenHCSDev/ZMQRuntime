@@ -1,0 +1,87 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-8.3.5, pluggy-1.6.0 -- /home/ts/wt/openhcs-generated-inputs-installed-parent-20261001/.venv/bin/python
+rootdir: /home/ts/wt/zmqruntime-cold-start-355-20261001
+configfile: pyproject.toml
+collecting ... collected 56 items
+
+tests/test_viewer_process_ownership.py::test_stop_delegates_once_and_retains_exact_exit[AuditBeforeViewer] PASSED [  1%]
+tests/test_viewer_process_ownership.py::test_stop_delegates_once_and_retains_exact_exit[AuditAfterViewer] PASSED [  3%]
+tests/test_viewer_process_ownership.py::test_readiness_observation_timeout_preserves_active_handle[AuditBeforeViewer] PASSED [  5%]
+tests/test_viewer_process_ownership.py::test_readiness_observation_timeout_preserves_active_handle[AuditAfterViewer] PASSED [  7%]
+tests/test_viewer_process_ownership.py::test_failed_acquisition_cleanup_retains_child_after_manager_removal[AuditBeforeViewer] PASSED [  8%]
+tests/test_viewer_process_ownership.py::test_failed_acquisition_cleanup_retains_child_after_manager_removal[AuditAfterViewer] PASSED [ 10%]
+tests/test_viewer_process_ownership.py::test_unfinished_stop_does_not_discard_or_replace_child[AuditBeforeViewer] PASSED [ 12%]
+tests/test_viewer_process_ownership.py::test_unfinished_stop_does_not_discard_or_replace_child[AuditAfterViewer] PASSED [ 14%]
+tests/test_viewer_process_ownership.py::test_preexisting_terminal_status_survives_cleanup[AuditBeforeViewer] PASSED [ 16%]
+tests/test_viewer_process_ownership.py::test_preexisting_terminal_status_survives_cleanup[AuditAfterViewer] PASSED [ 17%]
+tests/test_viewer_process_ownership.py::test_unstarted_viewer_never_fabricates_an_incarnation[AuditBeforeViewer] PASSED [ 19%]
+tests/test_viewer_process_ownership.py::test_unstarted_viewer_never_fabricates_an_incarnation[AuditAfterViewer] PASSED [ 21%]
+tests/test_viewer_process_ownership.py::test_shared_initialization_reaches_independent_downstream_capability PASSED [ 23%]
+tests/test_process_manager.py::test_visualizer_process_manager_requires_concrete_launch_authority PASSED [ 25%]
+tests/test_process_manager.py::test_visualizer_process_manager_has_no_parallel_command_or_environment_hooks PASSED [ 26%]
+tests/test_viewer_state.py::test_failed_viewer_start_uses_force_stop PASSED [ 28%]
+tests/test_viewer_state.py::test_stop_all_viewers_uses_force_stop PASSED [ 30%]
+tests/test_viewer_state.py::test_viewer_manager_delegates_the_full_readiness_timeout PASSED [ 32%]
+tests/test_viewer_state.py::test_viewer_state_subscription_owns_idempotent_release PASSED [ 33%]
+tests/test_viewer_state.py::test_reuse_admission_runs_atomically_and_preserves_rejected_viewer PASSED [ 35%]
+tests/test_viewer_state.py::test_live_external_factory_is_registered_without_start PASSED [ 37%]
+tests/test_cold_start_activity.py::test_same_readiness_owner_survives_cold_work_and_bounds_terminal_controls[case0] PASSED [ 39%]
+tests/test_cold_start_activity.py::test_same_readiness_owner_survives_cold_work_and_bounds_terminal_controls[case1] PASSED [ 41%]
+tests/test_cold_start_activity.py::test_same_readiness_owner_survives_cold_work_and_bounds_terminal_controls[case2] PASSED [ 42%]
+tests/test_cold_start_activity.py::test_same_readiness_owner_survives_cold_work_and_bounds_terminal_controls[case3] PASSED [ 44%]
+tests/test_cold_start_activity.py::test_same_readiness_owner_survives_cold_work_and_bounds_terminal_controls[case4] PASSED [ 46%]
+tests/test_cold_start_activity.py::test_same_readiness_owner_survives_cold_work_and_bounds_terminal_controls[case5] PASSED [ 48%]
+tests/test_cold_start_activity.py::test_same_readiness_owner_survives_cold_work_and_bounds_terminal_controls[case6] PASSED [ 50%]
+tests/test_cold_start_activity.py::test_same_readiness_owner_survives_cold_work_and_bounds_terminal_controls[case7] PASSED [ 51%]
+tests/test_cold_start_activity.py::test_same_readiness_owner_survives_cold_work_and_bounds_terminal_controls[case8] PASSED [ 53%]
+tests/test_cold_start_activity.py::test_work_samples_reject_pid_reuse_and_keep_exact_descendant_identity PASSED [ 55%]
+tests/test_cold_start_activity.py::test_async_attempt_cancellation_reaps_same_worker_before_returning PASSED [ 57%]
+tests/test_cold_start_activity.py::test_unavailable_work_does_not_manufacture_activity_on_access_return PASSED [ 58%]
+tests/test_startup.py::test_only_connected_endpoint_accepts_requests[disconnected] PASSED [ 60%]
+tests/test_startup.py::test_only_connected_endpoint_accepts_requests[checking_endpoint] PASSED [ 62%]
+tests/test_startup.py::test_only_connected_endpoint_accepts_requests[starting_process] PASSED [ 64%]
+tests/test_startup.py::test_only_connected_endpoint_accepts_requests[loading_config] PASSED [ 66%]
+tests/test_startup.py::test_only_connected_endpoint_accepts_requests[importing_runtime] PASSED [ 67%]
+tests/test_startup.py::test_only_connected_endpoint_accepts_requests[creating_server] PASSED [ 69%]
+tests/test_startup.py::test_only_connected_endpoint_accepts_requests[binding_endpoint] PASSED [ 71%]
+tests/test_startup.py::test_only_connected_endpoint_accepts_requests[server_ready] PASSED [ 73%]
+tests/test_startup.py::test_only_connected_endpoint_accepts_requests[connected] PASSED [ 75%]
+tests/test_startup.py::test_only_connected_endpoint_accepts_requests[preparing_capabilities] PASSED [ 76%]
+tests/test_startup.py::test_only_connected_endpoint_accepts_requests[failed] PASSED [ 78%]
+tests/test_startup.py::test_startup_status_channel_roundtrips_incremental_typed_events PASSED [ 80%]
+tests/test_startup.py::test_startup_monitor_owns_relay_failure_and_process_exit_state PASSED [ 82%]
+tests/test_startup.py::test_cancellation_observer_composes_with_startup_monitor PASSED [ 83%]
+tests/test_startup.py::test_cancelled_client_does_not_spawn_an_endpoint PASSED [ 85%]
+tests/test_startup.py::test_connection_attempt_can_share_its_callers_cancellation_authority PASSED [ 87%]
+tests/test_startup.py::test_concurrent_attempts_use_their_exact_cancellation_tokens PASSED [ 89%]
+tests/test_startup.py::test_each_startup_phase_executes_its_owned_presentation_leaf PASSED [ 91%]
+tests/test_startup.py::test_startup_failure_semantics_are_owned_by_phase_members PASSED [ 92%]
+tests/test_startup.py::test_endpoint_presence_semantics_are_owned_by_phase_members PASSED [ 94%]
+tests/test_startup.py::test_client_publishes_generic_connection_lifecycle PASSED [ 96%]
+tests/test_startup.py::test_client_publishes_terminal_startup_exception PASSED [ 98%]
+tests/test_startup.py::test_readiness_timeout_is_an_inactivity_deadline PASSED [100%]
+
+============================== 56 passed in 0.36s ==============================
+	Command being timed: "timeout --signal=TERM --kill-after=3s 60s taskset -c 0 /home/ts/wt/openhcs-generated-inputs-installed-parent-20261001/.venv/bin/python -I -B -c import sys; sys.path.insert(0,"/home/ts/wt/zmqruntime-cold-start-355-20261001/src"); import pytest; raise SystemExit(pytest.main(["-v","-o","addopts=","-p","no:cacheprovider","--basetemp=/home/ts/.cache/agent-scratch/zmqruntime-viewer-owner-385-20261001/pytest-green","tests/test_viewer_process_ownership.py","tests/test_process_manager.py","tests/test_viewer_state.py","tests/test_cold_start_activity.py","tests/test_startup.py"]))"
+	User time (seconds): 0.52
+	System time (seconds): 0.06
+	Percent of CPU this job got: 102%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.58
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 46064
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 10566
+	Voluntary context switches: 49
+	Involuntary context switches: 120
+	Swaps: 0
+	File system inputs: 32
+	File system outputs: 120
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
