@@ -1,0 +1,23 @@
+	Command being timed: "timeout 60s taskset -c 0 /home/ts/.local/share/uv/python/cpython-3.14-linux-x86_64-gnu/bin/python3.14 -I -B -c import sys;sys.path[:0]=["/home/ts/wt/comms-ratchet-pinned-ui348-20261001/src","/home/ts/wt/basicpy-live-candidate-20260930/.venv/lib/python3.12/site-packages"];from agent_comms.debt_ratchet import main;sys.argv=["agent-comms-ratchet","--root","src/zmqruntime","--base","85c8284f8e729e3804ece6fe5236769c294d2962","--head","23097e26c919b6c1b9621d009ee28f01626f1a65"];sys.exit(main())"
+	User time (seconds): 2.91
+	System time (seconds): 0.32
+	Percent of CPU this job got: 83%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:03.89
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 48332
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 60786
+	Voluntary context switches: 1344
+	Involuntary context switches: 1231
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 80
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

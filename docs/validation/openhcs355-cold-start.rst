@@ -52,6 +52,16 @@ New-case proof: the test's declared EndpointProcess leaf provides identity/nativ
 hooks and inherits the whole startup mechanism, requiring zero consumer edits.
 The OpenHCS guard asserts the exact ancestor readiness callable is inherited.
 
+Explicit diff review: IMPL-1/3/4/5 introduces no consumer string/type switch or
+half-owned leaf; MEMB-1/2/5 adds no roster/catalogue/record mirror. IMPL-12/13
+removes copied readiness and standardizes exact-child observation on the ABC.
+TIME-1/3/9 deletes the old Boolean hook, probe and deadline facade in lockstep.
+OpenHCS's existing ExecutionClient plus EndpointCompatibilityClientABC bases
+retain independent capabilities and cooperative super() through declared MRO.
+Runtime observer instances are composed, not registered as a new class roster.
+51 production lines deleted, 110 added versus85c; no new declaration registry.
+This is an authored source patch, not an NRA DSL transaction/native proof.
+
 Scope and limits
 -----------------
 
@@ -81,15 +91,22 @@ owner, domain journal retention/cleanup, async cancellation retirement and
 concurrent service reuse. Kernel512MiB/no swap, outer60s, tasksetCPU0, numerical
 thread pools1, exact frozen installed3.12 interpreter for source checks.
 Original pinned R0 uses its own Python3.14 owner with read-only dependencies.
+Dependency source35pass:1.03s wall,43496KiB peak. Paired OpenHCS2c2c6ccb
+source23pass:6.79s wall,226284KiB peak, two pytest configuration warnings.
+Three tests/test_execution.py fake signatures migrated and linted only; the
+full native execution suite is outside this source checkpoint's acceptance.
 
 First dependency R0 at806faa1 rejected GodClassExcess growth126->129. Preserve
 that JSON/resource receipt. The final single hook removes the adapter/branch
 mechanism, not comments: original R0 now reports126->101, zero positive deltas.
+Final177 metric projections,3.89s wall/48332KiB peak; OpenHCS has5161 projections,
+zero positive deltas, GodClassExcess -46,16.40s wall/87332KiB peak.
 No detector is copied or allowance added. Other checks and resource footers are
 in the retained logs, not inferred from passing pytest.
 
 NRA local full-payload semantic output is retained as an ownership observation,
-not R1/global qualification: it has no scan_status/omission witness or complete
+not R1/global qualification: it is an intermediate pre23097 working-tree scan,
+not a scan of the final frozen source. It has no scan_status/omission witness or complete
 dependency context. Do not interpret its absence of R1 records as zero R1 debt.
 Full-context qualification is still limited by independently owned issue357
 (Dewey); this source fix does not alter the tool or repeat that live attempt.
@@ -116,3 +133,32 @@ claimed absent. Do not clean unrelated shared caches. All later caches use an
 explicit owned root. Initial existing startup tests accessed default shared
 5555/6555 lock paths; both file timestamps predate this task and neither file
 was deleted. Further tests redirect paths into owned fixtures.
+
+Evidence retention and cleanup
+-------------------------------
+
+docs/validation/issue355-evidence retains startup-checkpoint.log,
+dep-r0.json.gz/resources.txt, dep-r0-rejected-806faa1.json.gz/resources.txt and
+nra-local.json.gz/resources.txt. Gzip is lossless; original R0 revision fields
+identify the source audited. Retain the rejected806faa1 checkpoint in git.
+NRA local observation:16.28s wall/172224KiB peak, exit0, not global completion.
+No equivalent native/code-mod proof is claimed. Original pinned R0 tool is
+comms-ratchet-pinned-ui348-20261001 at3b03785f45df2ef5dc62ba6aed99294192ecbb01.
+
+Source-test recipe: exact frozen installed3.12 Python with owned dependency src
+on PYTHONPATH; PYTHONDONTWRITEBYTECODE=1, PYTEST_DISABLE_PLUGIN_AUTOLOAD=1,
+OMP/OPENBLAS/MKL/NUMBA thread pools1, explicit owned XDG_CACHE_HOME. Use
+systemd-run --user --scope with MemoryMax=512M, MemorySwapMax=0, CPUQuota=100%,
+/usr/bin/time-v timeout60s taskset-c0 python-mpytest tests/test_cold_start_activity.py
+tests/test_startup.py --noconftest -o addopts='' -p no:cacheprovider and an owned
+--basetemp. Retained resource logs contain exact inner commands.
+
+After evidence retention and confirming no owned workers remained, removed only
+the exact .validation directories in both issue355 worktrees, the two extracted
+binary source-test symlinks in OpenHCS and /tmp/pytest-of-ts/pytest-994 (only
+this task's generated synthetic journals). Those disposable artifacts are
+regenerable, not retained source. Shared lock files and shared caches are not
+deleted; the initial cache-retention effects above cannot be claimed absent.
+Parent wheel/evidence, frozen science, PR351 and installed dependencies remain
+untouched by this cleanup. See the paired OpenHCS receipt for exact binary
+provenance, cleanup paths and installed-acceptance boundary.
