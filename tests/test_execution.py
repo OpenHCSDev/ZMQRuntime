@@ -787,6 +787,8 @@ class EndpointPolicyExecutionClient(ExecutionClient):
         self,
         process: EndpointProcess,
         timeout: float = 10.0,
+        *,
+        operation_deadline=None,
     ):
         return self._try_connect_to_existing(self.port)
 
@@ -860,6 +862,8 @@ def test_connect_cleans_owned_process_when_readiness_hook_raises():
             self,
             process: EndpointProcess,
             timeout: float = 10.0,
+            *,
+            operation_deadline=None,
         ):
             del process, timeout
             raise RuntimeError("readiness hook failed")
@@ -1238,6 +1242,8 @@ class ConcurrentStartupExecutionClient(ExecutionClient):
         self,
         process: EndpointProcess,
         timeout: float = 10.0,
+        *,
+        operation_deadline=None,
     ):
         self.state["ready"].set()
         time.sleep(0.1)

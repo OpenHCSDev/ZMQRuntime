@@ -1101,17 +1101,11 @@ class ZMQClient(ABC):
             )
             process = endpoint_process(self._spawn_server_process())
             try:
-                if operation_deadline is None:
-                    endpoint = self._wait_for_endpoint_ready(
-                        process,
-                        timeout=timeout,
-                    )
-                else:
-                    endpoint = self._wait_for_endpoint_ready_before_deadline(
-                        process,
-                        timeout=timeout,
-                        operation_deadline=operation_deadline,
-                    )
+                endpoint = self._wait_for_endpoint_ready(
+                    process,
+                    timeout=timeout,
+                    operation_deadline=operation_deadline,
+                )
             except BaseException:
                 process.stop()
                 self.endpoint.cleanup(self.config)
@@ -1267,33 +1261,11 @@ class ZMQClient(ABC):
     def _existing_endpoint_probe_timeout_ms(timeout: float) -> int:
         return max(1, min(int(timeout * 1000), 5000))
 
-    def _wait_for_endpoint_ready_before_deadline(
-        self,
-        process: EndpointProcess,
-        *,
-        timeout: float,
-        operation_deadline: OperationDeadline,
-    ) -> PongResponse | None:
-        """Apply a total deadline without changing the inactivity policy."""
-        return self._wait_for_endpoint_ready_observed(
-            process,
-            timeout=timeout,
-            operation_deadline=operation_deadline,
-        )
-
     def _wait_for_endpoint_ready(
         self,
         process: EndpointProcess,
         timeout: float = 10.0,
-    ) -> PongResponse | None:
-        """Return the one authoritative startup handshake."""
-        return self._wait_for_endpoint_ready_observed(process, timeout=timeout)
-
-    def _wait_for_endpoint_ready_observed(
-        self,
-        process: EndpointProcess,
         *,
-        timeout: float,
         operation_deadline: OperationDeadline | None = None,
     ) -> PongResponse | None:
         """Shared exact-child activity, cancellation and handshake algorithm."""

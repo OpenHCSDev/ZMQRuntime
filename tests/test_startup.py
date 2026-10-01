@@ -92,6 +92,8 @@ class _StartupClient(ZMQClient):
         self,
         process,
         timeout: float = 10.0,
+        *,
+        operation_deadline=None,
     ) -> PongResponse:
         return PongResponse(
             port=self.port,
