@@ -102,6 +102,17 @@ def test_listener_gone_is_not_process_exit(fixture):
     cleanup.assert_not_called()
 
 
+def test_owned_close_requires_exit_even_when_supplied_current_identity(fixture, monkeypatch):
+    client, _ping, _socket, terminate, _cleanup = fixture
+    monkeypatch.setattr(ProcessIdentity, "current", classmethod(lambda _cls: IDENTITY))
+    result = close(client)
+    assert not result.succeeded
+    assert result.endpoint_terminated
+    assert result.process_exited is False
+    assert result.process_identity == IDENTITY
+    terminate.assert_called_once()
+
+
 def test_force_completes_only_after_exact_process_exit(fixture, monkeypatch):
     client, ping, socket, terminate, cleanup = fixture
     alive = [True]

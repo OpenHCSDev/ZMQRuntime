@@ -710,8 +710,7 @@ class _EndpointShutdownOperation:
             # the existing transport owner proves stale, not a foreign socket.
             self.target.cleanup_stale_addresses(self.config)
         endpoint_terminated = not self.target.occupied_ports(self.config)
-        # Remote/unidentified endpoints can prove transport cessation only.
-        succeeded = endpoint_terminated and (exited is True or self.process_identity is None)
+        succeeded = endpoint_terminated and self._process_exit_satisfied(exited)
         return EndpointShutdownResult(
             succeeded=succeeded,
             endpoint_terminated=endpoint_terminated,
@@ -720,6 +719,13 @@ class _EndpointShutdownOperation:
             request_attempted=self.request_attempted,
             acknowledged=self.acknowledged,
         )
+
+    def _process_exit_satisfied(self, exited: bool | None) -> bool:
+        """Endpoint shutdown may leave its calling host alive, never a child."""
+
+        if exited is True or self.process_identity is None:
+            return True
+        return exited is False and self.process_identity.is_current()
 
     def _process_exited(self) -> bool | None:
         if (
@@ -731,6 +737,13 @@ class _EndpointShutdownOperation:
             return None
         alive = self.process_identity.is_alive()
         return None if alive is None else not alive
+
+
+class _OwnedProcessShutdownOperation(_EndpointShutdownOperation):
+    """Owned-child close requires exit proof even if supplied the caller identity."""
+
+    def _process_exit_satisfied(self, exited: bool | None) -> bool:
+        return exited is True
 
 
 class EndpointShutdownMode(str, Enum):
@@ -799,7 +812,7 @@ class EndpointShutdownMode(str, Enum):
                 raise EndpointConnectionCancelledError("Close cancelled before dispatch")
             target.require_startup_owner(config, process_identity)
             operation_deadline.remaining_seconds()
-            return _EndpointShutdownOperation.run(
+            return _OwnedProcessShutdownOperation.run(
                 target, config, self, deadline=operation_deadline,
                 expected_process_identity=process_identity,
             )

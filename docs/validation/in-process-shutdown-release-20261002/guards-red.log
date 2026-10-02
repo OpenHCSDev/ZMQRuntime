@@ -1,0 +1,68 @@
+.FF.F                                                                    [100%]
+=================================== FAILURES ===================================
+_____ test_exact_process_owner_refuses_to_signal_its_own_incarnation[0.5] ______
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fd20ff4b920>
+timeout = 0.5
+
+    @pytest.mark.parametrize("timeout", [0.0, 0.5])
+    def test_exact_process_owner_refuses_to_signal_its_own_incarnation(monkeypatch, timeout):
+        identity = ProcessIdentity.current()
+        process = Mock(pid=identity.pid)
+        process.create_time.return_value = identity.create_time
+        process.is_running.return_value = True
+        monkeypatch.setattr("zmqruntime.messages.psutil.Process", lambda *_: process)
+    
+>       assert identity.terminate(timeout=timeout) is False
+E       assert True is False
+E        +  where True = terminate(timeout=0.5)
+E        +    where terminate = ProcessIdentity(pid=2901408, create_time=1790908845.57).terminate
+
+tests/test_in_process_shutdown.py:23: AssertionError
+_ test_in_process_completion_keeps_host_exit_and_endpoint_disposition_distinct[False] _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fd20ffd0200>
+occupied = False
+
+    @pytest.mark.parametrize("occupied", [False, True])
+    def test_in_process_completion_keeps_host_exit_and_endpoint_disposition_distinct(
+        monkeypatch, occupied
+    ):
+        identity = ProcessIdentity.current()
+        target = TransportEndpoint("127.0.0.1", 47777, TransportMode.TCP)
+        monkeypatch.setattr(TransportEndpoint, "ping", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            TransportEndpoint, "occupied_ports",
+            lambda *_: frozenset((47777,)) if occupied else frozenset(),
+        )
+        operation = _EndpointShutdownOperation(
+            target=target,
+            deadline=OperationDeadline.after_milliseconds(100, operation="source close"),
+            config=ZMQConfig(),
+            process_identity=identity,
+            acknowledged=True,
+            request_attempted=True,
+        )
+        # Safety boundary for the red experiment; this must never send a real signal.
+        terminate = Mock(return_value=False)
+        monkeypatch.setattr(ProcessIdentity, "terminate", terminate)
+        result = operation.termination_result()
+    
+>       assert result.succeeded is not occupied
+E       assert False is not False
+E        +  where False = EndpointShutdownResult(succeeded=False, endpoint_terminated=True, process_identity=ProcessIdentity(pid=2901408, create_time=1790908845.57), process_exited=False, request_attempted=True, acknowledged=True).succeeded
+
+tests/test_in_process_shutdown.py:53: AssertionError
+_____________ test_current_identity_query_distinguishes_reused_pid _____________
+
+    def test_current_identity_query_distinguishes_reused_pid():
+        identity = ProcessIdentity.current()
+>       assert identity.is_current()
+E       AttributeError: 'ProcessIdentity' object has no attribute 'is_current'. Did you mean: 'current'?
+
+tests/test_in_process_shutdown.py:62: AttributeError
+=========================== short test summary info ============================
+FAILED tests/test_in_process_shutdown.py::test_exact_process_owner_refuses_to_signal_its_own_incarnation[0.5]
+FAILED tests/test_in_process_shutdown.py::test_in_process_completion_keeps_host_exit_and_endpoint_disposition_distinct[False]
+FAILED tests/test_in_process_shutdown.py::test_current_identity_query_distinguishes_reused_pid
+3 failed, 2 passed in 0.22s

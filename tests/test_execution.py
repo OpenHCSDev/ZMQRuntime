@@ -969,6 +969,8 @@ def test_shutdown_result_distinguishes_worker_stop_from_endpoint_termination():
     thread.join(timeout=2)
     assert forced.succeeded is True
     assert forced.endpoint_terminated is True
+    assert forced.process_exited is False
+    assert forced.process_identity == ProcessIdentity.current()
     assert not thread.is_alive()
 
 
