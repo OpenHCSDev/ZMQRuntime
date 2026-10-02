@@ -137,6 +137,14 @@ environment/install or live UI. Source acceptance is distinct from the tag
 publisher's installed candidate gate. The earlier source80 and330 receipts
 remain historical, not relabeled as evidence of this final candidate.
 
+Final original R0 base6800561 -> production39cb8d41b16f5bd629883ecbb739bfabcf0af7aa:
+178 metrics, zero positive deltas, all THREE changed production files included;
+4.46s/48268KiB/exit0. final-r0.json/resources retain the original tool output.
+Actual combined production diff reviewed against IMPL-2/12/13, IDEN-1/7/8 and
+TIME-3/5: one existing algorithm, small stricter inherited exit hook, original
+identity query owner, single canonical external Self declaration, no leaf switch,
+copied bootstrap, store, import fallback or operational placement change.
+
 Release and remaining gate
 ---------------------------
 
