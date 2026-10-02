@@ -75,10 +75,38 @@ consumer observes that C3 hook and the inherited algorithm on alive/dead cases.
 No generic consumer edits or hook table are needed to add this capability.
 The inherited strict leaf refuses alive-host success and admits exact exit.
 
+Shared contracts: shared-contracts.log has37 further passes in0.39s,
+43908KiB/process0.60s/exit0. Original shutdown batching, pair admission, deadlines,
+startup callback C3 hooks/concurrent scopes, cold work and progress projections
+remain covered. Total80 source controls, not the full hosted test suite.
+
+Original authenticated R0: existing read-only pinned tool at
+/home/ts/wt/openhcs-s1-original-ratchet-20261001,
+3b03785f45df2ef5dc62ba6aed99294192ecbb01, original Python3.14.2 and original
+read-only metaclass sourceca0a87e873f929b311a87a4d60cd3bfba315dbcf.
+debt_ratchet.py SHA256e323c94d49c2b72d9524a5169f123e64b4a6e46a41035ca9fb4497e49b6ca562.
+Same original CLI over the whole src/zmqruntime root, base6800561 -> sourceb63290a:
+171 metrics, zero positive deltas, exit0; both changed production files included.
+Process3.00s/48232KiB, original same CPU0/512MiB/no swap/60s bounds.
+No copied detector, fallback, restored UV cache or new environment.
+The retired old pinned WT was absent; another EXISTING checkout of the EXACT
+original tool revision is used without modifying it. An earlier default
+/usr/bin/python3.14 import failed because agent_comms was not installed there;
+no source guard result was claimed from that read-only probe.
+
+Cleanup: all diagnostic/test/guard handles terminal; recursive lsof found no
+open handles. Removed ONLY verified owned disposable test root
+/home/ts/.cache/agent-scratch/zmqruntime-release-143-20261002 (548KiB).
+Original collection, intercepted failure, red/green controls, resources and guard
+evidence are retained on persistent source/ledger paths. No other WT/cache/env
+or failed/uncertain scientific input was touched. Source-only guards are not
+a full/global NRA/R1 qualification or installed startup/lifecycle journey.
+
 Release and remaining gate
 ---------------------------
 
-Publish the source repair for review before normal main integration. Then use
+Source repair is visible in https://github.com/OpenHCSDev/ZMQRuntime/pull/14.
+Normal reviewed main integration is the remaining release-source gate. Then use
 the original scripts/release.py and trusted tag publisher for NEW v0.3.1 only.
 Observe the actual test/build/publication handle and original normal-index helper
 before admitting parent PolyStore's publisher. Source controls alone are not a
