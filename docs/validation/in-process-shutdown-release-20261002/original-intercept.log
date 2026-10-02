@@ -1,0 +1,63 @@
+INTERCEPTED_TERMINATION ProcessIdentity(pid=2900417, create_time=1790908801.41) CALLER ProcessIdentity(pid=2900417, create_time=1790908801.41) SAME_INCARNATION True TIMEOUT 4.85813332098769
+F
+=================================== FAILURES ===================================
+___ test_shutdown_result_distinguishes_worker_stop_from_endpoint_termination ___
+
+    def test_shutdown_result_distinguishes_worker_stop_from_endpoint_termination():
+        config = ZMQConfig(default_port=47777, control_port_offset=1000)
+        endpoint = TcpDataControlPortPairAuthority.acquire(config)
+        server = DummyExecutionServer(
+            port=endpoint.data_port,
+            host="127.0.0.1",
+            transport_mode=TransportMode.TCP,
+            config=config,
+        )
+        started = threading.Event()
+    
+        def serve() -> None:
+            server.start()
+            server._ready = True
+            started.set()
+            while server.is_running():
+                server.process_messages()
+                time.sleep(0.01)
+            server.stop()
+    
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        assert started.wait(timeout=2)
+    
+        graceful = ZMQClient.shutdown_endpoint_on_port(
+            endpoint.data_port,
+            mode=EndpointShutdownMode.GRACEFUL,
+            transport_mode=TransportMode.TCP,
+            host="127.0.0.1",
+            config=config,
+        )
+    
+        assert graceful.succeeded is True
+        assert graceful.endpoint_terminated is False
+        assert ping_control_port(
+            endpoint.data_port,
+            TransportMode.TCP,
+            host="127.0.0.1",
+            config=config,
+        )
+    
+        forced = ZMQClient.shutdown_endpoint_on_port(
+            endpoint.data_port,
+            mode=EndpointShutdownMode.FORCE,
+            transport_mode=TransportMode.TCP,
+            host="127.0.0.1",
+            config=config,
+        )
+    
+        thread.join(timeout=2)
+>       assert forced.succeeded is True
+E       assert False is True
+E        +  where False = EndpointShutdownResult(succeeded=False, endpoint_terminated=True, process_identity=ProcessIdentity(pid=2900417, create_time=1790908801.41), process_exited=False, request_attempted=True, acknowledged=True).succeeded
+
+tests/test_execution.py:970: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_execution.py::test_shutdown_result_distinguishes_worker_stop_from_endpoint_termination
+1 failed in 0.52s

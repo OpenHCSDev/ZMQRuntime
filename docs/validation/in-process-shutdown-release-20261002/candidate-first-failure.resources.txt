@@ -1,0 +1,25 @@
+Running as unit: run-p2928845-i15505630.scope; invocation ID: bcee5bd9b3954caf95a234ebdc17b983
+Command exited with non-zero status 1
+	Command being timed: "timeout 60s taskset -c 0 env PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONPATH=/home/ts/wt/zmqruntime-cold-start-355-20261001/src OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMBA_NUM_THREADS=1 /home/ts/wt/openhcs-generated-inputs-installed-parent-20261001/.venv/bin/python -B -c import runpy, sys; sys.argv=["run_candidate_source.py", "/home/ts/.cache/agent-scratch/zmqruntime-release-candidate-031-20261002/first-failure"]; import pytest; original=pytest.main; pytest.main=lambda args, **kwargs: original([*args, "-x", "--tb=short"], **kwargs); runpy.run_path("docs/validation/in-process-shutdown-release-20261002/run_candidate_source.py", run_name="__main__")"
+	User time (seconds): 2.73
+	System time (seconds): 0.22
+	Percent of CPU this job got: 71%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:04.16
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 55844
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 43253
+	Voluntary context switches: 241
+	Involuntary context switches: 698
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 24
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 1

@@ -1,0 +1,24 @@
+Running as unit: run-p2910660-i15497208.scope; invocation ID: a97d21d792bc4d0d99a71f854c7a62db
+	Command being timed: "timeout 60s taskset -c 0 env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/home/ts/wt/openhcs-s1-original-ratchet-20261001/src:/home/ts/code/projects/openhcs/external/metaclass-registry/src OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 /home/ts/.local/share/uv/python/cpython-3.14.2-linux-x86_64-gnu/bin/python3.14 -B -m agent_comms.debt_ratchet --root src/zmqruntime --base 6800561579ae38a359bbae81e46648548846ee10 --head b63290a98a139424577843357b949ee4747ae6c9"
+	User time (seconds): 2.60
+	System time (seconds): 0.27
+	Percent of CPU this job got: 95%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:03.00
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 48232
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 3
+	Minor (reclaiming a frame) page faults: 55336
+	Voluntary context switches: 1260
+	Involuntary context switches: 950
+	Swaps: 0
+	File system inputs: 224
+	File system outputs: 80
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
