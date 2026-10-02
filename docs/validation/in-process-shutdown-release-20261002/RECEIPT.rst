@@ -47,6 +47,18 @@ identity never downgrades an owned-child close into endpoint-only success.
 No mode/type/string switch, flag taxonomy, registry, duplicate loop or timeout.
 No compilation, kernel, catalog, startup feedback or readiness-placement edits.
 
+The already-terminal3.10 source CI job110683096841 on run36957327270 failed
+collection because viewer_protocol.py imported Self from typing, unavailable on
+the DECLARED supported Python3.10. Keep that interpreter/test lane, not a skip
+or floor increase. Use the external declaration owner typing_extensions.Self on
+EVERY interpreter, with its direct typing-extensions>=4.0.0 project requirement.
+The original primary changelog declares PEP673 support at4.0.0:
+https://github.com/python/typing_extensions/blob/main/CHANGELOG.md#release-400-november-14-2021
+Only the import seam changes; no wire schema, viewer algorithm or runtime hooks.
+New wire leaf plus independent cooperative audit capability works before/after
+the leaf in the real C3 chain, and its inherited constructor retains Self.
+The original job log is retained; no native3.10 local acceptance is claimed.
+
 Current catalog review: IDEN-1/7 separate endpoint cessation from host exit;
 IDEN-8 preserves exact incarnation comparisons; IMPL-12/13 preserve the original
 shared signal/shutdown mechanisms; IMPL-2 retains member-owned completion rather
@@ -101,6 +113,29 @@ Original collection, intercepted failure, red/green controls, resources and guar
 evidence are retained on persistent source/ledger paths. No other WT/cache/env
 or failed/uncertain scientific input was touched. Source-only guards are not
 a full/global NRA/R1 qualification or installed startup/lifecycle journey.
+
+Complete source-candidate follow-through
+---------------------------------------
+
+First full source candidate: candidate-source.log terminal124 at60.02s/241040KiB.
+No pass claim. Short first-failure diagnosis stopped at1 failure/14 passes,
+3.87s: the long owned fixture address exceeded Unix's actual107-byte IPC limit.
+Keep candidate-first-failure.log and the original timeout. The diagnostic via
+runpy did not register the direct-script autouse plugin; its IPC test nevertheless
+used the explicit owned tmp_path_factory directory, and created no home endpoint.
+
+Only the fixture root is shortened to persistent /home/ts/wt/z031. Original
+transport, sockets, assertions, test selection and60s resource ceiling remain.
+Per-case original pytest monkeypatch isolates home files in that owned root;
+the real spawned fixture children inherit this isolation. No user/backing state.
+The corrected complete source suite passed330 tests in15.69s/238064KiB.
+After the canonical Self import/dependency seam, candidate-final.log passed
+ALL332 tests in17.51s, process18.27s/237932KiB, with no skips/deselections.
+Original actual loopback/IPC, producer receipt, exact child, cancellation and
+source capability fixtures run; no OpenHCS native endpoint, science, provider,
+environment/install or live UI. Source acceptance is distinct from the tag
+publisher's installed candidate gate. The earlier source80 and330 receipts
+remain historical, not relabeled as evidence of this final candidate.
 
 Release and remaining gate
 ---------------------------
