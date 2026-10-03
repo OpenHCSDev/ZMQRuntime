@@ -327,6 +327,11 @@ class ProcessIdentity:
         process = psutil.Process(pid)
         return cls(pid=process.pid, create_time=process.create_time())
 
+    def is_current(self) -> bool:
+        """Whether this exact incarnation is the calling process, not a child."""
+
+        return self == self.current()
+
     def to_dict(self) -> Dict[str, Any]:
         return {"pid": self.pid, "create_time": self.create_time}
 
@@ -444,8 +449,14 @@ class ProcessIdentity:
         return samples
 
     def terminate(self, timeout: float = 5.0) -> bool:
-        """Terminate this incarnation within one budget, including escalation."""
+        """Terminate a different incarnation within one escalation budget.
 
+        An in-process endpoint can identify this caller. Closing that endpoint
+        does not authorize signalling its host, and cannot prove host exit.
+        """
+
+        if self.is_current():
+            return False
         if timeout <= 0:
             return self.is_alive() is False
         deadline = OperationDeadline.after_milliseconds(

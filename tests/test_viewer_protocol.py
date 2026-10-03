@@ -35,6 +35,41 @@ def test_native_viewport_declaration_owns_json_round_trip():
     )
 
 
+@pytest.mark.parametrize("audit_first", [False, True])
+def test_wire_owner_retains_self_and_cooperative_new_leaf(audit_first):
+    from dataclasses import dataclass
+    from typing import get_type_hints
+    from typing_extensions import Self
+    from zmqruntime.viewer_protocol import ViewerDeclaredWireValue
+
+    observations = []
+
+    class WireAudit(ViewerDeclaredWireValue):
+        @classmethod
+        def from_wire_mapping(cls, payload):
+            observations.append((cls, payload))
+            return super().from_wire_mapping(payload)
+
+    @dataclass(frozen=True)
+    class AddedLeaf(ViewerDeclaredWireValue):
+        value: int
+
+    class AuditBefore(WireAudit, AddedLeaf):
+        pass
+
+    class AuditAfter(AddedLeaf, WireAudit):
+        pass
+
+    owner = AuditBefore if audit_first else AuditAfter
+    payload = {"value": 7}
+    result = owner.from_wire_mapping(payload)
+    assert result.__class__ is owner
+    assert result.value == 7
+    assert result.to_wire_mapping() == payload
+    assert observations == [(owner, payload)]
+    assert get_type_hints(ViewerDeclaredWireValue.from_wire_mapping)["return"] is Self
+
+
 @pytest.mark.parametrize(
     "payload",
     [

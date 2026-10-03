@@ -1,0 +1,108 @@
+SOURCE_IMPORT /home/ts/wt/zmqruntime-cold-start-355-20261001/src/zmqruntime/__init__.py
+..............F
+=================================== FAILURES ===================================
+_ test_two_producers_return_exact_ids_and_close_independently[TransportMode.IPC] _
+tests/test_ack_return_route.py:70: in test_two_producers_return_exact_ids_and_close_independently
+    transfers = [ImageTransferIdentity.from_dict(receive(pipe)) for _, pipe in owners]
+tests/test_ack_return_route.py:51: in receive
+    return connection.recv()
+../../.pyenv/versions/3.12.3/lib/python3.12/multiprocessing/connection.py:250: in recv
+    buf = self._recv_bytes()
+../../.pyenv/versions/3.12.3/lib/python3.12/multiprocessing/connection.py:430: in _recv_bytes
+    buf = self._recv(4)
+../../.pyenv/versions/3.12.3/lib/python3.12/multiprocessing/connection.py:399: in _recv
+    raise EOFError
+E   EOFError
+----------------------------- Captured stderr call -----------------------------
+Fatal error in ack listener: ipc path "/home/ts/.cache/agent-scratch/zmqruntime-release-candidate-031-20261002/first-failure/ipc1/zmq-f9e6fe3e-d1b2-43fa-b868-a81c6863e7ae-0.sock" is longer than 107 characters (sizeof(sockaddr_un.sun_path)). zmq.IPC_PATH_MAX_LEN constant can be used to check addr length (if it is defined). (addr='ipc:///home/ts/.cache/agent-scratch/zmqruntime-release-candidate-031-20261002/first-failure/ipc1/zmq-f9e6fe3e-d1b2-43fa-b868-a81c6863e7ae-0.sock')
+Traceback (most recent call last):
+  File "/home/ts/wt/zmqruntime-cold-start-355-20261001/src/zmqruntime/ack_listener.py", line 229, in _listener_loop
+    ack_url = endpoint.transport_mode.declaration.bind_ack_socket(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ts/wt/zmqruntime-cold-start-355-20261001/src/zmqruntime/transport_modes.py", line 389, in bind_ack_socket
+    cls.bind_socket(endpoint_socket, host, port, config)
+  File "/home/ts/wt/zmqruntime-cold-start-355-20261001/src/zmqruntime/transport_modes.py", line 436, in bind_socket
+    endpoint_socket.bind(cls.endpoint_url(port, host, config))
+  File "/home/ts/code/projects/openhcs/.venv/lib/python3.12/site-packages/zmq/sugar/socket.py", line 322, in bind
+    super().bind(addr)
+  File "zmq/backend/cython/_zmq.py", line 1002, in zmq.backend.cython._zmq.Socket.bind
+    raise ZMQError(msg=msg)
+    ^^^^^^^^^^^
+zmq.error.ZMQError: ipc path "/home/ts/.cache/agent-scratch/zmqruntime-release-candidate-031-20261002/first-failure/ipc1/zmq-f9e6fe3e-d1b2-43fa-b868-a81c6863e7ae-0.sock" is longer than 107 characters (sizeof(sockaddr_un.sun_path)). zmq.IPC_PATH_MAX_LEN constant can be used to check addr length (if it is defined). (addr='ipc:///home/ts/.cache/agent-scratch/zmqruntime-release-candidate-031-20261002/first-failure/ipc1/zmq-f9e6fe3e-d1b2-43fa-b868-a81c6863e7ae-0.sock')
+Process SpawnProcess-3:
+Traceback (most recent call last):
+  File "/home/ts/.pyenv/versions/3.12.3/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+  File "/home/ts/.pyenv/versions/3.12.3/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/home/ts/wt/zmqruntime-cold-start-355-20261001/tests/test_ack_return_route.py", line 33, in producer
+    route = listener.start(transport_mode=mode, host="127.0.0.1", config=config)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ts/wt/zmqruntime-cold-start-355-20261001/src/zmqruntime/ack_listener.py", line 159, in start
+    startup.result(timeout=deadline.remaining_seconds_or_zero())
+  File "/home/ts/.pyenv/versions/3.12.3/lib/python3.12/concurrent/futures/_base.py", line 456, in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/ts/.pyenv/versions/3.12.3/lib/python3.12/concurrent/futures/_base.py", line 401, in __get_result
+    raise self._exception
+  File "/home/ts/wt/zmqruntime-cold-start-355-20261001/src/zmqruntime/ack_listener.py", line 229, in _listener_loop
+    ack_url = endpoint.transport_mode.declaration.bind_ack_socket(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ts/wt/zmqruntime-cold-start-355-20261001/src/zmqruntime/transport_modes.py", line 389, in bind_ack_socket
+    cls.bind_socket(endpoint_socket, host, port, config)
+  File "/home/ts/wt/zmqruntime-cold-start-355-20261001/src/zmqruntime/transport_modes.py", line 436, in bind_socket
+    endpoint_socket.bind(cls.endpoint_url(port, host, config))
+  File "/home/ts/code/projects/openhcs/.venv/lib/python3.12/site-packages/zmq/sugar/socket.py", line 322, in bind
+    super().bind(addr)
+  File "zmq/backend/cython/_zmq.py", line 1002, in zmq.backend.cython._zmq.Socket.bind
+    raise ZMQError(msg=msg)
+    ^^^^^^^^^^^
+zmq.error.ZMQError: ipc path "/home/ts/.cache/agent-scratch/zmqruntime-release-candidate-031-20261002/first-failure/ipc1/zmq-f9e6fe3e-d1b2-43fa-b868-a81c6863e7ae-0.sock" is longer than 107 characters (sizeof(sockaddr_un.sun_path)). zmq.IPC_PATH_MAX_LEN constant can be used to check addr length (if it is defined). (addr='ipc:///home/ts/.cache/agent-scratch/zmqruntime-release-candidate-031-20261002/first-failure/ipc1/zmq-f9e6fe3e-d1b2-43fa-b868-a81c6863e7ae-0.sock')
+Fatal error in ack listener: ipc path "/home/ts/.cache/agent-scratch/zmqruntime-release-candidate-031-20261002/first-failure/ipc1/zmq-8f15aefd-dada-48b5-a7f3-8f3b5c949110-0.sock" is longer than 107 characters (sizeof(sockaddr_un.sun_path)). zmq.IPC_PATH_MAX_LEN constant can be used to check addr length (if it is defined). (addr='ipc:///home/ts/.cache/agent-scratch/zmqruntime-release-candidate-031-20261002/first-failure/ipc1/zmq-8f15aefd-dada-48b5-a7f3-8f3b5c949110-0.sock')
+Traceback (most recent call last):
+  File "/home/ts/wt/zmqruntime-cold-start-355-20261001/src/zmqruntime/ack_listener.py", line 229, in _listener_loop
+    ack_url = endpoint.transport_mode.declaration.bind_ack_socket(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ts/wt/zmqruntime-cold-start-355-20261001/src/zmqruntime/transport_modes.py", line 389, in bind_ack_socket
+    cls.bind_socket(endpoint_socket, host, port, config)
+  File "/home/ts/wt/zmqruntime-cold-start-355-20261001/src/zmqruntime/transport_modes.py", line 436, in bind_socket
+    endpoint_socket.bind(cls.endpoint_url(port, host, config))
+  File "/home/ts/code/projects/openhcs/.venv/lib/python3.12/site-packages/zmq/sugar/socket.py", line 322, in bind
+    super().bind(addr)
+  File "zmq/backend/cython/_zmq.py", line 1002, in zmq.backend.cython._zmq.Socket.bind
+    raise ZMQError(msg=msg)
+    ^^^^^^^^^^^
+zmq.error.ZMQError: ipc path "/home/ts/.cache/agent-scratch/zmqruntime-release-candidate-031-20261002/first-failure/ipc1/zmq-8f15aefd-dada-48b5-a7f3-8f3b5c949110-0.sock" is longer than 107 characters (sizeof(sockaddr_un.sun_path)). zmq.IPC_PATH_MAX_LEN constant can be used to check addr length (if it is defined). (addr='ipc:///home/ts/.cache/agent-scratch/zmqruntime-release-candidate-031-20261002/first-failure/ipc1/zmq-8f15aefd-dada-48b5-a7f3-8f3b5c949110-0.sock')
+Process SpawnProcess-4:
+Traceback (most recent call last):
+  File "/home/ts/.pyenv/versions/3.12.3/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+  File "/home/ts/.pyenv/versions/3.12.3/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/home/ts/wt/zmqruntime-cold-start-355-20261001/tests/test_ack_return_route.py", line 33, in producer
+    route = listener.start(transport_mode=mode, host="127.0.0.1", config=config)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ts/wt/zmqruntime-cold-start-355-20261001/src/zmqruntime/ack_listener.py", line 159, in start
+    startup.result(timeout=deadline.remaining_seconds_or_zero())
+  File "/home/ts/.pyenv/versions/3.12.3/lib/python3.12/concurrent/futures/_base.py", line 456, in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/ts/.pyenv/versions/3.12.3/lib/python3.12/concurrent/futures/_base.py", line 401, in __get_result
+    raise self._exception
+  File "/home/ts/wt/zmqruntime-cold-start-355-20261001/src/zmqruntime/ack_listener.py", line 229, in _listener_loop
+    ack_url = endpoint.transport_mode.declaration.bind_ack_socket(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ts/wt/zmqruntime-cold-start-355-20261001/src/zmqruntime/transport_modes.py", line 389, in bind_ack_socket
+    cls.bind_socket(endpoint_socket, host, port, config)
+  File "/home/ts/wt/zmqruntime-cold-start-355-20261001/src/zmqruntime/transport_modes.py", line 436, in bind_socket
+    endpoint_socket.bind(cls.endpoint_url(port, host, config))
+  File "/home/ts/code/projects/openhcs/.venv/lib/python3.12/site-packages/zmq/sugar/socket.py", line 322, in bind
+    super().bind(addr)
+  File "zmq/backend/cython/_zmq.py", line 1002, in zmq.backend.cython._zmq.Socket.bind
+    raise ZMQError(msg=msg)
+    ^^^^^^^^^^^
+zmq.error.ZMQError: ipc path "/home/ts/.cache/agent-scratch/zmqruntime-release-candidate-031-20261002/first-failure/ipc1/zmq-8f15aefd-dada-48b5-a7f3-8f3b5c949110-0.sock" is longer than 107 characters (sizeof(sockaddr_un.sun_path)). zmq.IPC_PATH_MAX_LEN constant can be used to check addr length (if it is defined). (addr='ipc:///home/ts/.cache/agent-scratch/zmqruntime-release-candidate-031-20261002/first-failure/ipc1/zmq-8f15aefd-dada-48b5-a7f3-8f3b5c949110-0.sock')
+=========================== short test summary info ============================
+FAILED tests/test_ack_return_route.py::test_two_producers_return_exact_ids_and_close_independently[TransportMode.IPC]
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed, 14 passed in 3.87s

@@ -7,9 +7,10 @@ from dataclasses import dataclass, field, fields
 from enum import Enum
 from math import isfinite
 from numbers import Integral, Real
-from typing import TYPE_CHECKING, Self, TypeAlias, Union
+from typing import TYPE_CHECKING, TypeAlias, Union
 
 import zmq
+from typing_extensions import Self
 
 from zmqruntime.messages import MessageFields
 from zmqruntime.transport import TransportEndpoint
