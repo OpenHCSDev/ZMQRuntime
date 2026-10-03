@@ -8,8 +8,10 @@ at the application layer, not in this runtime library.
 from __future__ import annotations
 
 import logging
+import os
 import pickle
 import signal
+import sys
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, fields
@@ -350,6 +352,74 @@ class ProcessIdentity:
         except psutil.AccessDenied:
             return None
 
+    def descendants(self, *, recursive: bool = True) -> tuple[psutil.Process, ...]:
+        """Discover this incarnation's current children without a host-wide scan.
+
+        Linux exposes direct children per *thread*, including processes forked
+        by a server's worker thread. Read every task, then traverse actual parent
+        relationships. No ancestry or process handles survive between calls.
+        Other platforms, or an unavailable task interface, use psutil's native
+        discovery rather than publishing an incomplete resource observation.
+        """
+        process = psutil.Process(self.pid)
+        if process.create_time() != self.create_time:
+            raise psutil.NoSuchProcess(self.pid, msg="Process incarnation changed")
+        if sys.platform != "linux":
+            children = tuple(process.children(recursive=recursive))
+        else:
+            try:
+                children = self._linux_descendants(process, recursive=recursive)
+            except (FileNotFoundError, ProcessLookupError, PermissionError):
+                if ProcessIdentity.for_pid(self.pid) != self:
+                    raise psutil.NoSuchProcess(
+                        self.pid, msg="Process incarnation changed"
+                    )
+                children = tuple(process.children(recursive=recursive))
+        if ProcessIdentity.for_pid(self.pid) != self:
+            raise psutil.NoSuchProcess(self.pid, msg="Process incarnation changed")
+        return children
+
+    def _linux_descendants(
+        self, process: psutil.Process, *, recursive: bool
+    ) -> tuple[psutil.Process, ...]:
+        children: list[psutil.Process] = []
+        pending = [process]
+        seen = {self.pid}
+        while pending:
+            parent = pending.pop()
+            try:
+                identity = ProcessIdentity(parent.pid, parent.create_time())
+                if ProcessIdentity.for_pid(parent.pid) != identity:
+                    continue
+                task_root = f"{psutil.PROCFS_PATH}/{parent.pid}/task"
+                child_pids: set[int] = set()
+                for tid in os.listdir(task_root):
+                    with open(f"{task_root}/{tid}/children", encoding="ascii") as stream:
+                        child_pids.update(int(pid) for pid in stream.read().split())
+                if ProcessIdentity.for_pid(parent.pid) != identity:
+                    continue
+            except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                continue
+            for pid in sorted(child_pids):
+                if pid in seen:
+                    continue
+                try:
+                    child = psutil.Process(pid)
+                    if (
+                        child.ppid() != parent.pid
+                        or child.create_time() < identity.create_time
+                    ):
+                        continue
+                    if not child.is_running():
+                        continue
+                except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                    continue
+                seen.add(pid)
+                children.append(child)
+                if recursive:
+                    pending.append(child)
+        return tuple(children)
+
     def work_snapshot(self) -> dict[ProcessIdentity, float]:
         """Measure CPU work of this incarnation and its current descendants.
 
@@ -362,7 +432,7 @@ class ProcessIdentity:
             process = psutil.Process(self.pid)
             if process.create_time() != self.create_time:
                 return samples
-            processes = (process, *process.children(recursive=True))
+            processes = (process, *self.descendants())
             for current in processes:
                 try:
                     identity = ProcessIdentity(current.pid, current.create_time())
