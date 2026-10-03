@@ -139,6 +139,7 @@ def test_work_samples_reject_pid_reuse_and_keep_exact_descendant_identity(monkey
 
     native = NativeProcess()
     monkeypatch.setattr(messages.psutil, "Process", lambda pid: native)
+    monkeypatch.setattr(ProcessIdentity, "descendants", lambda self: ())
     assert ProcessIdentity(123, 455.0).work_snapshot() == {}
     assert ProcessIdentity(123, 456.0).work_snapshot() == {
         ProcessIdentity(123, 456.0): 5.0

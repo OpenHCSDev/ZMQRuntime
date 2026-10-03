@@ -28,6 +28,7 @@ from zmqruntime.messages import (
     ExecutionStatus,
     MessageFields,
     PongResponse,
+    ProcessIdentity,
     ProgressRegistrationRequest,
     ProgressUnregistrationRequest,
     QueuedExecutionInfo,
@@ -441,7 +442,7 @@ class ExecutionServer(ZMQServer, ABC):
             from zmqruntime.messages import WorkerState
 
             workers = []
-            for child in psutil.Process(os.getpid()).children(recursive=True):
+            for child in ProcessIdentity.current().descendants():
                 try:
                     if not self._is_execution_worker_process(child):
                         continue
@@ -482,7 +483,7 @@ class ExecutionServer(ZMQServer, ABC):
         try:
             import psutil
 
-            all_children = psutil.Process(os.getpid()).children(recursive=False)
+            all_children = ProcessIdentity.current().descendants(recursive=False)
             zombies = []
             workers = []
 
