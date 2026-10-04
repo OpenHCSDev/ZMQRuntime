@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import threading
-import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -16,7 +15,7 @@ from zmqruntime.execution.responses import (
     WireResponse,
     WireValue,  # noqa: F401 -- resolves WireResponse's recursive annotation in this module
 )
-from zmqruntime.messages import validate_progress_payload
+from zmqruntime.messages import MessageFields, validate_progress_payload
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +42,7 @@ class ExecutionProgressObservation:
 
     sequence: int
     event: WireResponse
+    delivery_error: str | None = None
 
     def __post_init__(self) -> None:
         if self.sequence < 1:
@@ -53,23 +53,13 @@ class ExecutionProgressObservation:
             _freeze_wire_value(self.event),
         )
 
-    @classmethod
-    def first(cls, event: WireResponse) -> ExecutionProgressObservation:
-        """Create the first retained observation for one execution."""
-
-        return cls(sequence=1, event=event)
-
-    def followed_by(self, event: WireResponse) -> ExecutionProgressObservation:
-        """Return the next immutable observation for the same execution."""
-
-        return type(self)(sequence=self.sequence + 1, event=event)
-
     def as_wire(self) -> dict:
         """Return a detached JSON-compatible projection."""
 
         return {
             type(self).sequence.__name__: self.sequence,
             type(self).event.__name__: _thaw_wire_value(self.event),
+            type(self).delivery_error.__name__: self.delivery_error,
         }
 
     @classmethod
@@ -82,7 +72,9 @@ class ExecutionProgressObservation:
             raise TypeError("Execution progress sequence must be an integer")
         if not isinstance(event, Mapping):
             raise TypeError("Execution progress event must be a mapping")
-        return cls(sequence=sequence, event=event)
+        return cls(
+            sequence=sequence, event=event, delivery_error=payload.get(cls.delivery_error.__name__)
+        )
 
 
 class ProgressStreamSubscriber:
@@ -98,6 +90,8 @@ class ProgressStreamSubscriber:
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._lifecycle_lock = threading.RLock()
+        self._delivery_condition = threading.Condition()
+        self._dispatching_execution_id: str | None = None
 
     def start(self) -> None:
         with self._lifecycle_lock:
@@ -123,6 +117,23 @@ class ProgressStreamSubscriber:
             if self._thread is thread:
                 self._thread = None
 
+    def wait_for_delivery(
+        self,
+        execution_id: str,
+        delivered: Callable[[], bool],
+        timeout: float,
+    ) -> None:
+        """Wait for this execution's callback dispatch, not merely its socket read."""
+        with self._delivery_condition:
+            complete = self._delivery_condition.wait_for(
+                lambda: self._dispatching_execution_id != execution_id and delivered(),
+                timeout=timeout,
+            )
+        if not complete:
+            raise TimeoutError(
+                f"Progress delivery for {execution_id} did not complete within {timeout:.3f}s"
+            )
+
     def _listen_loop(self) -> None:
         logger.info("Progress listener loop started")
         message_count = 0
@@ -130,12 +141,13 @@ class ProgressStreamSubscriber:
             while not self._stop_event.is_set():
                 socket = self._socket_provider()
                 if socket is None:
-                    time.sleep(0.1)
+                    self._stop_event.wait(0.1)
+                    continue
+                if not socket.poll(timeout=50, flags=zmq.POLLIN):
                     continue
                 try:
                     message = socket.recv_string(zmq.NOBLOCK)
                 except zmq.Again:
-                    time.sleep(0.05)
                     continue
 
                 if self._dispatch_message(message):
@@ -155,7 +167,14 @@ class ProgressStreamSubscriber:
         try:
             data = json.loads(message)
             validate_progress_payload(data)
-            self._callback(data)
+            with self._delivery_condition:
+                self._dispatching_execution_id = data.get(MessageFields.EXECUTION_ID)
+            try:
+                self._callback(data)
+            finally:
+                with self._delivery_condition:
+                    self._dispatching_execution_id = None
+                    self._delivery_condition.notify_all()
         except Exception as error:
             logger.exception("Progress message dispatch failed: %s", error)
             return False

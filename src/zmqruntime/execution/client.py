@@ -7,6 +7,7 @@ import pickle
 import threading
 import uuid
 from abc import ABC, abstractmethod
+from dataclasses import replace
 from typing import Generic, TypeVar
 
 import zmq
@@ -18,6 +19,7 @@ from zmqruntime.execution.progress_stream import (
 )
 from zmqruntime.execution.responses import (
     ExecutionSubmissionResponse,
+    ExecutionWaitResult,
     WireRequest,
     WireResponse,
 )
@@ -132,7 +134,20 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
             known_server_process_is_alive=self.known_server_process_is_alive,
             owned_server_process_exit=self.owned_server_process_exit,
         )
-        return waiter.wait(execution_id, policy)
+        result = waiter.wait(execution_id, policy)
+        record = ExecutionWaitResult.from_wire(result).execution
+        if (
+            record is not None
+            and record.progress_sequence
+            and self._progress_registration is not None
+            and self._progress_stream is not None
+        ):
+            self._progress_stream.wait_for_delivery(
+                execution_id,
+                lambda: self._delivered_progress_through(execution_id, record.progress_sequence),
+                timeout=policy.status_timeout_ms / 1000,
+            )
+        return result
 
     def execute(
         self,
@@ -255,8 +270,8 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
             raise listener_error
 
     def _ensure_progress_subscription(self, *, timeout_ms: int = 5000) -> None:
-        self._start_progress_listener()
         if self._progress_registration is not None:
+            self._start_progress_listener()
             return
         response = self._send_control_request(
             {
@@ -269,9 +284,15 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
             raise RuntimeError(f"Progress registration response missing status: {response}")
         if response[MessageFields.STATUS] != ResponseType.OK.value:
             raise RuntimeError(f"Progress registration failed: {response}")
-        self._progress_registration = CallbackSubscription(
-            self._unregister_progress,
-        )
+        with self._progress_lock:
+            for execution_id, payload in response[MessageFields.PROGRESS_OBSERVATIONS].items():
+                baseline = ExecutionProgressObservation.from_wire(payload)
+                previous = self._progress_by_execution_id.get(execution_id)
+                if previous is not None:
+                    baseline = replace(baseline, delivery_error=previous.delivery_error)
+                self._progress_by_execution_id[execution_id] = baseline
+        self._progress_registration = CallbackSubscription(self._unregister_progress)
+        self._start_progress_listener()
 
     def _unregister_progress(self) -> bool:
         if not self.is_connected():
@@ -292,16 +313,44 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
 
     def _record_progress(self, data: dict) -> None:
         execution_id = data[MessageFields.EXECUTION_ID]
+        observation = ExecutionProgressObservation.from_wire(
+            {
+                "sequence": data[MessageFields.PROGRESS_SEQUENCE],
+                "event": data,
+            }
+        )
         with self._progress_lock:
             current = self._progress_by_execution_id.get(execution_id)
-            observation = (
-                ExecutionProgressObservation.first(data)
-                if current is None
-                else current.followed_by(data)
-            )
+            if current is not None and observation.sequence <= current.sequence:
+                return  # Events admitted before this subscription's baseline.
+            expected = 1 if current is None else current.sequence + 1
+            delivery_error = None if current is None else current.delivery_error
+            if observation.sequence != expected:
+                delivery_error = (
+                    f"Progress for {execution_id} skipped sequence {expected}; "
+                    f"received {observation.sequence}"
+                )
+            observation = replace(observation, delivery_error=delivery_error)
             self._progress_by_execution_id[execution_id] = observation
+        if delivery_error is not None:
+            raise RuntimeError(delivery_error)
         if self.progress_callback is not None:
-            self.progress_callback(data)
+            try:
+                self.progress_callback(data)
+            except Exception as error:
+                with self._progress_lock:
+                    self._progress_by_execution_id[execution_id] = replace(
+                        observation, delivery_error=f"Progress callback failed: {error}"
+                    )
+                raise
+
+    def _delivered_progress_through(self, execution_id: str, sequence: int) -> bool:
+        observation = self.progress_observation(execution_id)
+        if observation is None:
+            return False
+        if observation.delivery_error is not None:
+            raise RuntimeError(observation.delivery_error)
+        return observation.sequence >= sequence
 
     def progress_observation(
         self,

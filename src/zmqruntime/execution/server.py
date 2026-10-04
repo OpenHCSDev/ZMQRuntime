@@ -16,6 +16,7 @@ from typing import Any
 
 from zmqruntime.config import ZMQConfig
 from zmqruntime.execution.lifecycle import InMemoryExecutionLifecycleEngine
+from zmqruntime.execution.progress_stream import ExecutionProgressObservation
 from zmqruntime.messages import (
     CancelRequest,
     ControlMessageType,
@@ -409,10 +410,20 @@ class ExecutionServer(ZMQServer, ABC):
         request, error = self._validate_and_parse(msg, ProgressRegistrationRequest)
         if error:
             return error
-        self._progress_subscribers.add(request.client_id)
+        with self._progress_publish_lock:
+            self._progress_subscribers.add(request.client_id)
+            observations = {
+                execution_id: ExecutionProgressObservation(
+                    sequence=record.progress_sequence,
+                    event=record.progress_event,
+                ).as_wire()
+                for execution_id, record in self.active_executions.items()
+                if record.progress_event is not None
+            }
         return {
             MessageFields.STATUS: ResponseType.OK.value,
             MessageFields.MESSAGE: "Progress subscriber registered",
+            MessageFields.PROGRESS_OBSERVATIONS: observations,
             MessageFields.CLIENT_ID: request.client_id,
             MessageFields.PROGRESS_SUBSCRIBERS: len(self._progress_subscribers),
         }
@@ -433,7 +444,18 @@ class ExecutionServer(ZMQServer, ABC):
         from zmqruntime.messages import validate_progress_payload
 
         validate_progress_payload(progress_update)
-        self.progress_queue.put(progress_update)
+        execution_id = progress_update[MessageFields.EXECUTION_ID]
+        with self._progress_publish_lock:
+            record = self.active_executions[execution_id]
+            observation = ExecutionProgressObservation(
+                sequence=record.progress_sequence + 1,
+                event=progress_update,
+            )
+            event = observation.as_wire()["event"]
+            record.progress_sequence = observation.sequence
+            event[MessageFields.PROGRESS_SEQUENCE] = observation.sequence
+            record.progress_event = event
+            self.progress_queue.put(event)
 
     def _get_worker_info(self):
         try:

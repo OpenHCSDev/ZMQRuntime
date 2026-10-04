@@ -56,6 +56,9 @@ def test_stop_retains_live_listener_ownership_after_timeout():
         def __init__(self):
             self.sent = False
 
+        def poll(self, timeout, flags):
+            return not self.sent
+
         def recv_string(self, _flags):
             if self.sent:
                 import zmq

@@ -567,7 +567,10 @@ class DummyExecutionClient(ExecutionClient):
 
     def _send_control_request(self, request, timeout_ms=5000):
         if request[MessageFields.TYPE] == ControlMessageType.REGISTER_PROGRESS.value:
-            return {MessageFields.STATUS: ResponseType.OK.value}
+            return {
+                MessageFields.STATUS: ResponseType.OK.value,
+                MessageFields.PROGRESS_OBSERVATIONS: {},
+            }
         return request
 
 
@@ -619,7 +622,10 @@ class ProgressAwareExecutionClient(DummyExecutionClient):
     def _send_control_request(self, request, timeout_ms=5000):
         self.sent_requests.append((request, timeout_ms))
         if request.get(MessageFields.TYPE) == ControlMessageType.REGISTER_PROGRESS.value:
-            return {MessageFields.STATUS: ResponseType.OK.value}
+            return {
+                MessageFields.STATUS: ResponseType.OK.value,
+                MessageFields.PROGRESS_OBSERVATIONS: {},
+            }
         if request.get(MessageFields.TYPE) == ControlMessageType.UNREGISTER_PROGRESS.value:
             return {MessageFields.STATUS: ResponseType.OK.value}
         return request
@@ -683,6 +689,9 @@ def test_execution_client_retains_immutable_progress_observations_per_execution(
         total=2,
     ).to_dict()
 
+    first[MessageFields.PROGRESS_SEQUENCE] = 1
+    second[MessageFields.PROGRESS_SEQUENCE] = 2
+    other[MessageFields.PROGRESS_SEQUENCE] = 1
     client._record_progress(first)
     client._record_progress(second)
     client._record_progress(other)
@@ -1566,3 +1575,168 @@ def test_terminal_status_is_published_with_its_completed_time_bounds():
     assert published[0]["execution"]["start_time"] == 2.0
     assert published[0]["execution"]["end_time"] == 5.0
     assert published[0]["execution"]["status"] == ExecutionStatus.COMPLETE.value
+
+
+@pytest.mark.parametrize(
+    "terminal_status", [ExecutionStatus.COMPLETE, ExecutionStatus.FAILED, ExecutionStatus.CANCELLED]
+)
+def test_terminal_status_waits_for_actual_progress_callback_tail(terminal_status):
+    from zmqruntime.execution.progress_stream import ProgressStreamSubscriber
+    from zmqruntime.messages import ExecutionRecord
+    from zmqruntime.subscription import CallbackSubscription
+
+    server = DummyExecutionServer(port=5555)
+    record = ExecutionRecord("tail-1", "plate-1", None, terminal_status.value)
+    server.active_executions[record.execution_id] = record
+    for number in (1, 2):
+        server.send_progress_update(
+            TaskProgress(
+                task_id=record.execution_id,
+                phase="axis_completed" if number == 2 else "step_completed",
+                status="success",
+                percent=number * 50.0,
+                timestamp=float(number),
+                completed=number,
+                total=2,
+            ).to_dict()
+        )
+    events = [server.progress_queue.get_nowait(), server.progress_queue.get_nowait()]
+    client = DummyExecutionClient()
+    callback_started = threading.Event()
+    release_callback = threading.Event()
+    status_observed = threading.Event()
+    finished = threading.Event()
+    received = []
+
+    def callback(event):
+        received.append(event["phase"])
+        if event[MessageFields.PROGRESS_SEQUENCE] == 1:
+            callback_started.set()
+            assert release_callback.wait(1)
+
+    client.progress_callback = callback
+    client._progress_stream = ProgressStreamSubscriber(lambda: None, client._record_progress)
+    client._progress_registration = CallbackSubscription(lambda: True)
+
+    def poll(_execution_id, *, timeout_ms):
+        status_observed.set()
+        return {
+            MessageFields.STATUS: ResponseType.OK.value,
+            MessageFields.EXECUTION: record.to_dict(),
+        }
+
+    client.poll_status = poll
+    results = []
+
+    def wait():
+        results.append(client.wait_for_completion(record.execution_id, poll_interval=0))
+        finished.set()
+
+    dispatcher = threading.Thread(
+        target=lambda: [client._progress_stream._dispatch_message(json.dumps(e)) for e in events]
+    )
+    waiter = threading.Thread(target=wait)
+    dispatcher.start()
+    assert callback_started.wait(1)
+    waiter.start()
+    assert status_observed.wait(1)
+    assert not finished.wait(0.02)
+    release_callback.set()
+    dispatcher.join(1)
+    waiter.join(1)
+    assert not dispatcher.is_alive() and not waiter.is_alive()
+    assert finished.is_set()
+    assert received == ["step_completed", "axis_completed"]
+    assert results[0][MessageFields.EXECUTION][MessageFields.PROGRESS_SEQUENCE] == 2
+
+
+def test_progress_registration_baseline_and_loss_have_explicit_delivery_laws():
+    from zmqruntime.execution.progress_stream import ProgressStreamSubscriber
+    from zmqruntime.messages import ExecutionRecord
+
+    server = DummyExecutionServer(port=5555)
+    record = ExecutionRecord("late-1", "plate-1", None, ExecutionStatus.COMPLETE.value)
+    server.active_executions[record.execution_id] = record
+    payload = TaskProgress(
+        task_id=record.execution_id,
+        phase="running",
+        status="running",
+        percent=50.0,
+        timestamp=1.0,
+        completed=1,
+        total=2,
+    ).to_dict()
+    server.send_progress_update(payload)
+    baseline = server._handle_register_progress(
+        {
+            MessageFields.TYPE: ControlMessageType.REGISTER_PROGRESS.value,
+            MessageFields.CLIENT_ID: "late-client",
+        }
+    )
+    client = DummyExecutionClient()
+    client._send_control_request = lambda _request, timeout_ms=5000: baseline
+    client._start_progress_listener = lambda: None
+    client._ensure_progress_subscription()
+    assert client.progress_observation(record.execution_id).sequence == 1
+    received = []
+    client.progress_callback = received.append
+    client._record_progress(server.progress_queue.get_nowait())
+    assert received == []  # A late subscriber does not fabricate historical callbacks.
+    server.send_progress_update(payload)
+    second = server.progress_queue.get_nowait()
+    client._record_progress(second)
+    assert len(received) == 1
+
+    client._progress_stream = ProgressStreamSubscriber(lambda: None, client._record_progress)
+    client.poll_status = lambda _execution_id, timeout_ms: {
+        MessageFields.STATUS: ResponseType.OK.value,
+        MessageFields.EXECUTION: record.to_dict(),
+    }
+    client.wait_for_completion(record.execution_id, poll_interval=0)
+    server.send_progress_update(payload)
+    with pytest.raises(TimeoutError, match="Progress delivery"):
+        client.wait_for_completion(record.execution_id, poll_interval=0, status_timeout_ms=10)
+    missing = server.progress_queue.get_nowait()
+    missing[MessageFields.PROGRESS_SEQUENCE] += 1
+    assert not client._progress_stream._dispatch_message(json.dumps(missing))
+    with pytest.raises(RuntimeError, match="skipped sequence 3"):
+        client.wait_for_completion(record.execution_id, poll_interval=0)
+    client._progress_registration = None
+    client._ensure_progress_subscription()
+    with pytest.raises(RuntimeError, match="skipped sequence 3"):
+        client.wait_for_completion(record.execution_id, poll_interval=0)
+
+
+def test_terminal_progress_callback_failure_is_not_completed_delivery():
+    from zmqruntime.execution.progress_stream import ProgressStreamSubscriber
+    from zmqruntime.messages import ExecutionRecord
+    from zmqruntime.subscription import CallbackSubscription
+
+    client = DummyExecutionClient()
+    client._progress_registration = CallbackSubscription(lambda: True)
+    client._progress_stream = ProgressStreamSubscriber(lambda: None, client._record_progress)
+
+    def fail(_event):
+        raise ValueError("observer rejected tail")
+
+    client.progress_callback = fail
+    event = TaskProgress(
+        task_id="callback-1",
+        phase="axis_completed",
+        status="success",
+        percent=100.0,
+        timestamp=1.0,
+        completed=1,
+        total=1,
+    ).to_dict()
+    event[MessageFields.PROGRESS_SEQUENCE] = 1
+    assert not client._progress_stream._dispatch_message(json.dumps(event))
+    record = ExecutionRecord(
+        "callback-1", "plate-1", None, ExecutionStatus.COMPLETE.value, progress_sequence=1
+    )
+    client.poll_status = lambda _execution_id, timeout_ms: {
+        MessageFields.STATUS: ResponseType.OK.value,
+        MessageFields.EXECUTION: record.to_dict(),
+    }
+    with pytest.raises(RuntimeError, match="observer rejected tail"):
+        client.wait_for_completion(record.execution_id, poll_interval=0)
