@@ -632,11 +632,11 @@ class ExecutionStatus(Enum):
     def apply_to_record(self, record: "ExecutionRecord", *, timestamp: float) -> None:
         """Apply phase-owned lifecycle fields to an execution record."""
 
-        record.status = self.value
         if self._records_start_time:
             record.start_time = timestamp
         if self.is_terminal:
             record.end_time = timestamp
+        record.status = self.value
 
     @classmethod
     def from_wire(cls, value: object) -> Optional["ExecutionStatus"]:

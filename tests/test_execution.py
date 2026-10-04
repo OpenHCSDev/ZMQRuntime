@@ -1516,3 +1516,53 @@ def test_submission_response_requires_explicit_tracking_and_diagnostics():
         }
     )
     assert failed_with_both.require_failure_text("submission") == ("bad request (missing plate)")
+
+
+def test_waiter_retains_the_terminal_record_without_another_status_poll():
+    from zmqruntime.execution.responses import ExecutionWaitResult
+
+    record = {
+        "execution_id": "retained-1",
+        "plate_id": "/plate",
+        "status": "complete",
+        "start_time": 2.0,
+        "end_time": 5.0,
+        "results_summary": {"well_count": 1},
+    }
+    requests = []
+
+    def poll(execution_id):
+        requests.append(execution_id)
+        return {"status": "ok", "execution": record}
+
+    response = ExecutionWaiter(poll).wait("retained-1", WaitPolicy(poll_interval=0))
+    assert response["execution"] is record
+    completed = ExecutionWaitResult.from_wire(response).require_completed_execution("run", expected_execution_id="retained-1")
+    assert completed.start_time == 2.0
+    assert completed.end_time == 5.0
+    assert completed.results_summary == response["results"]
+    assert requests == ["retained-1"]
+
+
+def test_terminal_status_is_published_with_its_completed_time_bounds():
+    from zmqruntime.messages import ExecutionRecord, ExecutionStatusSnapshot
+
+    published = []
+
+    class ObservedRecord(ExecutionRecord):
+        def __setattr__(self, name, value):
+            super().__setattr__(name, value)
+            if name == "status" and value == ExecutionStatus.COMPLETE.value:
+                published.append(
+                    ExecutionStatusSnapshot(ResponseType.OK, execution=self).to_dict()
+                )
+
+    record = ObservedRecord(
+        "terminal-1", "/plate", None, ExecutionStatus.RUNNING.value,
+        start_time=2.0,
+    )
+    ExecutionStatus.COMPLETE.apply_to_record(record, timestamp=5.0)
+
+    assert published[0]["execution"]["start_time"] == 2.0
+    assert published[0]["execution"]["end_time"] == 5.0
+    assert published[0]["execution"]["status"] == ExecutionStatus.COMPLETE.value
