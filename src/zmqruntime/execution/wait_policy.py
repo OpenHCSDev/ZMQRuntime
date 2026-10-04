@@ -39,19 +39,26 @@ class ExecutionWaiter:
         progress_sequence: Callable[[str], int | None] | None = None,
         known_server_process_is_alive: Callable[[], bool | None] | None = None,
         owned_server_process_exit: Callable[[], ProcessExit | None] | None = None,
+        wait_for_terminal: Callable[[str, float], WireResponse | None] | None = None,
     ) -> None:
         self._poll_status = poll_status
         self._progress_sequence = progress_sequence
         self._known_server_process_is_alive = known_server_process_is_alive
         self._owned_server_process_exit = owned_server_process_exit
+        self._wait_for_terminal = wait_for_terminal
 
     def wait(self, execution_id: str, policy: WaitPolicy) -> dict[str, WireValue]:
         consecutive_errors = 0
         observed_progress_sequence = self._observed_progress_sequence(execution_id)
         while True:
-            time.sleep(policy.poll_interval)
             try:
-                status_response = self._poll_status(execution_id)
+                status_response = None
+                if self._wait_for_terminal is None:
+                    time.sleep(policy.poll_interval)
+                else:
+                    status_response = self._wait_for_terminal(execution_id, policy.poll_interval)
+                if status_response is None:
+                    status_response = self._poll_status(execution_id)
                 consecutive_errors = 0
                 observed_progress_sequence = self._observed_progress_sequence(
                     execution_id

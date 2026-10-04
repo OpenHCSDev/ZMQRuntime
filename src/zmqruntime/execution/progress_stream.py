@@ -15,7 +15,13 @@ from zmqruntime.execution.responses import (
     WireResponse,
     WireValue,  # noqa: F401 -- resolves WireResponse's recursive annotation in this module
 )
-from zmqruntime.messages import MessageFields, validate_progress_payload
+from zmqruntime.messages import (
+    ExecutionStatus,
+    ExecutionStatusSnapshot,
+    MessageFields,
+    ResponseType,
+    validate_progress_payload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,17 +47,31 @@ class ExecutionProgressObservation:
     """Immutable latest progress event and its per-execution sequence."""
 
     sequence: int
-    event: WireResponse
+    event: WireResponse | None
     delivery_error: str | None = None
+    terminal_snapshot: WireResponse | None = None
 
     def __post_init__(self) -> None:
-        if self.sequence < 1:
-            raise ValueError("Execution progress sequence must be positive")
+        if self.sequence < 0 or (self.sequence == 0 and self.terminal_snapshot is None):
+            raise ValueError(
+                "Execution progress sequence must be positive unless terminal without progress"
+            )
         object.__setattr__(
             self,
             "event",
             _freeze_wire_value(self.event),
         )
+        if self.terminal_snapshot is not None:
+            snapshot = ExecutionStatusSnapshot.from_dict(self.terminal_snapshot)
+            if (
+                snapshot.status is not ResponseType.OK
+                or snapshot.execution is None
+                or not ExecutionStatus(snapshot.execution.status).is_terminal
+            ):
+                raise ValueError("Execution observation requires an authoritative terminal snapshot")
+            object.__setattr__(
+                self, "terminal_snapshot", _freeze_wire_value(self.terminal_snapshot)
+            )
 
     def as_wire(self) -> dict:
         """Return a detached JSON-compatible projection."""
@@ -60,7 +80,12 @@ class ExecutionProgressObservation:
             type(self).sequence.__name__: self.sequence,
             type(self).event.__name__: _thaw_wire_value(self.event),
             type(self).delivery_error.__name__: self.delivery_error,
+            type(self).terminal_snapshot.__name__: self.terminal_status_response(),
         }
+
+    def terminal_status_response(self) -> WireResponse | None:
+        """Project the authoritative terminal response without replaying progress."""
+        return _thaw_wire_value(self.terminal_snapshot)
 
     @classmethod
     def from_wire(cls, payload: WireResponse) -> ExecutionProgressObservation:
@@ -70,10 +95,13 @@ class ExecutionProgressObservation:
         event = payload[cls.event.__name__]
         if isinstance(sequence, bool) or not isinstance(sequence, int):
             raise TypeError("Execution progress sequence must be an integer")
-        if not isinstance(event, Mapping):
+        if event is not None and not isinstance(event, Mapping):
             raise TypeError("Execution progress event must be a mapping")
         return cls(
-            sequence=sequence, event=event, delivery_error=payload.get(cls.delivery_error.__name__)
+            sequence=sequence,
+            event=event,
+            delivery_error=payload.get(cls.delivery_error.__name__),
+            terminal_snapshot=payload.get(cls.terminal_snapshot.__name__),
         )
 
 
@@ -134,6 +162,21 @@ class ProgressStreamSubscriber:
                 f"Progress delivery for {execution_id} did not complete within {timeout:.3f}s"
             )
 
+    def wait_for_terminal(
+        self,
+        execution_id: str,
+        terminal: Callable[[], WireResponse | None],
+        timeout: float,
+    ) -> WireResponse | None:
+        """Wake on the actual terminal record; timeout permits STATUS recovery."""
+        with self._delivery_condition:
+            if not self._delivery_condition.wait_for(
+                lambda: self._dispatching_execution_id != execution_id and terminal() is not None,
+                timeout=timeout,
+            ):
+                return None
+            return terminal()
+
     def _listen_loop(self) -> None:
         logger.info("Progress listener loop started")
         message_count = 0
@@ -166,9 +209,19 @@ class ProgressStreamSubscriber:
 
         try:
             data = json.loads(message)
-            validate_progress_payload(data)
+            if MessageFields.EXECUTION in data:
+                snapshot = ExecutionStatusSnapshot.from_dict(data)
+                if (
+                    snapshot.execution is None
+                    or not ExecutionStatus(snapshot.execution.status).is_terminal
+                ):
+                    raise ValueError("Execution stream record is not terminal")
+                execution_id = snapshot.execution.execution_id
+            else:
+                validate_progress_payload(data)
+                execution_id = data.get(MessageFields.EXECUTION_ID)
             with self._delivery_condition:
-                self._dispatching_execution_id = data.get(MessageFields.EXECUTION_ID)
+                self._dispatching_execution_id = execution_id
             try:
                 self._callback(data)
             finally:
