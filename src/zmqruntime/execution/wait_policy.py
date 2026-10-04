@@ -64,6 +64,7 @@ class ExecutionWaiter:
                         result = {
                             MessageFields.STATUS: ExecutionStatus.COMPLETE.value,
                             MessageFields.EXECUTION_ID: execution_id,
+                            MessageFields.EXECUTION: status_response[MessageFields.EXECUTION],
                         }
                         if record.results_summary is None:
                             result["results"] = {}

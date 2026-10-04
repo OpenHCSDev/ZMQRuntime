@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Mapping, TypeAlias
 
-from zmqruntime.messages import ExecutionStatus, MessageFields, ResponseType
+from zmqruntime.messages import ExecutionRecord, ExecutionStatus, MessageFields, ResponseType
 
 WireValue: TypeAlias = (
     str
@@ -133,10 +133,34 @@ class ExecutionWaitResult:
     """Typed view of an execution wait result."""
 
     fields: ExecutionResponseWireFields
+    execution: ExecutionRecord | None = None
 
     @classmethod
     def from_wire(cls, response: WireResponse) -> "ExecutionWaitResult":
-        return cls(fields=ExecutionResponseWireFields.from_wire(response))
+        execution = response.get(MessageFields.EXECUTION)
+        return cls(
+            fields=ExecutionResponseWireFields.from_wire(response),
+            execution=(
+                ExecutionRecord.from_dict(dict(execution))
+                if isinstance(execution, Mapping)
+                else None
+            ),
+        )
+
+    def require_completed_execution(
+        self, context: str, *, expected_execution_id: str
+    ) -> ExecutionRecord:
+        """Return the terminal record observed by this successful wait."""
+        self.require_complete(context)
+        record = self.execution
+        if (
+            record is None
+            or self.execution_id != expected_execution_id
+            or record.execution_id != self.execution_id
+            or record.status != ExecutionStatus.COMPLETE.value
+        ):
+            raise RuntimeError(f"{context} has no matching completed execution record")
+        return record
 
     @property
     def status(self) -> str:
