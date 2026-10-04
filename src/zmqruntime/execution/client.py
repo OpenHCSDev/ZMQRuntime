@@ -27,6 +27,7 @@ from zmqruntime.execution.wait_policy import ExecutionWaiter, WaitPolicy
 from zmqruntime.messages import (
     ControlMessageType,
     ControlRequestHeader,
+    ExecutionStatusSnapshot,
     MessageFields,
     PongResponse,
     ResponseType,
@@ -133,6 +134,12 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
             progress_sequence=self._progress_sequence,
             known_server_process_is_alive=self.known_server_process_is_alive,
             owned_server_process_exit=self.owned_server_process_exit,
+            wait_for_terminal=(
+                self._wait_for_terminal
+                if self._progress_stream is not None
+                and self._progress_registration is not None
+                else None
+            ),
         )
         result = waiter.wait(execution_id, policy)
         record = ExecutionWaitResult.from_wire(result).execution
@@ -312,6 +319,18 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
         self._ensure_progress_subscription()
 
     def _record_progress(self, data: dict) -> None:
+        if MessageFields.EXECUTION in data:
+            snapshot = ExecutionStatusSnapshot.from_dict(data)
+            if snapshot.execution is None:
+                raise ValueError("Terminal notification has no execution record")
+            execution_id = snapshot.execution.execution_id
+            with self._progress_lock:
+                current = self._progress_by_execution_id.get(execution_id)
+                self._progress_by_execution_id[execution_id] = (
+                    ExecutionProgressObservation(0, None, terminal_snapshot=data)
+                    if current is None else replace(current, terminal_snapshot=data)
+                )
+            return
         execution_id = data[MessageFields.EXECUTION_ID]
         observation = ExecutionProgressObservation.from_wire(
             {
@@ -330,7 +349,11 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
                     f"Progress for {execution_id} skipped sequence {expected}; "
                     f"received {observation.sequence}"
                 )
-            observation = replace(observation, delivery_error=delivery_error)
+            observation = replace(
+                observation,
+                delivery_error=delivery_error,
+                terminal_snapshot=None if current is None else current.terminal_snapshot,
+            )
             self._progress_by_execution_id[execution_id] = observation
         if delivery_error is not None:
             raise RuntimeError(delivery_error)
@@ -351,6 +374,13 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
         if observation.delivery_error is not None:
             raise RuntimeError(observation.delivery_error)
         return observation.sequence >= sequence
+
+    def _wait_for_terminal(self, execution_id: str, timeout: float) -> WireResponse | None:
+        def terminal() -> WireResponse | None:
+            observation = self.progress_observation(execution_id)
+            return None if observation is None else observation.terminal_status_response()
+
+        return self._progress_stream.wait_for_terminal(execution_id, terminal, timeout)
 
     def progress_observation(
         self,

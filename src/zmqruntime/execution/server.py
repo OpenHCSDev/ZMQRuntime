@@ -27,6 +27,7 @@ from zmqruntime.messages import (
     ExecuteResponse,
     ExecutionRecord,
     ExecutionStatus,
+    ExecutionStatusSnapshot,
     MessageFields,
     PongResponse,
     ProcessIdentity,
@@ -79,7 +80,10 @@ class ExecutionServer(ZMQServer, ABC):
             config=config,
             application=application,
         )
-        self._lifecycle = InMemoryExecutionLifecycleEngine()
+        self._lifecycle = InMemoryExecutionLifecycleEngine(
+            finalize_terminal_record=self.finalize_execution_record,
+            observe_terminal_record=self._publish_terminal_record,
+        )
         self.active_executions: dict[str, ExecutionRecord] = self._lifecycle.records()
         self.start_time = None
         self.progress_queue: queue.Queue = queue.Queue()
@@ -279,7 +283,13 @@ class ExecutionServer(ZMQServer, ABC):
             logger.info("[%s] Starting execution (was queued)", execution_id)
 
             results = self.execute_task(execution_id, request)
-            complete_transition = self._lifecycle.mark_complete(execution_id)
+            complete_transition = self._lifecycle.mark_complete(
+                execution_id,
+                results_summary={
+                    MessageFields.WELL_COUNT: len(results) if isinstance(results, dict) else 0,
+                    MessageFields.WELLS: list(results.keys()) if isinstance(results, dict) else [],
+                },
+            )
             if not complete_transition.applied:
                 logger.info(
                     "[%s] Execution returned after lifecycle reached %s; discarding completion",
@@ -288,23 +298,18 @@ class ExecutionServer(ZMQServer, ABC):
                 )
                 return
             record = self.active_executions[execution_id]
-            record.results_summary = {
-                MessageFields.WELL_COUNT: len(results) if isinstance(results, dict) else 0,
-                MessageFields.WELLS: list(results.keys()) if isinstance(results, dict) else [],
-            }
             logger.info(
                 "[%s] ✓ Completed in %.1fs",
                 execution_id,
                 (record.end_time or 0.0) - (record.start_time or 0.0),
             )
         except Exception as e:
-            failed_transition = self._lifecycle.mark_failed(execution_id, str(e))
-            if failed_transition.applied:
-                import traceback
+            import traceback
 
-                full_traceback = traceback.format_exc()
-                record = self.active_executions[execution_id]
-                record.traceback = full_traceback
+            failed_transition = self._lifecycle.mark_failed(
+                execution_id, str(e), traceback=traceback.format_exc()
+            )
+            if failed_transition.applied:
                 logger.error("[%s] ✗ Failed: %s", execution_id, e, exc_info=True)
             else:
                 logger.info(
@@ -318,6 +323,19 @@ class ExecutionServer(ZMQServer, ABC):
             if killed > 0:
                 logger.info("[%s] Killed %s worker processes during cleanup", execution_id, killed)
             logger.info("[%s] Execution cleanup complete", execution_id)
+
+    def finalize_execution_record(self, record: ExecutionRecord) -> None:
+        """Enrich a completed record before status or notification can observe it.
+
+        This record-only hook runs under the lifecycle lock. It must not publish
+        progress or acquire transport resources.
+        """
+
+    def _publish_terminal_record(self, record: ExecutionRecord) -> None:
+        with self._progress_publish_lock:
+            self.progress_queue.put(
+                ExecutionStatusSnapshot(ResponseType.OK, execution=record).to_dict()
+            )
 
     def _run_execution(self, execution_id, request, record):
         """Compatibility shim for callers still bound to the old private hook."""
@@ -416,9 +434,15 @@ class ExecutionServer(ZMQServer, ABC):
                 execution_id: ExecutionProgressObservation(
                     sequence=record.progress_sequence,
                     event=record.progress_event,
+                    terminal_snapshot=(
+                        self._lifecycle.snapshot(
+                            uptime=0.0, execution_id=execution_id
+                        ).to_dict()
+                        if ExecutionStatus(record.status).is_terminal else None
+                    ),
                 ).as_wire()
                 for execution_id, record in self.active_executions.items()
-                if record.progress_event is not None
+                if record.progress_event is not None or ExecutionStatus(record.status).is_terminal
             }
         return {
             MessageFields.STATUS: ResponseType.OK.value,
@@ -447,6 +471,8 @@ class ExecutionServer(ZMQServer, ABC):
         execution_id = progress_update[MessageFields.EXECUTION_ID]
         with self._progress_publish_lock:
             record = self.active_executions[execution_id]
+            if ExecutionStatus(record.status).is_terminal:
+                return  # Terminal publication seals the admitted callback tail.
             observation = ExecutionProgressObservation(
                 sequence=record.progress_sequence + 1,
                 event=progress_update,

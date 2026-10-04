@@ -1580,13 +1580,14 @@ def test_terminal_status_is_published_with_its_completed_time_bounds():
 @pytest.mark.parametrize(
     "terminal_status", [ExecutionStatus.COMPLETE, ExecutionStatus.FAILED, ExecutionStatus.CANCELLED]
 )
-def test_terminal_status_waits_for_actual_progress_callback_tail(terminal_status):
+@pytest.mark.parametrize("notification", [False, True])
+def test_terminal_status_waits_for_actual_progress_callback_tail(terminal_status, notification):
     from zmqruntime.execution.progress_stream import ProgressStreamSubscriber
     from zmqruntime.messages import ExecutionRecord
     from zmqruntime.subscription import CallbackSubscription
 
     server = DummyExecutionServer(port=5555)
-    record = ExecutionRecord("tail-1", "plate-1", None, terminal_status.value)
+    record = ExecutionRecord("tail-1", "plate-1", None, ExecutionStatus.RUNNING.value)
     server.active_executions[record.execution_id] = record
     for number in (1, 2):
         server.send_progress_update(
@@ -1601,6 +1602,14 @@ def test_terminal_status_waits_for_actual_progress_callback_tail(terminal_status
             ).to_dict()
         )
     events = [server.progress_queue.get_nowait(), server.progress_queue.get_nowait()]
+    if terminal_status is ExecutionStatus.COMPLETE:
+        server._lifecycle.mark_complete(record.execution_id)
+    elif terminal_status is ExecutionStatus.FAILED:
+        server._lifecycle.mark_failed(record.execution_id, "tail failed")
+    else:
+        server._lifecycle.mark_cancelled(record.execution_id)
+    if notification:
+        events.append(server.progress_queue.get_nowait())
     client = DummyExecutionClient()
     callback_started = threading.Event()
     release_callback = threading.Event()
@@ -1619,6 +1628,7 @@ def test_terminal_status_waits_for_actual_progress_callback_tail(terminal_status
     client._progress_registration = CallbackSubscription(lambda: True)
 
     def poll(_execution_id, *, timeout_ms):
+        assert not notification, "Admitted terminal notification requires no status poll"
         status_observed.set()
         return {
             MessageFields.STATUS: ResponseType.OK.value,
@@ -1629,7 +1639,7 @@ def test_terminal_status_waits_for_actual_progress_callback_tail(terminal_status
     results = []
 
     def wait():
-        results.append(client.wait_for_completion(record.execution_id, poll_interval=0))
+        results.append(client.wait_for_completion(record.execution_id, poll_interval=60 if notification else 0))
         finished.set()
 
     dispatcher = threading.Thread(
@@ -1639,7 +1649,8 @@ def test_terminal_status_waits_for_actual_progress_callback_tail(terminal_status
     dispatcher.start()
     assert callback_started.wait(1)
     waiter.start()
-    assert status_observed.wait(1)
+    if not notification:
+        assert status_observed.wait(1)
     assert not finished.wait(0.02)
     release_callback.set()
     dispatcher.join(1)
@@ -1655,7 +1666,7 @@ def test_progress_registration_baseline_and_loss_have_explicit_delivery_laws():
     from zmqruntime.messages import ExecutionRecord
 
     server = DummyExecutionServer(port=5555)
-    record = ExecutionRecord("late-1", "plate-1", None, ExecutionStatus.COMPLETE.value)
+    record = ExecutionRecord("late-1", "plate-1", None, ExecutionStatus.RUNNING.value)
     server.active_executions[record.execution_id] = record
     payload = TaskProgress(
         task_id=record.execution_id,
@@ -1687,13 +1698,14 @@ def test_progress_registration_baseline_and_loss_have_explicit_delivery_laws():
     client._record_progress(second)
     assert len(received) == 1
 
+    server.send_progress_update(payload)
+    server._lifecycle.mark_complete(record.execution_id)
+
     client._progress_stream = ProgressStreamSubscriber(lambda: None, client._record_progress)
     client.poll_status = lambda _execution_id, timeout_ms: {
         MessageFields.STATUS: ResponseType.OK.value,
         MessageFields.EXECUTION: record.to_dict(),
     }
-    client.wait_for_completion(record.execution_id, poll_interval=0)
-    server.send_progress_update(payload)
     with pytest.raises(TimeoutError, match="Progress delivery"):
         client.wait_for_completion(record.execution_id, poll_interval=0, status_timeout_ms=10)
     missing = server.progress_queue.get_nowait()
@@ -1740,3 +1752,128 @@ def test_terminal_progress_callback_failure_is_not_completed_delivery():
     }
     with pytest.raises(RuntimeError, match="observer rejected tail"):
         client.wait_for_completion(record.execution_id, poll_interval=0)
+
+
+def test_terminal_notification_contains_finalized_summary_and_wakes_without_status():
+    from zmqruntime.execution.progress_stream import ProgressStreamSubscriber
+    from zmqruntime.subscription import CallbackSubscription
+
+    class EnrichedServer(DummyExecutionServer):
+        def finalize_execution_record(self, record):
+            assert record.results_summary == {"well_count": 1, "wells": ["result"]}
+            assert record.start_time is not None and record.end_time is not None
+            record.results_summary["output_root"] = "/actual-output"
+
+    server = EnrichedServer(port=5555)
+    request = ExecuteRequest(plate_id="plate-1", pipeline_code="pass", config_params={"x": 1})
+    response = server._handle_execute(request.to_dict())
+    execution_id = response[MessageFields.EXECUTION_ID]
+    server.run_execution(execution_id, request, server.active_executions[execution_id])
+    notification = server.progress_queue.get_nowait()
+    client = DummyExecutionClient()
+    client._progress_registration = CallbackSubscription(lambda: True)
+    client._progress_stream = ProgressStreamSubscriber(lambda: None, client._record_progress)
+    client.progress_callback = lambda _event: pytest.fail("Terminal status is not progress")
+    client.poll_status = lambda *args, **kwargs: pytest.fail("Delivered terminal record needs no STATUS")
+    assert client._progress_stream._dispatch_message(json.dumps(notification))
+    result = client.wait_for_completion(execution_id, poll_interval=60)
+    assert result["results"]["output_root"] == "/actual-output"
+    assert result["execution"]["progress_sequence"] == 0
+
+
+def test_status_cannot_observe_partial_terminal_finalization():
+    entered = threading.Event()
+    release = threading.Event()
+    observed = threading.Event()
+    registered = threading.Event()
+
+    class EnrichedServer(DummyExecutionServer):
+        def finalize_execution_record(self, record):
+            entered.set()
+            assert release.wait(1)
+            record.results_summary["output_root"] = "/final"
+
+    server = EnrichedServer(port=5555)
+    request = ExecuteRequest(plate_id="plate-1", pipeline_code="pass", config_params={"x": 1})
+    execution_id = server._handle_execute(request.to_dict())["execution_id"]
+    runner = threading.Thread(target=server.run_execution, args=(execution_id, request, server.active_executions[execution_id]))
+    runner.start()
+    assert entered.wait(1)
+    responses = []
+
+    def read_status():
+        responses.append(server.handle_status({"execution_id": execution_id}))
+        observed.set()
+
+    reader = threading.Thread(target=read_status)
+    registrations = []
+
+    def register():
+        registrations.append(server._handle_register_progress({"client_id": "late-client"}))
+        registered.set()
+
+    subscriber = threading.Thread(target=register)
+    reader.start()
+    subscriber.start()
+    assert not observed.wait(0.02)
+    assert not registered.is_set()
+    release.set()
+    runner.join(1)
+    reader.join(1)
+    subscriber.join(1)
+    assert not runner.is_alive() and not reader.is_alive() and not subscriber.is_alive()
+    assert responses[0]["execution"]["results_summary"]["output_root"] == "/final"
+    assert server.progress_queue.get_nowait()["execution"] == responses[0]["execution"]
+    assert registrations[0]["progress_observations"][execution_id]["terminal_snapshot"] == responses[0]
+
+
+def test_lost_terminal_notification_recovers_status_and_late_subscription_replays():
+    from zmqruntime.execution.progress_stream import ProgressStreamSubscriber
+    from zmqruntime.subscription import CallbackSubscription
+
+    server = FailingExecutionServer(port=5555)
+    request = ExecuteRequest(plate_id="plate-1", pipeline_code="pass", config_params={"x": 1})
+    execution_id = server._handle_execute(request.to_dict())["execution_id"]
+    server.run_execution(execution_id, request, server.active_executions[execution_id])
+    terminal = server.progress_queue.get_nowait()  # Deliberately lose its PUB delivery.
+    assert "RuntimeError: boom" in terminal["execution"]["traceback"]
+    client = DummyExecutionClient()
+    client._progress_registration = CallbackSubscription(lambda: True)
+    client._progress_stream = ProgressStreamSubscriber(lambda: None, client._record_progress)
+    requests = []
+
+    def poll(current_execution_id, *, timeout_ms):
+        requests.append(current_execution_id)
+        return server.handle_status({"execution_id": current_execution_id})
+
+    client.poll_status = poll
+    result = client.wait_for_completion(execution_id, poll_interval=0)
+    assert result["status"] == "failed" and result["message"] == "boom"
+    assert requests == [execution_id]
+    client._progress_registration = None
+    client._send_control_request = lambda request, timeout_ms=5000: server._handle_register_progress(request)
+    client._start_progress_listener = lambda: None
+    client._ensure_progress_subscription()
+    client.poll_status = lambda *args, **kwargs: pytest.fail("Registration replay includes the terminal record")
+    assert client.wait_for_completion(execution_id, poll_interval=60)["execution"] == terminal["execution"]
+
+
+@pytest.mark.parametrize("shutdown", [False, True])
+def test_cancel_and_shutdown_seal_progress_before_terminal_notification(shutdown):
+    from zmqruntime.messages import ExecutionRecord
+
+    server = DummyExecutionServer(port=5555)
+    record = ExecutionRecord("cancel-tail", "plate-1", None, ExecutionStatus.RUNNING.value)
+    server.active_executions[record.execution_id] = record
+    progress = TaskProgress(task_id=record.execution_id, phase="running", status="running", percent=1.0, timestamp=1.0, completed=0, total=1).to_dict()
+    server.send_progress_update(progress)
+    if shutdown:
+        server._cancel_all_executions()
+    else:
+        server._handle_cancel({"execution_id": record.execution_id})
+    server.send_progress_update(progress)
+    admitted = server.progress_queue.get_nowait()
+    terminal = server.progress_queue.get_nowait()
+    assert terminal["execution"]["status"] == "cancelled"
+    assert terminal["execution"]["progress_sequence"] == admitted["progress_sequence"] == 1
+    assert server.progress_queue.empty()

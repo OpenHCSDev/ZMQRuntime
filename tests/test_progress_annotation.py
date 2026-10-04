@@ -1,7 +1,8 @@
 """Progress declaration resolution and real downstream typed decoding (#243)."""
 
+import inspect
 import json
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from typing import get_type_hints
 
 import pytest
@@ -15,9 +16,12 @@ from zmqruntime.messages import ExecutionStatus
     "declaration",
     (
         ExecutionProgressObservation,
-        ExecutionProgressObservation.first,
-        ExecutionProgressObservation.followed_by,
-        ExecutionProgressObservation.from_wire,
+        *(
+            declaration
+            for name, declaration in inspect.getmembers(ExecutionProgressObservation)
+            if not name.startswith("_")
+            and (inspect.isfunction(declaration) or inspect.ismethod(declaration))
+        ),
     ),
 )
 def test_progress_annotations_resolve_without_caller_supplied_namespace(declaration):
@@ -53,7 +57,7 @@ def assert_detached_immutable_progress(observation, expected):
 
 def test_progress_mapping_decode_preserves_wire_and_immutable_nested_values():
     event = progress_event()
-    original = ExecutionProgressObservation.first(event)
+    original = ExecutionProgressObservation(1, event)
     payload = json.loads(json.dumps(original.as_wire()))
     decoded = dataclass_from_mapping(ExecutionProgressObservation, payload)
     assert decoded == original
@@ -62,7 +66,7 @@ def test_progress_mapping_decode_preserves_wire_and_immutable_nested_values():
     event["context"]["details"][0]["ready"] = False
     assert decoded == original
     assert ExecutionProgressObservation.from_wire(decoded.as_wire()) == decoded
-    followed = decoded.followed_by(progress_event(ExecutionStatus.COMPLETE))
+    followed = replace(decoded, sequence=2, event=progress_event(ExecutionStatus.COMPLETE))
     assert followed.sequence == 2
     assert decoded.sequence == 1
 
@@ -83,7 +87,7 @@ def test_real_openhcs_job_status_decodes_nested_progress(status):
         server_execution_id="synthetic-execution",
         status=status.value,
         response={"status": status.value, "result": {"compile_only": True}},
-        progress=ExecutionProgressObservation.first(progress_event(status)),
+        progress=ExecutionProgressObservation(1, progress_event(status)),
     )
     payload = json.loads(json.dumps(to_jsonable(original)))
     decoded = dataclass_from_mapping(execution.ExecutionJobStatus, payload)
