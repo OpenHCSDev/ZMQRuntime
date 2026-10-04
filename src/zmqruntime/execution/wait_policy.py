@@ -75,6 +75,7 @@ class ExecutionWaiter:
                         result = {
                             MessageFields.STATUS: ExecutionStatus.FAILED.value,
                             MessageFields.EXECUTION_ID: execution_id,
+                            MessageFields.EXECUTION: status_response[MessageFields.EXECUTION],
                         }
                         if record.error is not None:
                             result[MessageFields.MESSAGE] = record.error
@@ -83,6 +84,7 @@ class ExecutionWaiter:
                         return {
                             MessageFields.STATUS: ExecutionStatus.CANCELLED.value,
                             MessageFields.EXECUTION_ID: execution_id,
+                            MessageFields.EXECUTION: status_response[MessageFields.EXECUTION],
                             MessageFields.MESSAGE: "Execution was cancelled",
                         }
 

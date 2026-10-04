@@ -302,6 +302,8 @@ class MessageFields:
     METADATA = "metadata"
     CLIENT_ID = "client_id"
     PROGRESS_SUBSCRIBERS = "progress_subscribers"
+    PROGRESS_SEQUENCE = "progress_sequence"
+    PROGRESS_OBSERVATIONS = "progress_observations"
     PROCESS_IDENTITY = "process_identity"
     CONTROL_CAPABILITIES = "control_capabilities"
     APPLICATION = "application"
@@ -796,6 +798,14 @@ class ExecutionRecord:
     results_summary: Optional[Dict[str, Any]] = None
     compile_only: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
+    progress_sequence: int = 0
+    progress_event: dict | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.progress_sequence, bool) or not isinstance(self.progress_sequence, int):
+            raise TypeError("Execution progress sequence must be an integer")
+        if self.progress_sequence < 0:
+            raise ValueError("Execution progress sequence cannot be negative")
 
     def set_extra(self, key: str, value: Any) -> None:
         self.metadata[key] = value
@@ -835,6 +845,7 @@ class ExecutionRecord:
             MessageFields.END_TIME: _to_transport_value(self.end_time),
             MessageFields.ERROR: _to_transport_value(self.error),
             MessageFields.COMPILE_ONLY: self.compile_only,
+            MessageFields.PROGRESS_SEQUENCE: self.progress_sequence,
         }
         if self.traceback is not None:
             result[MessageFields.TRACEBACK] = _to_transport_value(self.traceback)
@@ -855,6 +866,7 @@ class ExecutionRecord:
             MessageFields.TRACEBACK,
             MessageFields.RESULTS_SUMMARY,
             MessageFields.COMPILE_ONLY,
+            MessageFields.PROGRESS_SEQUENCE,
         }
         metadata = {k: v for k, v in data.items() if k not in known}
         return cls(
@@ -869,6 +881,7 @@ class ExecutionRecord:
             results_summary=data.get(MessageFields.RESULTS_SUMMARY),
             compile_only=bool(data.get(MessageFields.COMPILE_ONLY, False)),
             metadata=metadata,
+            progress_sequence=data.get(MessageFields.PROGRESS_SEQUENCE, 0),
         )
 
 
