@@ -1542,3 +1542,27 @@ def test_waiter_retains_the_terminal_record_without_another_status_poll():
     assert completed.end_time == 5.0
     assert completed.results_summary == response["results"]
     assert requests == ["retained-1"]
+
+
+def test_terminal_status_is_published_with_its_completed_time_bounds():
+    from zmqruntime.messages import ExecutionRecord, ExecutionStatusSnapshot
+
+    published = []
+
+    class ObservedRecord(ExecutionRecord):
+        def __setattr__(self, name, value):
+            super().__setattr__(name, value)
+            if name == "status" and value == ExecutionStatus.COMPLETE.value:
+                published.append(
+                    ExecutionStatusSnapshot(ResponseType.OK, execution=self).to_dict()
+                )
+
+    record = ObservedRecord(
+        "terminal-1", "/plate", None, ExecutionStatus.RUNNING.value,
+        start_time=2.0,
+    )
+    ExecutionStatus.COMPLETE.apply_to_record(record, timestamp=5.0)
+
+    assert published[0]["execution"]["start_time"] == 2.0
+    assert published[0]["execution"]["end_time"] == 5.0
+    assert published[0]["execution"]["status"] == ExecutionStatus.COMPLETE.value
