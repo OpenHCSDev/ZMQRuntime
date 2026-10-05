@@ -59,11 +59,12 @@ class ExecutionWaiter:
                     status_response = self._wait_for_terminal(execution_id, policy.poll_interval)
                 if status_response is None:
                     status_response = self._poll_status(execution_id)
+                # Receipt alone does not admit a status observation.
+                snapshot = ExecutionStatusSnapshot.from_dict(status_response)
                 consecutive_errors = 0
                 observed_progress_sequence = self._observed_progress_sequence(
                     execution_id
                 )
-                snapshot = ExecutionStatusSnapshot.from_dict(status_response)
 
                 if snapshot.status is ResponseType.OK and snapshot.execution is not None:
                     record = snapshot.execution
