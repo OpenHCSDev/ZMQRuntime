@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 from threading import RLock
 
@@ -83,7 +84,11 @@ class ExecutionLifecycleEngineABC(ABC):
 
     @abstractmethod
     def mark_complete(
-        self, execution_id: str, end_time: float | None = None
+        self,
+        execution_id: str,
+        end_time: float | None = None,
+        *,
+        results_summary: dict | None = None,
     ) -> ExecutionLifecycleTransition:
         """Transition to complete."""
 
@@ -93,6 +98,7 @@ class ExecutionLifecycleEngineABC(ABC):
         execution_id: str,
         error: str,
         end_time: float | None = None,
+        traceback: str | None = None,
     ) -> ExecutionLifecycleTransition:
         """Transition to failed."""
 
@@ -131,10 +137,17 @@ class ExecutionLifecycleEngineABC(ABC):
 class InMemoryExecutionLifecycleEngine(ExecutionLifecycleEngineABC):
     """Thread-compatible in-memory lifecycle implementation."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        finalize_terminal_record: Callable[[ExecutionRecord], None] | None = None,
+        observe_terminal_record: Callable[[ExecutionRecord], None] | None = None,
+    ) -> None:
         self._records: dict[str, ExecutionRecord] = {}
         self._queue_order: list[str] = []
         self._lock = RLock()
+        self._finalize_terminal_record = finalize_terminal_record
+        self._observe_terminal_record = observe_terminal_record
 
     def enqueue(self, record: ExecutionRecord) -> int:
         with self._lock:
@@ -161,12 +174,17 @@ class InMemoryExecutionLifecycleEngine(ExecutionLifecycleEngineABC):
         )
 
     def mark_complete(
-        self, execution_id: str, end_time: float | None = None
+        self,
+        execution_id: str,
+        end_time: float | None = None,
+        *,
+        results_summary: dict | None = None,
     ) -> ExecutionLifecycleTransition:
         return self._transition(
             execution_id,
             ExecutionStatus.COMPLETE,
             timestamp=time.time() if end_time is None else end_time,
+            results_summary=results_summary,
         )
 
     def mark_failed(
@@ -174,16 +192,15 @@ class InMemoryExecutionLifecycleEngine(ExecutionLifecycleEngineABC):
         execution_id: str,
         error: str,
         end_time: float | None = None,
+        traceback: str | None = None,
     ) -> ExecutionLifecycleTransition:
-        transition = self._transition(
+        return self._transition(
             execution_id,
             ExecutionStatus.FAILED,
             timestamp=time.time() if end_time is None else end_time,
+            error=error,
+            traceback=traceback,
         )
-        if transition.applied:
-            with self._lock:
-                self._require(execution_id).error = error
-        return transition
 
     def mark_cancelled(
         self, execution_id: str, end_time: float | None = None
@@ -231,7 +248,7 @@ class InMemoryExecutionLifecycleEngine(ExecutionLifecycleEngineABC):
                     raise KeyError(execution_id)
                 return ExecutionStatusSnapshot(
                     status=ResponseType.OK,
-                    execution=record,
+                    execution=ExecutionRecord.from_dict(record.to_dict()),
                 )
 
             running = self._running_executions()
@@ -251,6 +268,9 @@ class InMemoryExecutionLifecycleEngine(ExecutionLifecycleEngineABC):
         requested: ExecutionStatus,
         *,
         timestamp: float,
+        error: str | None = None,
+        traceback: str | None = None,
+        results_summary: dict | None = None,
     ) -> ExecutionLifecycleTransition:
         with self._lock:
             record = self._require(execution_id)
@@ -263,15 +283,35 @@ class InMemoryExecutionLifecycleEngine(ExecutionLifecycleEngineABC):
                     current=previous,
                     applied=False,
                 )
+            previous_end_time = record.end_time
+            if requested is ExecutionStatus.COMPLETE and results_summary is not None:
+                record.results_summary = results_summary
+            if requested is ExecutionStatus.FAILED:
+                record.error = error
+                record.traceback = traceback
             requested.apply_to_record(record, timestamp=timestamp)
+            try:
+                if (
+                    requested is ExecutionStatus.COMPLETE
+                    and self._finalize_terminal_record is not None
+                ):
+                    self._finalize_terminal_record(record)
+            except Exception:
+                record.status = previous.value
+                record.end_time = previous_end_time
+                raise
             self._remove_from_queue(execution_id)
-            return ExecutionLifecycleTransition(
+            transition = ExecutionLifecycleTransition(
                 execution_id=execution_id,
                 previous=previous,
                 requested=requested,
                 current=requested,
                 applied=True,
             )
+        # Notification never holds the lifecycle lock while entering transport.
+        if requested.is_terminal and self._observe_terminal_record is not None:
+            self._observe_terminal_record(record)
+        return transition
 
     def _running_executions(self) -> tuple[RunningExecutionInfo, ...]:
         running: list[RunningExecutionInfo] = []
