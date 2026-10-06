@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import threading
+from contextlib import contextmanager
 from functools import partialmethod
+from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -20,6 +24,7 @@ from zmqruntime.startup import (
     EndpointStartupObserver,
     EndpointStartupPhase,
     EndpointStartupPresentationTarget,
+    EndpointStartupStatus,
     EndpointStartupStatusMonitor,
     EndpointStartupStatusReader,
     EndpointStartupStatusWriter,
@@ -134,6 +139,89 @@ def test_startup_status_channel_roundtrips_incremental_typed_events(tmp_path) ->
     second = reader.read()
     assert [status.phase for status in second.statuses] == [EndpointStartupPhase.SERVER_READY]
     assert second.next_offset > first.next_offset
+
+
+def test_startup_status_reader_waits_for_concurrent_writer_frame(monkeypatch, tmp_path):
+    path = tmp_path / "startup.jsonl"
+    partial_written = threading.Event()
+    finish_write = threading.Event()
+    original_open = Path.open
+
+    @contextmanager
+    def interrupted_open(self, mode="r", *args, **kwargs):
+        with original_open(self, mode, *args, **kwargs) as stream:
+            if self != path or mode != "a":
+                yield stream
+                return
+
+            def interrupted_write(source):
+                split = len(source) // 2
+                stream.write(source[:split])
+                stream.flush()
+                partial_written.set()
+                assert finish_write.wait(5)
+                return split + stream.write(source[split:])
+
+            controlled = Mock(wraps=stream)
+            controlled.write = interrupted_write
+            yield controlled
+
+    monkeypatch.setattr(Path, "open", interrupted_open)
+    writer = EndpointStartupStatusWriter(path)
+    reader = EndpointStartupStatusReader(path)
+    emitted = []
+    thread = threading.Thread(
+        target=lambda: emitted.append(
+            writer.emit(EndpointStartupPhase.IMPORTING_RUNTIME, "Importing runtime")
+        )
+    )
+    thread.start()
+    try:
+        assert partial_written.wait(5)
+        pending = reader.read()
+        assert pending.statuses == ()
+        assert pending.next_offset == 0
+        assert reader.read() == pending
+    finally:
+        finish_write.set()
+        thread.join(5)
+    assert not thread.is_alive()
+    assert reader.read().statuses == tuple(emitted)
+    assert reader.read().statuses == ()
+
+
+def test_startup_status_reader_keeps_partial_tail_after_complete_and_blank_frames(tmp_path):
+    path = tmp_path / "startup.jsonl"
+    writer = EndpointStartupStatusWriter(path)
+    first = writer.emit(EndpointStartupPhase.IMPORTING_RUNTIME, "Importing runtime")
+    second = writer.emit(EndpointStartupPhase.IMPORTING_RUNTIME, "Importing application")
+    tail = EndpointStartupStatus(EndpointStartupPhase.SERVER_READY, "Server ready", 3, 1.0)
+    frame = tail.to_json()
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write("\n" + frame[:45])
+    reader = EndpointStartupStatusReader(path)
+    observed = reader.read()
+    assert observed.statuses == (first, second)
+    assert reader.read().statuses == ()
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(frame[45:])
+    assert reader.read().statuses == ()
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write("\n")
+    assert reader.read().statuses == (tail,)
+    assert reader.read().statuses == ()
+
+
+def test_startup_status_reader_rejects_malformed_complete_frame_without_consuming_it(tmp_path):
+    path = tmp_path / "startup.jsonl"
+    path.write_text('{"phase":"server_ready",', encoding="utf-8")
+    reader = EndpointStartupStatusReader(path)
+    assert reader.read().next_offset == 0
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write("\n")
+    for _ in range(2):
+        with pytest.raises(json.JSONDecodeError):
+            reader.read()
 
 
 def test_startup_monitor_owns_relay_failure_and_process_exit_state(tmp_path) -> None:
