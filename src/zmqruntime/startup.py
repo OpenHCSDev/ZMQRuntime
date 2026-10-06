@@ -247,12 +247,17 @@ class EndpointStartupStatusReader:
 
         if self._path is None or not self._path.exists():
             return EndpointStartupStatusRead((), self._offset)
+        statuses = []
         with self._path.open("r", encoding="utf-8") as stream:
             stream.seek(self._offset)
-            lines = stream.readlines()
-            self._offset = stream.tell()
+            while line := stream.readline():
+                if not line.endswith("\n"):
+                    break
+                if line.strip():
+                    statuses.append(EndpointStartupStatus.from_json(line))
+                self._offset = stream.tell()
         return EndpointStartupStatusRead(
-            statuses=tuple(EndpointStartupStatus.from_json(line) for line in lines if line.strip()),
+            statuses=tuple(statuses),
             next_offset=self._offset,
         )
 
