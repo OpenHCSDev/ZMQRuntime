@@ -127,7 +127,7 @@ def test_force_completes_only_after_exact_process_exit(fixture, monkeypatch):
     assert dispatched.message_type is ControlMessageType.FORCE_SHUTDOWN
     assert dispatched.process_identity == IDENTITY
     assert dispatched.operation_deadline is not None
-    assert dispatched.operation_deadline.timeout_ms == 500
+    assert 0 < dispatched.operation_deadline.timeout_ms <= 500
     cleanup.assert_called_once()
     assert terminate.call_args.kwargs["timeout"] <= 0.5
 
@@ -155,7 +155,7 @@ def test_graceful_ack_clears_workers_without_process_close(fixture):
     assert dispatched.message_type is ControlMessageType.SHUTDOWN
     assert dispatched.process_identity == IDENTITY
     assert dispatched.operation_deadline is not None
-    assert dispatched.operation_deadline.timeout_ms == 500
+    assert 0 < dispatched.operation_deadline.timeout_ms <= 500
     terminate.assert_not_called()
     cleanup.assert_not_called()
 

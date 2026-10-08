@@ -20,7 +20,7 @@ from typing import Any, Dict, Optional, Tuple
 from uuid import UUID
 
 import psutil
-from python_introspect import dataclass_from_mapping, validate_annotated_dataclass
+from python_introspect import dataclass_from_mapping
 
 from zmqruntime.timeouts import OperationDeadline
 
@@ -236,7 +236,8 @@ def validate_progress_payload(payload: dict) -> dict:
 
 class MessageFields:
     TYPE = "type"
-    OBSERVATION_DEADLINE = "observation_deadline"
+    OBSERVATION_BUDGET_SECONDS = "observation_budget_seconds"
+    OBSERVATION_OPERATION = "observation_operation"
     PLATE_ID = "plate_id"
     EXECUTION_PLATE_ID = "execution_plate_id"
     SELECTED_PIPELINE_PATH = "selected_pipeline_path"
@@ -532,20 +533,23 @@ class ControlRequestHeader:
     operation_deadline: OperationDeadline | None = field(default=None, kw_only=True)
 
     @staticmethod
-    def with_observation_deadline(
+    def with_observation_budget(
         payload: Mapping[str, object], deadline: OperationDeadline,
     ) -> dict[str, object]:
-        """Carry the original caller budget, independent of action identity."""
-        return {**payload, MessageFields.OBSERVATION_DEADLINE: deadline}
+        """Offer remaining duration at send, never an absolute host clock."""
+        return {
+            **payload,
+            MessageFields.OBSERVATION_BUDGET_SECONDS: deadline.remaining_seconds(),
+            MessageFields.OBSERVATION_OPERATION: deadline.operation,
+        }
 
     @staticmethod
-    def observation_deadline(payload: Mapping[str, object]) -> OperationDeadline:
-        """Decode the request budget without inventing one at the receiver."""
-        deadline = payload[MessageFields.OBSERVATION_DEADLINE]
-        if not isinstance(deadline, OperationDeadline):
-            raise TypeError("Control observation deadline must be OperationDeadline.")
-        validate_annotated_dataclass(deadline)
-        return deadline
+    def admit_observation(payload: Mapping[str, object]) -> OperationDeadline:
+        """Decode once at receipt; retain the resulting local deadline."""
+        return OperationDeadline.from_remaining_seconds(
+            payload[MessageFields.OBSERVATION_BUDGET_SECONDS],
+            operation=payload[MessageFields.OBSERVATION_OPERATION],
+        )
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, object]) -> ControlRequestHeader:
@@ -554,8 +558,8 @@ class ControlRequestHeader:
             raise TypeError("Control request type must be a string.")
         return cls(
             ControlMessageType(raw_message_type),
-            operation_deadline=(cls.observation_deadline(payload)
-                                if MessageFields.OBSERVATION_DEADLINE in payload else None),
+            operation_deadline=(cls.admit_observation(payload)
+                                if MessageFields.OBSERVATION_BUDGET_SECONDS in payload else None),
         )
 
     @classmethod
@@ -568,7 +572,7 @@ class ControlRequestHeader:
     def to_dict(self) -> dict[str, object]:
         payload = {MessageFields.TYPE: self.message_type.value}
         return (payload if self.operation_deadline is None else
-                self.with_observation_deadline(payload, self.operation_deadline))
+                self.with_observation_budget(payload, self.operation_deadline))
 
     def to_wire_payload(self) -> bytes:
         return pickle.dumps(self.to_dict())
