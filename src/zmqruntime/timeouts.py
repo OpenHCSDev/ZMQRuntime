@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from math import ceil, isfinite
 from dataclasses import dataclass
 
 
@@ -62,6 +63,22 @@ class OperationDeadline:
         """Return whether this operation has exhausted its total budget."""
 
         return time.monotonic() >= self.expires_at
+
+    @classmethod
+    def from_remaining_seconds(cls, remaining: float, *, operation: str) -> OperationDeadline:
+        """Admit an offered duration against this host's monotonic clock once.
+
+        Transit time is unknown: this is a receiver observation bound, not a
+        synchronized end-to-end expiry. The sender retains its original clock.
+        ``timeout_ms`` describes the offer; ``expires_at`` keeps its precision.
+        """
+        if isinstance(remaining, bool) or not isinstance(remaining, (int, float)):
+            raise TypeError("Remaining operation budget must be a number of seconds.")
+        if not isfinite(remaining) or remaining <= 0:
+            raise ValueError("Remaining operation budget must be finite and positive.")
+        if not isinstance(operation, str) or not operation:
+            raise ValueError("Operation name must be a non-empty string.")
+        return cls(operation, max(1, ceil(remaining * 1000)), time.monotonic() + remaining)
 
     def remaining_seconds(self) -> float:
         """Return positive remaining seconds or raise the owned timeout."""

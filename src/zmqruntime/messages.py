@@ -236,6 +236,8 @@ def validate_progress_payload(payload: dict) -> dict:
 
 class MessageFields:
     TYPE = "type"
+    OBSERVATION_BUDGET_SECONDS = "observation_budget_seconds"
+    OBSERVATION_OPERATION = "observation_operation"
     PLATE_ID = "plate_id"
     EXECUTION_PLATE_ID = "execution_plate_id"
     SELECTED_PIPELINE_PATH = "selected_pipeline_path"
@@ -528,13 +530,37 @@ class ControlRequestHeader:
     """Canonical control-message identity and its pickle wire boundary."""
 
     message_type: ControlMessageType
+    operation_deadline: OperationDeadline | None = field(default=None, kw_only=True)
+
+    @staticmethod
+    def with_observation_budget(
+        payload: Mapping[str, object], deadline: OperationDeadline,
+    ) -> dict[str, object]:
+        """Offer remaining duration at send, never an absolute host clock."""
+        return {
+            **payload,
+            MessageFields.OBSERVATION_BUDGET_SECONDS: deadline.remaining_seconds(),
+            MessageFields.OBSERVATION_OPERATION: deadline.operation,
+        }
+
+    @staticmethod
+    def admit_observation(payload: Mapping[str, object]) -> OperationDeadline:
+        """Decode once at receipt; retain the resulting local deadline."""
+        return OperationDeadline.from_remaining_seconds(
+            payload[MessageFields.OBSERVATION_BUDGET_SECONDS],
+            operation=payload[MessageFields.OBSERVATION_OPERATION],
+        )
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, object]) -> ControlRequestHeader:
         raw_message_type = payload[MessageFields.TYPE]
         if not isinstance(raw_message_type, str):
             raise TypeError("Control request type must be a string.")
-        return cls(ControlMessageType(raw_message_type))
+        return cls(
+            ControlMessageType(raw_message_type),
+            operation_deadline=(cls.admit_observation(payload)
+                                if MessageFields.OBSERVATION_BUDGET_SECONDS in payload else None),
+        )
 
     @classmethod
     def from_wire_payload(cls, wire_payload: bytes) -> ControlRequestHeader:
@@ -543,8 +569,10 @@ class ControlRequestHeader:
             raise TypeError("Control request payload must be a mapping.")
         return cls.from_dict(payload)
 
-    def to_dict(self) -> dict[str, str]:
-        return {MessageFields.TYPE: self.message_type.value}
+    def to_dict(self) -> dict[str, object]:
+        payload = {MessageFields.TYPE: self.message_type.value}
+        return (payload if self.operation_deadline is None else
+                self.with_observation_budget(payload, self.operation_deadline))
 
     def to_wire_payload(self) -> bytes:
         return pickle.dumps(self.to_dict())
@@ -565,6 +593,7 @@ class EndpointShutdownRequest(ControlRequestHeader):
         return cls(
             header.message_type,
             None if identity_data is None else ProcessIdentity.from_dict(identity_data),
+            operation_deadline=header.operation_deadline,
         )
 
     def to_dict(self) -> dict[str, Any]:
