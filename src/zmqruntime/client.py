@@ -639,6 +639,7 @@ class _EndpointShutdownOperation:
                 request_attempted = True
                 sock.send(EndpointShutdownRequest(
                     mode.control_message_type, process_identity,
+                    operation_deadline=deadline,
                 ).to_wire_payload())
                 sock.setsockopt(zmq.RCVTIMEO, min(deadline.remaining_milliseconds(), 1000))
                 ack = pickle.loads(sock.recv())
