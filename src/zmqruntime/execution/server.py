@@ -31,13 +31,14 @@ from zmqruntime.messages import (
     MessageFields,
     PongResponse,
     ProcessIdentity,
+    ProgressSubscriptionResponse,
     ProgressRegistrationRequest,
     ProgressUnregistrationRequest,
-    QueuedExecutionInfo,
     ResponseType,
-    RunningExecutionInfo,
     ServerRole,
+    ShutdownAck,
     StatusRequest,
+    TaskProgress,
 )
 from zmqruntime.server import ZMQServer
 
@@ -123,25 +124,9 @@ class ExecutionServer(ZMQServer, ABC):
                 }
             ),
             active_executions=snapshot.active_executions,
-            running_executions=tuple(
-                RunningExecutionInfo(
-                    execution_id=info.execution_id,
-                    plate_id=info.plate_id,
-                    start_time=info.start_time,
-                    elapsed=info.elapsed,
-                    compile_only=info.compile_only,
-                )
-                for info in running
-            ),
-            queued_executions=tuple(
-                QueuedExecutionInfo(
-                    execution_id=info.execution_id,
-                    plate_id=info.plate_id,
-                    queue_position=info.queue_position,
-                )
-                for info in queued
-            ),
-            workers=self._get_worker_info(),
+            running_executions=running,
+            queued_executions=queued,
+            workers=tuple(self._get_worker_info()),
             uptime=time.time() - self.start_time if self.start_time else 0,
             progress_subscribers=len(self._progress_subscribers),
         )
@@ -161,7 +146,7 @@ class ExecutionServer(ZMQServer, ABC):
                 break
             logger.info(
                 f"Publishing to ZMQ: step={progress_update.get('step')}, "
-                f"axis={progress_update.get('axis_id')}, plate_id={progress_update.get('plate_id')}, "
+                f"axis={progress_update.get('axis_id')}, subject_id={progress_update.get('subject_id')}, "
                 f"percent={progress_update.get('percent')}"
             )
             with self._progress_publish_lock:
@@ -185,12 +170,12 @@ class ExecutionServer(ZMQServer, ABC):
     def _validate_and_parse(self, msg, request_class):
         try:
             request = request_class.from_dict(msg)
-            error = request.validate()
-            if error:
-                return None, ExecuteResponse(ResponseType.ERROR, error=error).to_dict()
-            return request, None
-        except KeyError as e:
-            return None, ExecuteResponse(ResponseType.ERROR, error=f"Missing field: {e}").to_dict()
+        except (KeyError, TypeError, ValueError) as e:
+            return None, ExecuteResponse(ResponseType.ERROR, error=str(e)).to_dict()
+        error = request.validate()
+        if error:
+            return None, ExecuteResponse(ResponseType.ERROR, error=error).to_dict()
+        return request, None
 
     def _start_queue_worker(self):
         if self.queue_worker_thread is None or not self.queue_worker_thread.is_alive():
@@ -255,7 +240,7 @@ class ExecutionServer(ZMQServer, ABC):
         execution_id = str(uuid.uuid4())
         record = ExecutionRecord(
             execution_id=execution_id,
-            plate_id=request.plate_id,
+            subject_id=request.subject_id,
             client_address=request.client_address,
             status=ExecutionStatus.QUEUED.value,
             compile_only=request.compile_only,
@@ -286,8 +271,12 @@ class ExecutionServer(ZMQServer, ABC):
             complete_transition = self._lifecycle.mark_complete(
                 execution_id,
                 results_summary={
-                    MessageFields.WELL_COUNT: len(results) if isinstance(results, dict) else 0,
-                    MessageFields.WELLS: list(results.keys()) if isinstance(results, dict) else [],
+                    MessageFields.PARTITION_COUNT: (
+                        len(results) if isinstance(results, dict) else 0
+                    ),
+                    MessageFields.PARTITION_VALUES: (
+                        list(results.keys()) if isinstance(results, dict) else []
+                    ),
                 },
             )
             if not complete_transition.applied:
@@ -337,10 +326,6 @@ class ExecutionServer(ZMQServer, ABC):
                 ExecutionStatusSnapshot(ResponseType.OK, execution=record).to_dict()
             )
 
-    def _run_execution(self, execution_id, request, record):
-        """Compatibility shim for callers still bound to the old private hook."""
-        self.run_execution(execution_id, request, record)
-
     def handle_status(self, msg):
         execution_id = StatusRequest.from_dict(msg).execution_id
         if execution_id:
@@ -358,10 +343,6 @@ class ExecutionServer(ZMQServer, ABC):
             uptime=time.time() - self.start_time if self.start_time else 0.0
         )
         return snapshot.to_dict()
-
-    def _handle_status(self, msg):
-        """Compatibility shim for callers still bound to the old private hook."""
-        return self.handle_status(msg)
 
     def _handle_cancel(self, msg):
         request, error = self._validate_and_parse(msg, CancelRequest)
@@ -386,7 +367,7 @@ class ExecutionServer(ZMQServer, ABC):
             cancellation.transition.applied,
             killed,
         )
-        return cancellation.to_response(workers_killed=killed)
+        return cancellation.to_response(workers_killed=killed).to_dict()
 
     def _cancel_all_executions(self):
         cancellations = self._lifecycle.cancel_all_active(end_time=time.time())
@@ -412,11 +393,7 @@ class ExecutionServer(ZMQServer, ABC):
             self.request_shutdown()
         msg = f"Workers killed ({killed}), server {'shutting down' if force else 'alive'}"
         logger.info(msg)
-        return {
-            MessageFields.TYPE: ResponseType.SHUTDOWN_ACK.value,
-            MessageFields.STATUS: "success",
-            MessageFields.MESSAGE: msg,
-        }
+        return ShutdownAck(message=msg).to_dict()
 
     def _handle_shutdown(self, msg):
         return self._shutdown_workers(msg, force=False)
@@ -444,30 +421,26 @@ class ExecutionServer(ZMQServer, ABC):
                 for execution_id, record in self.active_executions.items()
                 if record.progress_event is not None or ExecutionStatus(record.status).is_terminal
             }
-        return {
-            MessageFields.STATUS: ResponseType.OK.value,
-            MessageFields.MESSAGE: "Progress subscriber registered",
-            MessageFields.PROGRESS_OBSERVATIONS: observations,
-            MessageFields.CLIENT_ID: request.client_id,
-            MessageFields.PROGRESS_SUBSCRIBERS: len(self._progress_subscribers),
-        }
+        return ProgressSubscriptionResponse(
+            client_id=request.client_id,
+            progress_subscribers=len(self._progress_subscribers),
+            message="Progress subscriber registered",
+            progress_observations=observations,
+        ).to_dict()
 
     def _handle_unregister_progress(self, msg):
         request, error = self._validate_and_parse(msg, ProgressUnregistrationRequest)
         if error:
             return error
         self._progress_subscribers.discard(request.client_id)
-        return {
-            MessageFields.STATUS: ResponseType.OK.value,
-            MessageFields.MESSAGE: "Progress subscriber unregistered",
-            MessageFields.CLIENT_ID: request.client_id,
-            MessageFields.PROGRESS_SUBSCRIBERS: len(self._progress_subscribers),
-        }
+        return ProgressSubscriptionResponse(
+            client_id=request.client_id,
+            progress_subscribers=len(self._progress_subscribers),
+            message="Progress subscriber unregistered",
+        ).to_dict()
 
     def send_progress_update(self, progress_update: dict) -> None:
-        from zmqruntime.messages import validate_progress_payload
-
-        validate_progress_payload(progress_update)
+        TaskProgress.from_dict(progress_update)
         execution_id = progress_update[MessageFields.EXECUTION_ID]
         with self._progress_publish_lock:
             record = self.active_executions[execution_id]

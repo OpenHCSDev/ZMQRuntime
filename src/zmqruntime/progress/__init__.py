@@ -3,7 +3,7 @@
 from .projection import (
     GenericAxisProjection,
     GenericExecutionProjection,
-    GenericPlateProjection,
+    GenericSubjectProjection,
     ProgressProjectionAdapterABC,
     build_execution_projection,
 )
@@ -20,7 +20,7 @@ __all__ = [
     "EventRegistryMutationKind",
     "LatestEventRegistry",
     "GenericAxisProjection",
-    "GenericPlateProjection",
+    "GenericSubjectProjection",
     "GenericExecutionProjection",
     "ProgressProjectionAdapterABC",
     "build_execution_projection",

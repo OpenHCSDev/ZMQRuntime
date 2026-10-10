@@ -76,7 +76,7 @@ def test_real_openhcs_job_status_decodes_nested_progress(status):
     # Optional downstream integration, not a dependency or copied DTO in ZMQRuntime.
     execution = pytest.importorskip("openhcs.agent.dto.execution")
     from openhcs.agent.dto.common import SCHEMA_VERSION
-    from openhcs.serialization.json import to_jsonable
+    from python_introspect import to_jsonable
 
     original = execution.ExecutionJobStatus(
         schema_version=SCHEMA_VERSION,

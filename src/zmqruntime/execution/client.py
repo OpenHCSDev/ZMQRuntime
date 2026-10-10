@@ -20,17 +20,22 @@ from zmqruntime.execution.progress_stream import (
 from zmqruntime.execution.responses import (
     ExecutionSubmissionResponse,
     ExecutionWaitResult,
-    WireRequest,
     WireResponse,
 )
 from zmqruntime.execution.wait_policy import ExecutionWaiter, WaitPolicy
 from zmqruntime.messages import (
+    CancelRequest,
     ControlMessageType,
     ControlRequestHeader,
+    ExecuteRequest,
     ExecutionStatusSnapshot,
     MessageFields,
+    ProgressRegistrationRequest,
+    ProgressSubscriptionResponse,
+    ProgressUnregistrationRequest,
     PongResponse,
     ResponseType,
+    StatusRequest,
 )
 from zmqruntime.subscription import CallbackSubscription, SubscriptionABC
 from zmqruntime.timeouts import OperationDeadline
@@ -97,10 +102,7 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
             raise RuntimeError("Failed to connect to execution server")
         self._ensure_progress_subscription(timeout_ms=timeout_ms)
         request = self.serialize_task(task, config)
-        if MessageFields.TYPE not in request:
-            request[MessageFields.TYPE] = ControlMessageType.EXECUTE.value
-        response = self._send_control_request(request, timeout_ms=timeout_ms)
-        return response
+        return self._send_control_request(request.to_dict(), timeout_ms=timeout_ms)
 
     def poll_status(
         self,
@@ -108,10 +110,10 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
         *,
         timeout_ms: int = 5000,
     ):
-        request = {MessageFields.TYPE: ControlMessageType.STATUS.value}
-        if execution_id:
-            request[MessageFields.EXECUTION_ID] = execution_id
-        return self._send_control_request(request, timeout_ms=timeout_ms)
+        return self._send_control_request(
+            StatusRequest(execution_id=execution_id or None).to_dict(),
+            timeout_ms=timeout_ms,
+        )
 
     def wait_for_completion(
         self,
@@ -169,12 +171,7 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
         return response
 
     def cancel_execution(self, execution_id):
-        return self._send_control_request(
-            {
-                MessageFields.TYPE: ControlMessageType.CANCEL.value,
-                MessageFields.EXECUTION_ID: execution_id,
-            }
-        )
+        return self._send_control_request(CancelRequest(execution_id=execution_id).to_dict())
 
     def ping(self):
         try:
@@ -281,18 +278,14 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
             self._start_progress_listener()
             return
         response = self._send_control_request(
-            {
-                MessageFields.TYPE: ControlMessageType.REGISTER_PROGRESS.value,
-                MessageFields.CLIENT_ID: self._progress_client_id,
-            },
+            ProgressRegistrationRequest(client_id=self._progress_client_id).to_dict(),
             timeout_ms=timeout_ms,
         )
-        if MessageFields.STATUS not in response:
-            raise RuntimeError(f"Progress registration response missing status: {response}")
-        if response[MessageFields.STATUS] != ResponseType.OK.value:
+        if response.get(MessageFields.STATUS) != ResponseType.OK.value:
             raise RuntimeError(f"Progress registration failed: {response}")
+        registration = ProgressSubscriptionResponse.from_dict(response)
         with self._progress_lock:
-            for execution_id, payload in response[MessageFields.PROGRESS_OBSERVATIONS].items():
+            for execution_id, payload in registration.progress_observations.items():
                 baseline = ExecutionProgressObservation.from_wire(payload)
                 previous = self._progress_by_execution_id.get(execution_id)
                 if previous is not None:
@@ -305,10 +298,7 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
         if not self.is_connected():
             return True
         self._send_control_request(
-            {
-                MessageFields.TYPE: ControlMessageType.UNREGISTER_PROGRESS.value,
-                MessageFields.CLIENT_ID: self._progress_client_id,
-            }
+            ProgressUnregistrationRequest(client_id=self._progress_client_id).to_dict()
         )
         return True
 
@@ -400,6 +390,6 @@ class ExecutionClient(ZMQClient, ABC, Generic[TaskT, ConfigT]):
         self,
         task: TaskT,
         config: ConfigT | None,
-    ) -> WireRequest:
-        """Serialize task for transmission. Subclass provides serialization logic."""
+    ) -> ExecuteRequest:
+        """Declare the execution request for one task."""
         raise NotImplementedError

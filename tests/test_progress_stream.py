@@ -18,7 +18,7 @@ def _message() -> str:
             "timestamp": 1.0,
             "completed": 1,
             "total": 2,
-            "plate_id": "plate-1",
+            "subject_id": "subject-1",
             "axis_id": "A01",
         }
     )

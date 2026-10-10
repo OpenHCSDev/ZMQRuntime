@@ -9,10 +9,10 @@ from dataclasses import dataclass
 from threading import RLock
 
 from zmqruntime.messages import (
+    CancelResponse,
     ExecutionRecord,
     ExecutionStatus,
     ExecutionStatusSnapshot,
-    MessageFields,
     QueuedExecutionInfo,
     ResponseType,
     RunningExecutionInfo,
@@ -42,23 +42,23 @@ class ExecutionCancellationResult:
 
         return self.transition.applied and self.transition.previous.owns_active_work
 
-    def to_response(self, *, workers_killed: int) -> dict:
-        """Project this outcome onto the execution control response contract."""
+    def to_response(self, *, workers_killed: int) -> CancelResponse:
+        """The control response for this outcome."""
 
         if self.transition.applied:
-            return {
-                MessageFields.STATUS: ResponseType.OK.value,
-                MessageFields.MESSAGE: f"Cancelled - killed {workers_killed} workers",
-                MessageFields.WORKERS_KILLED: workers_killed,
-            }
-        return {
-            MessageFields.STATUS: ResponseType.ERROR.value,
-            MessageFields.ERROR: (
+            return CancelResponse(
+                status=ResponseType.OK,
+                workers_killed=workers_killed,
+                message=f"Cancelled - killed {workers_killed} workers",
+            )
+        return CancelResponse(
+            status=ResponseType.ERROR,
+            workers_killed=workers_killed,
+            error=(
                 f"Execution {self.transition.execution_id} is already "
                 f"{self.transition.current.value}; cancellation was not applied"
             ),
-            MessageFields.WORKERS_KILLED: workers_killed,
-        }
+        )
 
 
 class ExecutionLifecycleEngineABC(ABC):
@@ -323,7 +323,7 @@ class InMemoryExecutionLifecycleEngine(ExecutionLifecycleEngineABC):
             running.append(
                 RunningExecutionInfo(
                     execution_id=execution_id,
-                    plate_id=str(record.plate_id),
+                    subject_id=record.subject_id,
                     start_time=start_time,
                     elapsed=(now - start_time) if start_time > 0 else 0.0,
                     compile_only=bool(record.compile_only),
@@ -340,7 +340,7 @@ class InMemoryExecutionLifecycleEngine(ExecutionLifecycleEngineABC):
             queued.append(
                 QueuedExecutionInfo(
                     execution_id=execution_id,
-                    plate_id=str(record.plate_id),
+                    subject_id=record.subject_id,
                     queue_position=idx,
                 )
             )

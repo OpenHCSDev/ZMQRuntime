@@ -8,7 +8,7 @@ from zmqruntime.progress import (
 
 @dataclass(frozen=True)
 class _Event:
-    plate_id: str
+    subject_id: str
     axis_id: str
     channel: str
     timestamp: float
@@ -20,13 +20,13 @@ def test_latest_event_registry_keeps_channels_separate():
         _Event,
         tuple[str, str, str],
     ](
-        key_builder=lambda event: (event.plate_id, event.axis_id, event.channel),
+        key_builder=lambda event: (event.subject_id, event.axis_id, event.channel),
         is_terminal=lambda event: event.terminal,
         timestamp_of=lambda event: event.timestamp,
     )
 
-    registry.register_event("exec-1", _Event("plate-1", "A01", "pipeline", timestamp=1.0))
-    registry.register_event("exec-1", _Event("plate-1", "A01", "step", timestamp=2.0))
+    registry.register_event("exec-1", _Event("subject-1", "A01", "pipeline", timestamp=1.0))
+    registry.register_event("exec-1", _Event("subject-1", "A01", "step", timestamp=2.0))
 
     events = registry.get_events("exec-1")
     assert len(events) == 2
@@ -38,18 +38,18 @@ def test_latest_event_registry_cleanup_removes_old_terminal_executions():
         _Event,
         tuple[str, str, str],
     ](
-        key_builder=lambda event: (event.plate_id, event.axis_id, event.channel),
+        key_builder=lambda event: (event.subject_id, event.axis_id, event.channel),
         is_terminal=lambda event: event.terminal,
         timestamp_of=lambda event: event.timestamp,
     )
 
     registry.register_event(
         "exec-1",
-        _Event("plate-1", "A01", "pipeline", timestamp=1.0, terminal=True),
+        _Event("subject-1", "A01", "pipeline", timestamp=1.0, terminal=True),
     )
     registry.register_event(
         "exec-2",
-        _Event("plate-1", "A02", "pipeline", timestamp=100.0, terminal=False),
+        _Event("subject-1", "A02", "pipeline", timestamp=100.0, terminal=False),
     )
 
     removed = registry.cleanup_old_executions(retention_seconds=10.0)
@@ -63,15 +63,15 @@ def test_latest_event_registry_rejects_stale_or_duplicate_channel_events():
         _Event,
         tuple[str, str, str],
     ](
-        key_builder=lambda event: (event.plate_id, event.axis_id, event.channel),
+        key_builder=lambda event: (event.subject_id, event.axis_id, event.channel),
         is_terminal=lambda event: event.terminal,
         timestamp_of=lambda event: event.timestamp,
     )
     listener_events = []
     registry.add_listener(lambda execution_id, event: listener_events.append((execution_id, event)))
 
-    newest = _Event("plate-1", "A01", "pipeline", timestamp=2.0)
-    stale = _Event("plate-1", "A01", "pipeline", timestamp=1.0)
+    newest = _Event("subject-1", "A01", "pipeline", timestamp=2.0)
+    stale = _Event("subject-1", "A01", "pipeline", timestamp=1.0)
 
     assert registry.register_event("exec-1", newest) is True
     assert registry.register_event("exec-1", stale) is False
@@ -85,20 +85,20 @@ def test_registry_mutation_listener_observes_register_and_all_clear_routes():
         _Event,
         tuple[str, str, str],
     ](
-        key_builder=lambda event: (event.plate_id, event.axis_id, event.channel),
+        key_builder=lambda event: (event.subject_id, event.axis_id, event.channel),
         is_terminal=lambda event: event.terminal,
         timestamp_of=lambda event: event.timestamp,
     )
     mutations = []
     registry.add_mutation_listener(mutations.append)
 
-    event_one = _Event("plate-1", "A01", "pipeline", timestamp=1.0)
-    event_two = _Event("plate-2", "A01", "pipeline", timestamp=1.0)
+    event_one = _Event("subject-1", "A01", "pipeline", timestamp=1.0)
+    event_two = _Event("subject-2", "A01", "pipeline", timestamp=1.0)
     registry.register_event("exec-1", event_one)
     registry.register_event("exec-2", event_two)
     registry.clear_execution("exec-1")
     registry.clear_all()
-    event_three = _Event("plate-3", "A01", "pipeline", timestamp=2.0)
+    event_three = _Event("subject-3", "A01", "pipeline", timestamp=2.0)
     registry.register_event("exec-3", event_three)
 
     assert [mutation.kind for mutation in mutations] == [
@@ -122,7 +122,7 @@ def test_registry_mutation_subscription_owns_idempotent_release():
         _Event,
         tuple[str, str, str],
     ](
-        key_builder=lambda event: (event.plate_id, event.axis_id, event.channel),
+        key_builder=lambda event: (event.subject_id, event.axis_id, event.channel),
         is_terminal=lambda event: event.terminal,
         timestamp_of=lambda event: event.timestamp,
     )
@@ -131,13 +131,13 @@ def test_registry_mutation_subscription_owns_idempotent_release():
 
     registry.register_event(
         "exec-1",
-        _Event("plate-1", "A01", "pipeline", timestamp=1.0),
+        _Event("subject-1", "A01", "pipeline", timestamp=1.0),
     )
     assert subscription.release() is True
     assert subscription.release() is False
     registry.register_event(
         "exec-2",
-        _Event("plate-2", "A01", "pipeline", timestamp=1.0),
+        _Event("subject-2", "A01", "pipeline", timestamp=1.0),
     )
 
     assert len(mutations) == 1
@@ -149,7 +149,7 @@ def test_clearing_mutation_listeners_retires_owned_subscriptions():
         _Event,
         tuple[str, str, str],
     ](
-        key_builder=lambda event: (event.plate_id, event.axis_id, event.channel),
+        key_builder=lambda event: (event.subject_id, event.axis_id, event.channel),
         is_terminal=lambda event: event.terminal,
         timestamp_of=lambda event: event.timestamp,
     )
@@ -165,7 +165,7 @@ def test_cleanup_notifies_mutation_listener_for_each_removed_execution():
         _Event,
         tuple[str, str, str],
     ](
-        key_builder=lambda event: (event.plate_id, event.axis_id, event.channel),
+        key_builder=lambda event: (event.subject_id, event.axis_id, event.channel),
         is_terminal=lambda event: event.terminal,
         timestamp_of=lambda event: event.timestamp,
     )
@@ -173,7 +173,7 @@ def test_cleanup_notifies_mutation_listener_for_each_removed_execution():
     registry.add_mutation_listener(mutations.append)
     registry.register_event(
         "exec-1",
-        _Event("plate-1", "A01", "pipeline", timestamp=1.0, terminal=True),
+        _Event("subject-1", "A01", "pipeline", timestamp=1.0, terminal=True),
     )
     mutations.clear()
 

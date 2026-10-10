@@ -29,7 +29,7 @@ def execution_response(status: ExecutionStatus) -> WireResponse:
         status=ResponseType.OK,
         execution=ExecutionRecord(
             execution_id=EXECUTION_ID,
-            plate_id="plate",
+            subject_id="subject",
             client_address=None,
             status=status.value,
             error="worker failed" if status is ExecutionStatus.FAILED else None,
@@ -91,7 +91,7 @@ def test_transport_and_decode_errors_share_the_consecutive_budget():
 
     assert len(calls) == 3
     assert result[MessageFields.STATUS] == ExecutionStatus.CANCELLED.value
-    assert "KeyError" in result[MessageFields.MESSAGE]
+    assert "ValueError" in result[MessageFields.MESSAGE]
 
 
 def test_valid_running_observation_resets_the_error_budget():
