@@ -282,41 +282,6 @@ class ViewerSourceSpatialWireField(str, Enum):
     SOURCE_SPATIAL_SHAPE_YX = "source_spatial_shape_yx"
 
 
-class ViewerComponentMode(str, Enum):
-    """Viewer component placement modes shared by stream receivers."""
-
-    STACK = "stack"
-    LAYER = "layer"
-    SLICE = "slice"
-    WINDOW = "window"
-    CHANNEL = "channel"
-    FRAME = "frame"
-
-
-@dataclass(frozen=True)
-class ViewerComponentModeGroups:
-    """Components grouped by viewer placement mode for a display payload."""
-
-    components_by_mode: Mapping[str, tuple[str, ...]]
-    unsupported_component_modes: Mapping[str, str]
-
-    def components_for_mode(
-        self,
-        mode: ViewerComponentMode | str | Enum,
-    ) -> tuple[str, ...]:
-        mode_value = viewer_component_mode_value(mode)
-        if mode_value not in self.components_by_mode:
-            raise ValueError(f"Viewer component mode groups missing mode {mode_value!r}.")
-        return self.components_by_mode[mode_value]
-
-    def require_all_supported(self, context: str) -> None:
-        if self.unsupported_component_modes:
-            raise ValueError(
-                f"Unsupported viewer component modes for {context}: "
-                f"{dict(self.unsupported_component_modes)!r}."
-            )
-
-
 ViewerBatchWireField: TypeAlias = ViewerWireField
 ViewerBatchItemWireField: TypeAlias = ViewerWireField
 ViewerDisplayConfigWireField: TypeAlias = ViewerWireField
@@ -448,45 +413,6 @@ class ViewerBatchDisplayPayload:
         default_factory=dict
     )
 
-    def components_for_mode(
-        self,
-        mode: ViewerComponentMode | str | Enum,
-    ) -> tuple[str, ...]:
-        mode_value = viewer_component_mode_value(mode)
-        components: list[str] = []
-        for component in self.component_order:
-            if component not in self.component_modes:
-                raise ValueError(
-                    f"Viewer display payload missing mode for component {component!r}."
-                )
-            if viewer_component_mode_value(self.component_modes[component]) == mode_value:
-                components.append(component)
-        return tuple(components)
-
-    def component_mode_groups(
-        self,
-        supported_modes: Sequence[ViewerComponentMode | str | Enum],
-    ) -> ViewerComponentModeGroups:
-        supported_mode_values = tuple(viewer_component_mode_value(mode) for mode in supported_modes)
-        components_by_mode: dict[str, list[str]] = {mode: [] for mode in supported_mode_values}
-        unsupported_component_modes: dict[str, str] = {}
-        for component in self.component_order:
-            if component not in self.component_modes:
-                raise ValueError(
-                    f"Viewer display payload missing mode for component {component!r}."
-                )
-            mode_value = viewer_component_mode_value(self.component_modes[component])
-            if mode_value in components_by_mode:
-                components_by_mode[mode_value].append(component)
-            else:
-                unsupported_component_modes[component] = mode_value
-        return ViewerComponentModeGroups(
-            components_by_mode={
-                mode: tuple(components) for mode, components in components_by_mode.items()
-            },
-            unsupported_component_modes=unsupported_component_modes,
-        )
-
     def to_wire_mapping(self) -> dict[str, ViewerWireValue]:
         payload: dict[str, ViewerWireValue] = {
             ViewerDisplayConfigWireField.COMPONENT_MODES.value: ViewerWirePayload.mapping(
@@ -505,14 +431,6 @@ class ViewerBatchDisplayPayload:
             )
         )
         return payload
-
-
-def viewer_component_mode_value(mode: ViewerComponentMode | str | Enum) -> str:
-    """Return the canonical wire value for a viewer component mode."""
-
-    if isinstance(mode, Enum):
-        return str(mode.value)
-    return str(mode)
 
 
 @dataclass(frozen=True)
