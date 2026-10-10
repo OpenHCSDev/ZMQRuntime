@@ -49,7 +49,7 @@ def test_worker_log_observation_correlates_endpoint_heartbeat(tmp_path) -> None:
         running_executions=(
             RunningExecutionInfo(
                 execution_id="execution-1",
-                plate_id="plate-1",
+                subject_id="subject-1",
                 start_time=1.0,
                 elapsed=2.0,
             ),

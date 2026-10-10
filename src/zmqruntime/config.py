@@ -114,6 +114,9 @@ class ZMQConfig:
     app_name: NonBlankString = "zmqruntime"
     """Application namespace included in generated transport identities and paths."""
 
+    server_poll_interval_seconds: PositiveFloat = 0.01
+    """Delay between endpoint readiness probes while an owned server starts."""
+
     def __post_init__(self) -> None:
         """Reject invalid transport topology at its declaration boundary."""
 

@@ -75,7 +75,7 @@ def test_endpoint_client_session_exposes_only_an_admitted_client() -> None:
 
 def test_execute_request_roundtrip():
     request = ExecuteRequest(
-        plate_id="plate-1",
+        subject_id="subject-1",
         pipeline_code="print('hi')",
         config_params={"a": 1},
         client_address="127.0.0.1",
@@ -83,7 +83,7 @@ def test_execute_request_roundtrip():
     data = request.to_dict()
     assert data[MessageFields.TYPE] == "execute"
     roundtrip = ExecuteRequest.from_dict(data)
-    assert roundtrip.plate_id == "plate-1"
+    assert roundtrip.subject_id == "subject-1"
     assert roundtrip.config_params == {"a": 1}
 
 
@@ -151,7 +151,7 @@ def test_pong_response_requires_protocol_discriminator():
         MessageFields.SERVER_ROLE: ServerRole.EXECUTION.value,
     }
 
-    with pytest.raises(KeyError):
+    with pytest.raises(ValueError):
         PongResponse.from_dict(payload)
 
 
@@ -178,7 +178,7 @@ def test_pong_response_requires_explicit_server_role():
         MessageFields.SERVER: "ExecutionServer",
     }
 
-    with pytest.raises(KeyError):
+    with pytest.raises(ValueError):
         PongResponse.from_dict(payload)
 
 
@@ -192,5 +192,94 @@ def test_worker_state_projects_declared_process_identity_without_metadata_bag():
     )
 
     assert WorkerState.from_dict(state.to_dict()) == state
-    with pytest.raises(ValueError, match="unknown fields"):
+    with pytest.raises(ValueError, match="undeclared field"):
         WorkerState.from_dict({**state.to_dict(), "legacy_extra": "value"})
+
+
+def _declared_message_examples():
+    import uuid
+
+    from zmqruntime import messages
+
+    identity = ProcessIdentity.current()
+    route = messages.AckReturnRoute("tcp://127.0.0.1:1", str(uuid.uuid4()), identity)
+    record = messages.ExecutionRecord("e-1", "subject-1", "running", start_time=1.0)
+    running = messages.RunningExecutionInfo("e-1", "subject-1", 1.0, 2.0)
+    queued = messages.QueuedExecutionInfo("e-2", "subject-1", 1)
+    worker = WorkerState(1, "running", 0.5, 10.0, create_time=3.0)
+    return (
+        worker,
+        identity,
+        route,
+        record,
+        running,
+        queued,
+        ProcessResourceUsage(1.0, 2.0),
+        EndpointApplication("app", "1.0"),
+        messages.ImageTransferIdentity("image-1", route, identity),
+        messages.ImageAck("image-1", 1, "viewer", return_route=route, producer=identity),
+        messages.TaskProgress("e-1", "running", "running", 10.0, 1.0, 1, 10, subject_id="s"),
+        messages.ControlErrorResponse("boom"),
+        messages.ExecuteResponse(ResponseType.ACCEPTED, execution_id="e-1"),
+        messages.CancelResponse(ResponseType.OK, 2, message="cancelled"),
+        messages.ShutdownAck("stopping"),
+        messages.ProgressSubscriptionResponse("client", 1, "registered", {"e-1": {"x": 1}}),
+        messages.ExecutionStatusSnapshot(
+            ResponseType.OK,
+            execution=record,
+            running_executions=(running,),
+            queued_executions=(queued,),
+            executions=("e-1",),
+        ),
+        PongResponse(
+            port=1,
+            control_port=2,
+            ready=True,
+            server="server",
+            server_role=ServerRole.EXECUTION,
+            workers=(worker,),
+            running_executions=(running,),
+            process_identity=identity,
+            process_usage=ProcessResourceUsage(1.0, 2.0),
+            application=EndpointApplication("app", "1.0"),
+        ),
+        ControlRequestHeader(ControlMessageType.PING),
+        messages.EndpointShutdownRequest(ControlMessageType.SHUTDOWN, identity),
+        ExecuteRequest(subject_id="subject-1", pipeline_code="pass", config_params={"a": [1]}),
+        messages.StatusRequest(execution_id="e-1"),
+        CancelRequest(execution_id="e-1"),
+        messages.ProgressRegistrationRequest(client_id="client"),
+        messages.ProgressUnregistrationRequest(client_id="client"),
+    )
+
+
+def _concrete_declared_messages():
+    from dataclasses import is_dataclass
+
+    from zmqruntime import messages
+
+    return {
+        value
+        for value in vars(messages).values()
+        if isinstance(value, type)
+        and value.__module__ == messages.__name__
+        and is_dataclass(value)
+        and issubclass(value, (messages.WireMessage, ControlRequestHeader))
+    }
+
+
+def test_every_declared_message_round_trips_through_its_declaration() -> None:
+    examples = _declared_message_examples()
+
+    assert {type(example) for example in examples} == _concrete_declared_messages()
+    for example in examples:
+        assert type(example).from_dict(example.to_dict()) == example
+
+
+def test_typed_messages_reject_another_kind() -> None:
+    from zmqruntime import messages
+
+    with pytest.raises(ValueError, match="type='image_ack'"):
+        messages.ImageAck.from_dict(messages.ShutdownAck("stopping").to_dict())
+    with pytest.raises(ValueError, match="message_type"):
+        messages.StatusRequest.from_dict(CancelRequest(execution_id="e-1").to_dict())

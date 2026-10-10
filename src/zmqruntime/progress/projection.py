@@ -23,11 +23,11 @@ class GenericAxisProjection:
 
 
 @dataclass(frozen=True)
-class GenericPlateProjection(Generic[TState]):
-    """One plate projection inside one execution snapshot."""
+class GenericSubjectProjection(Generic[TState]):
+    """One subject projection inside one execution snapshot."""
 
     execution_id: str
-    plate_id: str
+    subject_id: str
     state: TState
     percent: float
     axis_progress: Tuple[GenericAxisProjection, ...]
@@ -44,24 +44,24 @@ class GenericPlateProjection(Generic[TState]):
 
 @dataclass
 class GenericExecutionProjection(Generic[TState]):
-    """Cross-execution projection with de-duplicated latest plate view."""
+    """Cross-execution projection with de-duplicated latest view per subject."""
 
-    plates: List[GenericPlateProjection[TState]] = field(default_factory=list)
-    by_key: Dict[Tuple[str, str], GenericPlateProjection[TState]] = field(
+    subjects: List[GenericSubjectProjection[TState]] = field(default_factory=list)
+    by_key: Dict[Tuple[str, str], GenericSubjectProjection[TState]] = field(
         default_factory=dict
     )
-    by_plate_latest: Dict[str, GenericPlateProjection[TState]] = field(
+    by_subject_latest: Dict[str, GenericSubjectProjection[TState]] = field(
         default_factory=dict
     )
     state_counts: Dict[TState, int] = field(default_factory=dict)
     overall_percent: float = 0.0
 
-    def get_plate(
-        self, plate_id: str, execution_id: Optional[str] = None
-    ) -> Optional[GenericPlateProjection[TState]]:
+    def get_subject(
+        self, subject_id: str, execution_id: Optional[str] = None
+    ) -> Optional[GenericSubjectProjection[TState]]:
         if execution_id is not None:
-            return self.by_key.get((execution_id, plate_id))
-        return self.by_plate_latest.get(plate_id)
+            return self.by_key.get((execution_id, subject_id))
+        return self.by_subject_latest.get(subject_id)
 
     def count_state(self, state: TState) -> int:
         return self.state_counts.get(state, 0)
@@ -79,8 +79,8 @@ class ProgressProjectionAdapterABC(ABC, Generic[TEvent, TState]):
         return "pipeline"
 
     @abstractmethod
-    def plate_id(self, event: TEvent) -> str:
-        """Return plate id."""
+    def subject_id(self, event: TEvent) -> str:
+        """Return the id of the subject this event belongs to."""
 
     @abstractmethod
     def axis_id(self, event: TEvent) -> str:
@@ -104,7 +104,7 @@ class ProgressProjectionAdapterABC(ABC, Generic[TEvent, TState]):
 
     @abstractmethod
     def known_axes(self, events: Sequence[TEvent]) -> Sequence[str]:
-        """Return declared axis universe for plate events when available."""
+        """Return declared axis universe for one subject's events when available."""
 
     @abstractmethod
     def is_failure_event(self, event: TEvent) -> bool:
@@ -162,12 +162,12 @@ def _latest_by_axis(
     return latest
 
 
-def _build_plate_projection(
+def _build_subject_projection(
     execution_id: str,
-    plate_id: str,
+    subject_id: str,
     events: List[TEvent],
     adapter: ProgressProjectionAdapterABC[TEvent, TState],
-) -> GenericPlateProjection[TState]:
+) -> GenericSubjectProjection[TState]:
     latest_timestamp = max((adapter.timestamp(event) for event in events), default=0.0)
     known_axes = list(adapter.known_axes(events))
     pipeline_by_axis = _latest_by_axis(
@@ -232,9 +232,9 @@ def _build_plate_projection(
         else:
             state = adapter.state_executing()
 
-        return GenericPlateProjection(
+        return GenericSubjectProjection(
             execution_id=execution_id,
-            plate_id=plate_id,
+            subject_id=subject_id,
             state=state,
             percent=percent,
             axis_progress=tuple(axis_progress),
@@ -296,18 +296,18 @@ def _build_plate_projection(
             )
             for axis_id in axis_universe
         )
-        return GenericPlateProjection(
+        return GenericSubjectProjection(
             execution_id=execution_id,
-            plate_id=plate_id,
+            subject_id=subject_id,
             state=state,
             percent=percent,
             axis_progress=axis_progress,
             latest_timestamp=latest_timestamp,
         )
 
-    return GenericPlateProjection(
+    return GenericSubjectProjection(
         execution_id=execution_id,
-        plate_id=plate_id,
+        subject_id=subject_id,
         state=adapter.state_idle_from_events(events),
         percent=0.0,
         axis_progress=tuple(),
@@ -323,32 +323,32 @@ def build_execution_projection(
     grouped: Dict[Tuple[str, str], List[TEvent]] = {}
     for execution_id, events in events_by_execution.items():
         for event in events:
-            grouped.setdefault((execution_id, adapter.plate_id(event)), []).append(event)
+            grouped.setdefault((execution_id, adapter.subject_id(event)), []).append(event)
 
     projection: GenericExecutionProjection[TState] = GenericExecutionProjection()
 
-    for (execution_id, plate_id), plate_events in grouped.items():
-        plate_projection = _build_plate_projection(
+    for (execution_id, subject_id), subject_events in grouped.items():
+        subject_projection = _build_subject_projection(
             execution_id,
-            plate_id,
-            plate_events,
+            subject_id,
+            subject_events,
             adapter,
         )
-        projection.plates.append(plate_projection)
-        projection.by_key[(execution_id, plate_id)] = plate_projection
+        projection.subjects.append(subject_projection)
+        projection.by_key[(execution_id, subject_id)] = subject_projection
 
-    for plate in projection.plates:
-        existing = projection.by_plate_latest.get(plate.plate_id)
-        if existing is None or plate.latest_timestamp > existing.latest_timestamp:
-            projection.by_plate_latest[plate.plate_id] = plate
+    for subject in projection.subjects:
+        existing = projection.by_subject_latest.get(subject.subject_id)
+        if existing is None or subject.latest_timestamp > existing.latest_timestamp:
+            projection.by_subject_latest[subject.subject_id] = subject
 
-    for plate in projection.by_plate_latest.values():
-        projection.state_counts[plate.state] = projection.state_counts.get(plate.state, 0) + 1
+    for subject in projection.by_subject_latest.values():
+        projection.state_counts[subject.state] = projection.state_counts.get(subject.state, 0) + 1
 
-    if projection.by_plate_latest:
+    if projection.by_subject_latest:
         projection.overall_percent = (
-            sum(plate.percent for plate in projection.by_plate_latest.values())
-            / len(projection.by_plate_latest)
+            sum(subject.percent for subject in projection.by_subject_latest.values())
+            / len(projection.by_subject_latest)
         )
 
     return projection

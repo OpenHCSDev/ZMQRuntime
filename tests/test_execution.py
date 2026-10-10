@@ -1,6 +1,5 @@
 import json
 import multiprocessing
-import pickle
 import platform
 import subprocess
 import sys
@@ -32,6 +31,7 @@ from zmqruntime.execution.status_poller import (
 )
 from zmqruntime.execution.wait_policy import ExecutionWaiter, WaitPolicy
 from zmqruntime.messages import (
+    CancelRequest,
     ControlMessageType,
     EndpointApplication,
     EndpointControlCapability,
@@ -40,8 +40,11 @@ from zmqruntime.messages import (
     MessageFields,
     PongResponse,
     ProcessIdentity,
+    ProgressRegistrationRequest,
+    ProgressSubscriptionResponse,
     ResponseType,
     ServerRole,
+    StatusRequest,
     TaskProgress,
 )
 from zmqruntime.transport import (
@@ -367,7 +370,7 @@ def test_shutdown_rejects_endpoint_without_advertised_capability(monkeypatch):
 def test_execution_server_handle_execute_and_run():
     server = DummyExecutionServer(port=5555)
     request = ExecuteRequest(
-        plate_id="plate-1",
+        subject_id="subject-1",
         pipeline_code="print('hi')",
         config_params={"x": 1},
     )
@@ -377,10 +380,10 @@ def test_execution_server_handle_execute_and_run():
     record = server.active_executions[execution_id]
     assert record.status == ExecutionStatus.QUEUED.value
 
-    server._run_execution(execution_id, request, record)
+    server.run_execution(execution_id, request, record)
     assert record.status == ExecutionStatus.COMPLETE.value
 
-    status_response = server._handle_status(
+    status_response = server.handle_status(
         {
             MessageFields.TYPE: ControlMessageType.STATUS.value,
             MessageFields.EXECUTION_ID: execution_id,
@@ -390,42 +393,10 @@ def test_execution_server_handle_execute_and_run():
     assert status_response[MessageFields.EXECUTION][MessageFields.EXECUTION_ID] == execution_id
 
 
-def test_execution_status_response_is_picklable_with_non_transport_values():
-    server = DummyExecutionServer(port=5555)
-    request = ExecuteRequest(
-        plate_id="plate-1",
-        pipeline_code="print('hi')",
-        config_params={"x": 1},
-    )
-    response = server._handle_execute(request.to_dict())
-    execution_id = response[MessageFields.EXECUTION_ID]
-    record = server.active_executions[execution_id]
-
-    class Unserializable:
-        pass
-
-    record.client_address = Unserializable
-    record.results_summary = {"raw": Unserializable, "nested": [Unserializable]}
-
-    status_response = server._handle_status(
-        {
-            MessageFields.TYPE: ControlMessageType.STATUS.value,
-            MessageFields.EXECUTION_ID: execution_id,
-        }
-    )
-    encoded = pickle.dumps(status_response)
-    decoded = pickle.loads(encoded)
-
-    execution = decoded[MessageFields.EXECUTION]
-    assert isinstance(execution[MessageFields.CLIENT_ADDRESS], str)
-    assert isinstance(execution[MessageFields.RESULTS_SUMMARY]["raw"], str)
-    assert isinstance(execution[MessageFields.RESULTS_SUMMARY]["nested"][0], str)
-
-
 def test_failed_execution_exposes_traceback_field():
     server = FailingExecutionServer(port=5555)
     request = ExecuteRequest(
-        plate_id="plate-1",
+        subject_id="subject-1",
         pipeline_code="print('hi')",
         config_params={"x": 1},
     )
@@ -433,9 +404,9 @@ def test_failed_execution_exposes_traceback_field():
     execution_id = response[MessageFields.EXECUTION_ID]
     record = server.active_executions[execution_id]
 
-    server._run_execution(execution_id, request, record)
+    server.run_execution(execution_id, request, record)
 
-    status_response = server._handle_status(
+    status_response = server.handle_status(
         {
             MessageFields.TYPE: ControlMessageType.STATUS.value,
             MessageFields.EXECUTION_ID: execution_id,
@@ -449,7 +420,7 @@ def test_failed_execution_exposes_traceback_field():
 def test_cancelled_execution_is_terminal_when_running_task_returns():
     server = BlockingExecutionServer(port=5555)
     request = ExecuteRequest(
-        plate_id="plate-1",
+        subject_id="subject-1",
         pipeline_code="print('hi')",
         config_params={"x": 1},
     )
@@ -482,7 +453,7 @@ def test_cancelled_execution_is_terminal_when_running_task_returns():
 def test_cancel_targets_queued_execution_without_interrupting_running_execution():
     server = BlockingExecutionServer(port=5555)
     request = ExecuteRequest(
-        plate_id="plate-1",
+        subject_id="subject-1",
         pipeline_code="print('hi')",
         config_params={"x": 1},
     )
@@ -506,7 +477,7 @@ def test_cancel_targets_queued_execution_without_interrupting_running_execution(
 def test_cancel_rejects_terminal_execution_without_rewriting_status():
     server = DummyExecutionServer(port=5555)
     request = ExecuteRequest(
-        plate_id="plate-1",
+        subject_id="subject-1",
         pipeline_code="print('hi')",
         config_params={"x": 1},
     )
@@ -526,9 +497,9 @@ def test_cancel_rejects_terminal_execution_without_rewriting_status():
     assert record.status == ExecutionStatus.COMPLETE.value
 
 
-def test_task_progress_roundtrip_supports_execution_id_and_task_id():
+def test_task_progress_reads_its_fields_out_of_an_application_event():
     progress = TaskProgress(
-        task_id="exec-123",
+        execution_id="exec-123",
         phase="running",
         status="running",
         percent=10.0,
@@ -538,13 +509,10 @@ def test_task_progress_roundtrip_supports_execution_id_and_task_id():
     )
 
     payload = progress.to_dict()
-    parsed = TaskProgress.from_dict(payload)
-    assert parsed.task_id == "exec-123"
-
-    legacy_payload = dict(payload)
-    del legacy_payload["execution_id"]
-    legacy_parsed = TaskProgress.from_dict(legacy_payload)
-    assert legacy_parsed.task_id == "exec-123"
+    assert TaskProgress.from_dict(payload) == progress
+    assert TaskProgress.from_dict({**payload, "application_field": [1, 2]}) == progress
+    with pytest.raises(ValueError):
+        TaskProgress.from_dict({key: value for key, value in payload.items() if key != "phase"})
 
 
 class DummyExecutionClient(ExecutionClient):
@@ -559,7 +527,7 @@ class DummyExecutionClient(ExecutionClient):
         return None
 
     def serialize_task(self, task, config):
-        return {"task": task}
+        return ExecuteRequest(subject_id="subject-1", pipeline_code=str(task), config_code="")
 
     def connect(self, timeout: float = 10.0):
         self._connection = attached_connection(self)
@@ -567,17 +535,18 @@ class DummyExecutionClient(ExecutionClient):
 
     def _send_control_request(self, request, timeout_ms=5000):
         if request[MessageFields.TYPE] == ControlMessageType.REGISTER_PROGRESS.value:
-            return {
-                MessageFields.STATUS: ResponseType.OK.value,
-                MessageFields.PROGRESS_OBSERVATIONS: {},
-            }
+            return ProgressSubscriptionResponse(
+                client_id=request[MessageFields.CLIENT_ID],
+                progress_subscribers=1,
+                message="registered",
+            ).to_dict()
         return request
 
 
-def test_execution_client_submit_adds_type():
+def test_execution_client_submits_the_declared_execute_request():
     client = DummyExecutionClient()
     response = client.submit_execution({"hello": "world"})
-    assert response[MessageFields.TYPE] == ControlMessageType.EXECUTE.value
+    assert ExecuteRequest.from_dict(response) == client.serialize_task({"hello": "world"}, None)
 
 
 def test_execution_server_progress_registration_roundtrip():
@@ -621,14 +590,9 @@ class ProgressAwareExecutionClient(DummyExecutionClient):
 
     def _send_control_request(self, request, timeout_ms=5000):
         self.sent_requests.append((request, timeout_ms))
-        if request.get(MessageFields.TYPE) == ControlMessageType.REGISTER_PROGRESS.value:
-            return {
-                MessageFields.STATUS: ResponseType.OK.value,
-                MessageFields.PROGRESS_OBSERVATIONS: {},
-            }
         if request.get(MessageFields.TYPE) == ControlMessageType.UNREGISTER_PROGRESS.value:
             return {MessageFields.STATUS: ResponseType.OK.value}
-        return request
+        return super()._send_control_request(request, timeout_ms)
 
 
 def test_execution_client_registers_progress_before_execute():
@@ -637,17 +601,11 @@ def test_execution_client_registers_progress_before_execute():
     assert response[MessageFields.TYPE] == ControlMessageType.EXECUTE.value
     assert client.listener_started is True
     assert client.sent_requests[0] == (
-        {
-            MessageFields.TYPE: ControlMessageType.REGISTER_PROGRESS.value,
-            MessageFields.CLIENT_ID: client._progress_client_id,
-        },
+        ProgressRegistrationRequest(client_id=client._progress_client_id).to_dict(),
         15000,
     )
     assert client.sent_requests[1] == (
-        {
-            "task": {"hello": "world"},
-            MessageFields.TYPE: ControlMessageType.EXECUTE.value,
-        },
+        client.serialize_task({"hello": "world"}, None).to_dict(),
         15000,
     )
 
@@ -661,7 +619,7 @@ def test_execution_client_registers_progress_before_execute():
 def test_execution_client_retains_immutable_progress_observations_per_execution():
     client = ProgressAwareExecutionClient()
     first = TaskProgress(
-        task_id="execution-1",
+        execution_id="execution-1",
         phase="compile",
         status="running",
         percent=10.0,
@@ -670,7 +628,7 @@ def test_execution_client_retains_immutable_progress_observations_per_execution(
         total=10,
     ).to_dict()
     second = TaskProgress(
-        task_id="execution-1",
+        execution_id="execution-1",
         phase="execute",
         status="running",
         percent=20.0,
@@ -680,7 +638,7 @@ def test_execution_client_retains_immutable_progress_observations_per_execution(
     ).to_dict()
     second["nested"] = {"values": [1, 2]}
     other = TaskProgress(
-        task_id="execution-2",
+        execution_id="execution-2",
         phase="compile",
         status="running",
         percent=50.0,
@@ -808,7 +766,7 @@ class EndpointPolicyExecutionClient(ExecutionClient):
         return None
 
     def serialize_task(self, task, config):
-        return {"task": task}
+        return ExecuteRequest(subject_id="subject-1", pipeline_code=str(task), config_code="")
 
 
 def test_ipc_connect_preserves_unresponsive_live_server_endpoint(monkeypatch):
@@ -1267,7 +1225,7 @@ class ConcurrentStartupExecutionClient(ExecutionClient):
         return None
 
     def serialize_task(self, task, config):
-        return {"task": task}
+        return ExecuteRequest(subject_id="subject-1", pipeline_code=str(task), config_code="")
 
 
 @pytest.mark.parametrize("transport_mode", (TransportMode.TCP, TransportMode.IPC))
@@ -1389,7 +1347,7 @@ def test_execution_waiter_treats_progress_as_liveness_during_status_timeouts():
             MessageFields.STATUS: ResponseType.OK.value,
             MessageFields.EXECUTION: {
                 MessageFields.EXECUTION_ID: "compile-1",
-                MessageFields.PLATE_ID: "plate-1",
+                MessageFields.SUBJECT_ID: "subject-1",
                 MessageFields.STATUS: ExecutionStatus.COMPLETE.value,
             },
         }
@@ -1423,7 +1381,7 @@ def test_execution_waiter_treats_known_server_process_as_exact_liveness():
             MessageFields.STATUS: ResponseType.OK.value,
             MessageFields.EXECUTION: {
                 MessageFields.EXECUTION_ID: "compile-1",
-                MessageFields.PLATE_ID: "plate-1",
+                MessageFields.SUBJECT_ID: "subject-1",
                 MessageFields.STATUS: ExecutionStatus.COMPLETE.value,
             },
         }
@@ -1485,7 +1443,7 @@ def test_execution_client_composes_known_server_liveness_into_waiter(monkeypatch
             MessageFields.STATUS: ResponseType.OK.value,
             MessageFields.EXECUTION: {
                 MessageFields.EXECUTION_ID: "compile-1",
-                MessageFields.PLATE_ID: "plate-1",
+                MessageFields.SUBJECT_ID: "subject-1",
                 MessageFields.STATUS: ExecutionStatus.COMPLETE.value,
             },
         }
@@ -1521,10 +1479,10 @@ def test_submission_response_requires_explicit_tracking_and_diagnostics():
         {
             MessageFields.STATUS: ResponseType.ERROR.value,
             MessageFields.MESSAGE: "bad request",
-            MessageFields.ERROR: "missing plate",
+            MessageFields.ERROR: "missing subject",
         }
     )
-    assert failed_with_both.require_failure_text("submission") == ("bad request (missing plate)")
+    assert failed_with_both.require_failure_text("submission") == ("bad request (missing subject)")
 
 
 def test_waiter_retains_the_terminal_record_without_another_status_poll():
@@ -1532,11 +1490,11 @@ def test_waiter_retains_the_terminal_record_without_another_status_poll():
 
     record = {
         "execution_id": "retained-1",
-        "plate_id": "/plate",
+        "subject_id": "/subject",
         "status": "complete",
         "start_time": 2.0,
         "end_time": 5.0,
-        "results_summary": {"well_count": 1},
+        "results_summary": {"partition_count": 1},
     }
     requests = []
 
@@ -1567,7 +1525,7 @@ def test_terminal_status_is_published_with_its_completed_time_bounds():
                 )
 
     record = ObservedRecord(
-        "terminal-1", "/plate", None, ExecutionStatus.RUNNING.value,
+        "terminal-1", "/subject", ExecutionStatus.RUNNING.value,
         start_time=2.0,
     )
     ExecutionStatus.COMPLETE.apply_to_record(record, timestamp=5.0)
@@ -1587,12 +1545,12 @@ def test_terminal_status_waits_for_actual_progress_callback_tail(terminal_status
     from zmqruntime.subscription import CallbackSubscription
 
     server = DummyExecutionServer(port=5555)
-    record = ExecutionRecord("tail-1", "plate-1", None, ExecutionStatus.RUNNING.value)
+    record = ExecutionRecord("tail-1", "subject-1", ExecutionStatus.RUNNING.value)
     server.active_executions[record.execution_id] = record
     for number in (1, 2):
         server.send_progress_update(
             TaskProgress(
-                task_id=record.execution_id,
+                execution_id=record.execution_id,
                 phase="axis_completed" if number == 2 else "step_completed",
                 status="success",
                 percent=number * 50.0,
@@ -1666,10 +1624,10 @@ def test_progress_registration_baseline_and_loss_have_explicit_delivery_laws():
     from zmqruntime.messages import ExecutionRecord
 
     server = DummyExecutionServer(port=5555)
-    record = ExecutionRecord("late-1", "plate-1", None, ExecutionStatus.RUNNING.value)
+    record = ExecutionRecord("late-1", "subject-1", ExecutionStatus.RUNNING.value)
     server.active_executions[record.execution_id] = record
     payload = TaskProgress(
-        task_id=record.execution_id,
+        execution_id=record.execution_id,
         phase="running",
         status="running",
         percent=50.0,
@@ -1733,7 +1691,7 @@ def test_terminal_progress_callback_failure_is_not_completed_delivery():
 
     client.progress_callback = fail
     event = TaskProgress(
-        task_id="callback-1",
+        execution_id="callback-1",
         phase="axis_completed",
         status="success",
         percent=100.0,
@@ -1744,7 +1702,7 @@ def test_terminal_progress_callback_failure_is_not_completed_delivery():
     event[MessageFields.PROGRESS_SEQUENCE] = 1
     assert not client._progress_stream._dispatch_message(json.dumps(event))
     record = ExecutionRecord(
-        "callback-1", "plate-1", None, ExecutionStatus.COMPLETE.value, progress_sequence=1
+        "callback-1", "subject-1", ExecutionStatus.COMPLETE.value, progress_sequence=1
     )
     client.poll_status = lambda _execution_id, timeout_ms: {
         MessageFields.STATUS: ResponseType.OK.value,
@@ -1760,12 +1718,12 @@ def test_terminal_notification_contains_finalized_summary_and_wakes_without_stat
 
     class EnrichedServer(DummyExecutionServer):
         def finalize_execution_record(self, record):
-            assert record.results_summary == {"well_count": 1, "wells": ["result"]}
+            assert record.results_summary == {"partition_count": 1, "partition_values": ["result"]}
             assert record.start_time is not None and record.end_time is not None
             record.results_summary["output_root"] = "/actual-output"
 
     server = EnrichedServer(port=5555)
-    request = ExecuteRequest(plate_id="plate-1", pipeline_code="pass", config_params={"x": 1})
+    request = ExecuteRequest(subject_id="subject-1", pipeline_code="pass", config_params={"x": 1})
     response = server._handle_execute(request.to_dict())
     execution_id = response[MessageFields.EXECUTION_ID]
     server.run_execution(execution_id, request, server.active_executions[execution_id])
@@ -1794,7 +1752,7 @@ def test_status_cannot_observe_partial_terminal_finalization():
             record.results_summary["output_root"] = "/final"
 
     server = EnrichedServer(port=5555)
-    request = ExecuteRequest(plate_id="plate-1", pipeline_code="pass", config_params={"x": 1})
+    request = ExecuteRequest(subject_id="subject-1", pipeline_code="pass", config_params={"x": 1})
     execution_id = server._handle_execute(request.to_dict())["execution_id"]
     runner = threading.Thread(target=server.run_execution, args=(execution_id, request, server.active_executions[execution_id]))
     runner.start()
@@ -1802,14 +1760,14 @@ def test_status_cannot_observe_partial_terminal_finalization():
     responses = []
 
     def read_status():
-        responses.append(server.handle_status({"execution_id": execution_id}))
+        responses.append(server.handle_status(StatusRequest(execution_id=execution_id).to_dict()))
         observed.set()
 
     reader = threading.Thread(target=read_status)
     registrations = []
 
     def register():
-        registrations.append(server._handle_register_progress({"client_id": "late-client"}))
+        registrations.append(server._handle_register_progress(ProgressRegistrationRequest(client_id="late-client").to_dict()))
         registered.set()
 
     subscriber = threading.Thread(target=register)
@@ -1832,7 +1790,7 @@ def test_lost_terminal_notification_recovers_status_and_late_subscription_replay
     from zmqruntime.subscription import CallbackSubscription
 
     server = FailingExecutionServer(port=5555)
-    request = ExecuteRequest(plate_id="plate-1", pipeline_code="pass", config_params={"x": 1})
+    request = ExecuteRequest(subject_id="subject-1", pipeline_code="pass", config_params={"x": 1})
     execution_id = server._handle_execute(request.to_dict())["execution_id"]
     server.run_execution(execution_id, request, server.active_executions[execution_id])
     terminal = server.progress_queue.get_nowait()  # Deliberately lose its PUB delivery.
@@ -1844,7 +1802,7 @@ def test_lost_terminal_notification_recovers_status_and_late_subscription_replay
 
     def poll(current_execution_id, *, timeout_ms):
         requests.append(current_execution_id)
-        return server.handle_status({"execution_id": current_execution_id})
+        return server.handle_status(StatusRequest(execution_id=current_execution_id).to_dict())
 
     client.poll_status = poll
     result = client.wait_for_completion(execution_id, poll_interval=0)
@@ -1863,14 +1821,14 @@ def test_cancel_and_shutdown_seal_progress_before_terminal_notification(shutdown
     from zmqruntime.messages import ExecutionRecord
 
     server = DummyExecutionServer(port=5555)
-    record = ExecutionRecord("cancel-tail", "plate-1", None, ExecutionStatus.RUNNING.value)
+    record = ExecutionRecord("cancel-tail", "subject-1", ExecutionStatus.RUNNING.value)
     server.active_executions[record.execution_id] = record
-    progress = TaskProgress(task_id=record.execution_id, phase="running", status="running", percent=1.0, timestamp=1.0, completed=0, total=1).to_dict()
+    progress = TaskProgress(execution_id=record.execution_id, phase="running", status="running", percent=1.0, timestamp=1.0, completed=0, total=1).to_dict()
     server.send_progress_update(progress)
     if shutdown:
         server._cancel_all_executions()
     else:
-        server._handle_cancel({"execution_id": record.execution_id})
+        server._handle_cancel(CancelRequest(execution_id=record.execution_id).to_dict())
     server.send_progress_update(progress)
     admitted = server.progress_queue.get_nowait()
     terminal = server.progress_queue.get_nowait()

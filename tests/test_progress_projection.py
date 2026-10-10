@@ -9,7 +9,7 @@ from zmqruntime.progress import (
 @dataclass(frozen=True)
 class _Event:
     execution_id: str
-    plate_id: str
+    subject_id: str
     axis_id: str
     channel: str
     percent: float
@@ -20,8 +20,8 @@ class _Event:
 
 
 class _Adapter(ProgressProjectionAdapterABC[_Event, str]):
-    def plate_id(self, event: _Event) -> str:
-        return event.plate_id
+    def subject_id(self, event: _Event) -> str:
+        return event.subject_id
 
     def axis_id(self, event: _Event) -> str:
         return event.axis_id
@@ -75,7 +75,7 @@ def test_build_execution_projection_marks_executing_from_pipeline_channel():
         "exec-1": [
             _Event(
                 execution_id="exec-1",
-                plate_id="plate-1",
+                subject_id="subject-1",
                 axis_id="",
                 channel="compile",
                 percent=0.0,
@@ -86,7 +86,7 @@ def test_build_execution_projection_marks_executing_from_pipeline_channel():
             ),
             _Event(
                 execution_id="exec-1",
-                plate_id="plate-1",
+                subject_id="subject-1",
                 axis_id="A01",
                 channel="pipeline",
                 percent=50.0,
@@ -98,11 +98,11 @@ def test_build_execution_projection_marks_executing_from_pipeline_channel():
     }
 
     projection = build_execution_projection(events_by_execution, adapter=adapter)
-    plate = projection.get_plate("plate-1", "exec-1")
+    subject = projection.get_subject("subject-1", "exec-1")
 
-    assert plate is not None
-    assert plate.state == "executing"
-    assert round(plate.percent, 1) == 25.0
+    assert subject is not None
+    assert subject.state == "executing"
+    assert round(subject.percent, 1) == 25.0
     assert projection.count_state("executing") == 1
 
 
@@ -112,7 +112,7 @@ def test_build_execution_projection_marks_failed_when_axis_failed():
         "exec-1": [
             _Event(
                 execution_id="exec-1",
-                plate_id="plate-1",
+                subject_id="subject-1",
                 axis_id="",
                 channel="compile",
                 percent=0.0,
@@ -123,7 +123,7 @@ def test_build_execution_projection_marks_failed_when_axis_failed():
             ),
             _Event(
                 execution_id="exec-1",
-                plate_id="plate-1",
+                subject_id="subject-1",
                 axis_id="A01",
                 channel="pipeline",
                 percent=50.0,
@@ -133,7 +133,7 @@ def test_build_execution_projection_marks_failed_when_axis_failed():
             ),
             _Event(
                 execution_id="exec-1",
-                plate_id="plate-1",
+                subject_id="subject-1",
                 axis_id="B01",
                 channel="pipeline",
                 percent=100.0,
@@ -145,9 +145,9 @@ def test_build_execution_projection_marks_failed_when_axis_failed():
     }
 
     projection = build_execution_projection(events_by_execution, adapter=adapter)
-    plate = projection.get_plate("plate-1", "exec-1")
+    subject = projection.get_subject("subject-1", "exec-1")
 
-    assert plate is not None
-    assert plate.state == "failed"
-    assert round(plate.percent, 1) == 75.0
+    assert subject is not None
+    assert subject.state == "failed"
+    assert round(subject.percent, 1) == 75.0
     assert projection.count_state("failed") == 1

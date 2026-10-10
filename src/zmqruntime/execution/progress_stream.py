@@ -20,7 +20,7 @@ from zmqruntime.messages import (
     ExecutionStatusSnapshot,
     MessageFields,
     ResponseType,
-    validate_progress_payload,
+    TaskProgress,
 )
 
 logger = logging.getLogger(__name__)
@@ -218,7 +218,7 @@ class ProgressStreamSubscriber:
                     raise ValueError("Execution stream record is not terminal")
                 execution_id = snapshot.execution.execution_id
             else:
-                validate_progress_payload(data)
+                TaskProgress.from_dict(data)
                 execution_id = data.get(MessageFields.EXECUTION_ID)
             with self._delivery_condition:
                 self._dispatching_execution_id = execution_id

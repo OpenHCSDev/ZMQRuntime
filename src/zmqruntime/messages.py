@@ -12,19 +12,85 @@ import os
 import pickle
 import signal
 import sys
-from abc import ABC, abstractmethod
-from collections.abc import Mapping
-from dataclasses import asdict, dataclass, field, fields
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field, fields, replace
 from enum import Enum
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, ClassVar, Dict, Optional, Tuple
 from uuid import UUID
 
 import psutil
 from python_introspect import dataclass_from_mapping
+from python_introspect.jsonable import JsonValue, to_jsonable
+from typing_extensions import Self
 
 from zmqruntime.timeouts import OperationDeadline
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Declared messages: the wire mapping of a message is its declared fields
+# =============================================================================
+
+
+class WireMessage:
+    """A declared message whose wire mapping is exactly its declared fields.
+
+    Encoding is ``to_jsonable`` and decoding is ``dataclass_from_mapping``:
+    both read the dataclass declaration, so a message never restates its
+    fields. Decoding is strict: an undeclared field fails loudly.
+    """
+
+    __slots__ = ()
+
+    def to_dict(self) -> dict[str, JsonValue]:
+        return dict(to_jsonable(self))
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> Self:
+        return dataclass_from_mapping(cls, cls.declared_items(data))
+
+    @classmethod
+    def declared_items(cls, data: Mapping[str, Any]) -> Mapping[str, Any]:
+        """The part of a wire mapping this message decodes."""
+
+        return data
+
+
+class WireView(WireMessage):
+    """A declared message read out of a wider payload.
+
+    Applications extend a generic envelope (a progress event, a status
+    response) with their own fields; the view decodes only the fields it
+    declares and leaves the rest to the application.
+    """
+
+    __slots__ = ()
+
+    @classmethod
+    def declared_items(cls, data: Mapping[str, Any]) -> Mapping[str, Any]:
+        return {
+            declared.name: data[declared.name]
+            for declared in fields(cls)
+            if declared.init and declared.name in data
+        }
+
+
+class TypedWireMessage(WireMessage):
+    """A declared message that carries its kind under the wire ``type`` key."""
+
+    __slots__ = ()
+
+    wire_type: ClassVar[str]
+
+    def to_dict(self) -> dict[str, JsonValue]:
+        return {MessageFields.TYPE: self.wire_type, **super().to_dict()}
+
+    @classmethod
+    def declared_items(cls, data: Mapping[str, Any]) -> Mapping[str, Any]:
+        if data.get(MessageFields.TYPE) != cls.wire_type:
+            raise ValueError(f"{cls.__name__} requires type={cls.wire_type!r}.")
+        return {key: value for key, value in data.items() if key != MessageFields.TYPE}
 
 
 # =============================================================================
@@ -64,7 +130,7 @@ class TaskStatus(Enum):
 
 
 @dataclass(frozen=True)
-class WorkerState:
+class WorkerState(WireMessage):
     """Generic worker/process information."""
 
     pid: int
@@ -73,63 +139,25 @@ class WorkerState:
     memory_mb: float
     create_time: float | None = None
 
-    def to_dict(self) -> dict[str, Any]:
-        result = {
-            "pid": self.pid,
-            "status": self.status,
-            "cpu_percent": self.cpu_percent,
-            "memory_mb": self.memory_mb,
-        }
-        if self.create_time is not None:
-            result["create_time"] = self.create_time
-        return result
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "WorkerState":
-        known_fields = {"pid", "status", "cpu_percent", "memory_mb", "create_time"}
-        unexpected_fields = set(data).difference(known_fields)
-        if unexpected_fields:
-            raise ValueError(f"WorkerState received unknown fields: {sorted(unexpected_fields)!r}")
-
-        return cls(
-            pid=data["pid"],
-            status=data["status"],
-            cpu_percent=data["cpu_percent"],
-            memory_mb=data["memory_mb"],
-            create_time=data.get("create_time"),
-        )
-
 
 @dataclass(frozen=True)
-class TaskProgress:
-    """Generic task progress - supports both generic and app-specific enums.
+class TaskProgress(WireView):
+    """The generic fields of one progress event.
 
-    Phase and status accept EITHER strings (for transport) OR Enum types (for type safety).
-    Applications can use TaskPhase/TaskStatus or extend with their own enums (e.g., AxisPhase/AxisStatus).
-
-    The .value of the enum is stored/transmitted, allowing interop between
-    generic and app-specific code.
+    Applications publish progress events that carry these fields beside their
+    own; the runtime reads and validates only these. Phase and status accept
+    strings (as transported) or application enums (encoded by value).
     """
 
-    # Required fields
-    task_id: str
-    phase: str | Enum  # String for transport, Enum for type safety
-    status: str | Enum  # String for transport, Enum for type safety
+    execution_id: str
+    phase: str | Enum
+    status: str | Enum
     percent: float
     timestamp: float
-
-    # Progress tracking
     completed: int
     total: int
-
-    # Core tracking identifiers (moved from context)
-    plate_id: str = ""
+    subject_id: str = ""
     axis_id: str = ""
-
-    # Application-specific context (NOT generic runtime concerns)
-    context: Dict[str, Any] = field(default_factory=dict)
-
-    # Optional error info
     error: Optional[str] = None
     traceback: Optional[str] = None
 
@@ -139,94 +167,10 @@ class TaskProgress:
             raise ValueError(f"percent must be in [0, 100], got {self.percent}")
         if self.completed > self.total:
             raise ValueError(f"completed ({self.completed}) cannot exceed total ({self.total})")
-        # Allow both strings and enums for phase/status
         if not isinstance(self.phase, (str, Enum)):
             raise TypeError(f"phase must be a string or Enum, got {type(self.phase)}")
         if not isinstance(self.status, (str, Enum)):
             raise TypeError(f"status must be a string or Enum, got {type(self.status)}")
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Serialize for transport."""
-        # Handle both string and Enum types for phase/status
-        phase_value = self.phase.value if isinstance(self.phase, Enum) else self.phase
-        status_value = self.status.value if isinstance(self.status, Enum) else self.status
-
-        result = {
-            "type": "progress",
-            "task_id": self.task_id,
-            "execution_id": self.task_id,
-            "phase": phase_value,
-            "status": status_value,
-            "percent": self.percent,
-            "timestamp": self.timestamp,
-            "completed": self.completed,
-            "total": self.total,
-            "plate_id": self.plate_id,
-            "axis_id": self.axis_id,
-            **self.context,
-        }
-        if self.error:
-            result["error"] = self.error
-        if self.traceback:
-            result["traceback"] = self.traceback
-        return result
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "TaskProgress":
-        """Parse from transport.
-
-        Phase and status are passed through as strings from the dict.
-        The application layer is responsible for converting them to appropriate Enum types.
-        """
-
-        # Separate generic fields from app-specific context
-        generic_fields = {
-            "type",
-            "task_id",
-            "execution_id",
-            "phase",
-            "status",
-            "percent",
-            "timestamp",
-            "completed",
-            "total",
-            "plate_id",
-            "axis_id",
-            "error",
-            "traceback",
-            "step_name",
-            "pid",
-        }
-
-        context = {k: v for k, v in data.items() if k not in generic_fields}
-
-        task_id = data.get("execution_id")
-        if task_id is None:
-            task_id = data.get("task_id")
-        if task_id is None:
-            raise KeyError("Missing required field: execution_id")
-
-        # Create TaskProgress with string phase/status (no enum conversion)
-        return cls(
-            task_id=task_id,
-            phase=data["phase"],  # Pass through as string
-            status=data["status"],  # Pass through as string
-            percent=data["percent"],
-            timestamp=data["timestamp"],
-            completed=data["completed"],
-            total=data["total"],
-            plate_id=data.get("plate_id", ""),
-            axis_id=data.get("axis_id", ""),
-            context=context,
-            error=data.get("error"),
-            traceback=data.get("traceback"),
-        )
-
-
-def validate_progress_payload(payload: dict) -> dict:
-    """Validate progress payload using generic TaskProgress."""
-    TaskProgress.from_dict(payload)  # Will raise if invalid
-    return payload
 
 
 # =============================================================================
@@ -238,24 +182,18 @@ class MessageFields:
     TYPE = "type"
     OBSERVATION_BUDGET_SECONDS = "observation_budget_seconds"
     OBSERVATION_OPERATION = "observation_operation"
-    PLATE_ID = "plate_id"
-    EXECUTION_PLATE_ID = "execution_plate_id"
+    SUBJECT_ID = "subject_id"
+    EXECUTION_SUBJECT_ID = "execution_subject_id"
     SELECTED_PIPELINE_PATH = "selected_pipeline_path"
     PIPELINE_CODE = "pipeline_code"
     CONFIG_PARAMS = "config_params"
     CONFIG_CODE = "config_code"
     PIPELINE_CONFIG_CODE = "pipeline_config_code"
-    CLIENT_ADDRESS = "client_address"
     COMPILE_ONLY = "compile_only"
     COMPILE_ARTIFACT_ID = "compile_artifact_id"
-    COMPILE_STATUS = "compile_status"
-    COMPILE_MESSAGE = "compile_message"
-    MEMORY_MB = "memory_mb"
-    CPU_PERCENT = "cpu_percent"
     EXECUTION_ID = "execution_id"
     START_TIME = "start_time"
     END_TIME = "end_time"
-    ELAPSED = "elapsed"
     STATUS = "status"
     ERROR = "error"
     MESSAGE = "message"
@@ -265,56 +203,27 @@ class MessageFields:
     SERVER = "server"
     SERVER_TYPE = "server_type"
     SERVER_ROLE = "server_role"
-    LOG_FILE_PATH = "log_file_path"
-    ACTIVE_EXECUTIONS = "active_executions"
     RUNNING_EXECUTIONS = "running_executions"
-    WORKERS = "workers"
-    WORKERS_KILLED = "workers_killed"
-    UPTIME = "uptime"
-    EXECUTIONS = "executions"
     EXECUTION = "execution"
-    QUEUED_EXECUTIONS = "queued_executions"
-    QUEUE_POSITION = "queue_position"
-    WELL_COUNT = "well_count"
-    WELLS = "wells"
+    PARTITION_COUNT = "partition_count"
+    PARTITION_VALUES = "partition_values"
     RESULTS_SUMMARY = "results_summary"
-    WELL_ID = "well_id"
-    STEP = "step"
     TIMESTAMP = "timestamp"
     AXIS_ID = "axis_id"
-    STEP_NAME = "step_name"
-    STEP_INDEX = "step_index"
-    TOTAL_STEPS = "total_steps"
-    PHASE = "phase"
-    COMPLETED = "completed"
-    TOTAL = "total"
-    PERCENT = "percent"
-    PATTERN = "pattern"
-    COMPONENT = "component"
     TRACEBACK = "traceback"
     # Acknowledgment message fields
     IMAGE_ID = "image_id"
-    VIEWER_PORT = "viewer_port"
-    VIEWER_TYPE = "viewer_type"
     # ROI message fields
     ROIS = "rois"
-    LAYER_NAME = "layer_name"
     SHAPES = "shapes"
-    COORDINATES = "coordinates"
     METADATA = "metadata"
     CLIENT_ID = "client_id"
     PROGRESS_SUBSCRIBERS = "progress_subscribers"
     PROGRESS_SEQUENCE = "progress_sequence"
-    PROGRESS_OBSERVATIONS = "progress_observations"
-    PROCESS_IDENTITY = "process_identity"
-    CONTROL_CAPABILITIES = "control_capabilities"
-    APPLICATION = "application"
-    APPLICATION_ID = "application_id"
-    APPLICATION_VERSION = "application_version"
 
 
 @dataclass(frozen=True)
-class ProcessIdentity:
+class ProcessIdentity(WireMessage):
     """PID-reuse-safe identity for a process visible on the local host."""
 
     pid: int
@@ -335,13 +244,6 @@ class ProcessIdentity:
         """Whether this exact incarnation is the calling process, not a child."""
 
         return self == self.current()
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {"pid": self.pid, "create_time": self.create_time}
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ProcessIdentity":
-        return cls(pid=int(data["pid"]), create_time=float(data["create_time"]))
 
     def is_alive(self) -> bool | None:
         """Return exact local liveness, or unknown when access is denied."""
@@ -525,9 +427,19 @@ class ControlMessageType(Enum):
     UNREGISTER_PROGRESS = "unregister_progress"
 
 
+_CONTROL_HEADER_FIELDS = frozenset({"message_type", "operation_deadline"})
+
+
 @dataclass(frozen=True, slots=True)
 class ControlRequestHeader:
-    """Canonical control-message identity and its pickle wire boundary."""
+    """A control request: its kind, its observation budget and its declared body.
+
+    The wire mapping carries the kind under ``type`` and the remaining
+    observation budget as a duration (never an absolute host clock). Every
+    other declared field is the request body, encoded and decoded by the
+    declaration. Requests are read out of wider control payloads, so fields
+    a request does not declare are left to the payload's other readers.
+    """
 
     message_type: ControlMessageType
     operation_deadline: OperationDeadline | None = field(default=None, kw_only=True)
@@ -552,25 +464,43 @@ class ControlRequestHeader:
         )
 
     @classmethod
-    def from_dict(cls, payload: Mapping[str, object]) -> ControlRequestHeader:
-        raw_message_type = payload[MessageFields.TYPE]
-        if not isinstance(raw_message_type, str):
-            raise TypeError("Control request type must be a string.")
-        return cls(
-            ControlMessageType(raw_message_type),
-            operation_deadline=(cls.admit_observation(payload)
-                                if MessageFields.OBSERVATION_BUDGET_SECONDS in payload else None),
+    def body_fields(cls) -> tuple[str, ...]:
+        """Declared fields carried as the request body."""
+
+        return tuple(
+            declared.name
+            for declared in fields(cls)
+            if declared.name not in _CONTROL_HEADER_FIELDS
         )
 
     @classmethod
-    def from_wire_payload(cls, wire_payload: bytes) -> ControlRequestHeader:
+    def from_dict(cls, payload: Mapping[str, object]) -> Self:
+        raw_message_type = payload[MessageFields.TYPE]
+        if not isinstance(raw_message_type, str):
+            raise TypeError("Control request type must be a string.")
+        request = dataclass_from_mapping(
+            cls,
+            {
+                "message_type": raw_message_type,
+                **{name: payload[name] for name in cls.body_fields() if name in payload},
+            },
+        )
+        if MessageFields.OBSERVATION_BUDGET_SECONDS not in payload:
+            return request
+        return replace(request, operation_deadline=cls.admit_observation(payload))
+
+    @classmethod
+    def from_wire_payload(cls, wire_payload: bytes) -> Self:
         payload = pickle.loads(wire_payload)
         if not isinstance(payload, Mapping):
             raise TypeError("Control request payload must be a mapping.")
         return cls.from_dict(payload)
 
     def to_dict(self) -> dict[str, object]:
-        payload = {MessageFields.TYPE: self.message_type.value}
+        payload = {
+            MessageFields.TYPE: self.message_type.value,
+            **{name: to_jsonable(getattr(self, name)) for name in self.body_fields()},
+        }
         return (payload if self.operation_deadline is None else
                 self.with_observation_budget(payload, self.operation_deadline))
 
@@ -583,24 +513,6 @@ class EndpointShutdownRequest(ControlRequestHeader):
     """Bind shutdown to its observed native incarnation, before mutation."""
 
     process_identity: ProcessIdentity | None = None
-
-    @classmethod
-    def from_dict(cls, payload: Mapping[str, object]) -> EndpointShutdownRequest:
-        header = ControlRequestHeader.from_dict(payload)
-        identity_data = payload.get(MessageFields.PROCESS_IDENTITY)
-        if identity_data is not None and not isinstance(identity_data, dict):
-            raise TypeError("Shutdown process identity must be a mapping")
-        return cls(
-            header.message_type,
-            None if identity_data is None else ProcessIdentity.from_dict(identity_data),
-            operation_deadline=header.operation_deadline,
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        payload: dict[str, Any] = ControlRequestHeader.to_dict(self)
-        if self.process_identity is not None:
-            payload[MessageFields.PROCESS_IDENTITY] = self.process_identity.to_dict()
-        return payload
 
     def validate(self) -> str | None:
         if self.process_identity is not None and self.process_identity != ProcessIdentity.current():
@@ -703,13 +615,16 @@ class SocketType(Enum):
         return self.value
 
 
-@dataclass(frozen=True)
-class ExecuteRequest:
-    plate_id: str
+@dataclass(frozen=True, slots=True)
+class ExecuteRequest(ControlRequestHeader):
+    """Submit one subject's work to an execution server."""
+
+    message_type: ControlMessageType = field(default=ControlMessageType.EXECUTE, init=False)
+    subject_id: str
     pipeline_code: str
-    execution_plate_id: Optional[str] = None
+    execution_subject_id: Optional[str] = None
     selected_pipeline_path: Optional[str] = None
-    config_params: Optional[dict] = None
+    config_params: Optional[Dict[str, Any]] = None
     config_code: Optional[str] = None
     pipeline_config_code: Optional[str] = None
     client_address: Optional[str] = None
@@ -717,8 +632,8 @@ class ExecuteRequest:
     compile_artifact_id: Optional[str] = None
 
     def validate(self):
-        if not self.plate_id:
-            return "Missing required field: plate_id"
+        if not self.subject_id:
+            return "Missing required field: subject_id"
         if not self.pipeline_code:
             return "Missing required field: pipeline_code"
         if self.compile_only and self.compile_artifact_id:
@@ -727,73 +642,67 @@ class ExecuteRequest:
             return "Missing config: provide either config_params or config_code"
         return None
 
-    def to_dict(self):
-        result: Dict[str, Any] = {}
-        result[MessageFields.TYPE] = ControlMessageType.EXECUTE.value
-        result[MessageFields.PLATE_ID] = self.plate_id
-        if self.execution_plate_id is not None:
-            result[MessageFields.EXECUTION_PLATE_ID] = self.execution_plate_id
-        if self.selected_pipeline_path is not None:
-            result[MessageFields.SELECTED_PIPELINE_PATH] = self.selected_pipeline_path
-        result[MessageFields.PIPELINE_CODE] = self.pipeline_code
-        if self.config_params is not None:
-            result[MessageFields.CONFIG_PARAMS] = self.config_params
-        if self.config_code is not None:
-            result[MessageFields.CONFIG_CODE] = self.config_code
-        if self.pipeline_config_code is not None:
-            result[MessageFields.PIPELINE_CONFIG_CODE] = self.pipeline_config_code
-        if self.client_address is not None:
-            result[MessageFields.CLIENT_ADDRESS] = self.client_address
-        if self.compile_only:
-            result[MessageFields.COMPILE_ONLY] = True
-        if self.compile_artifact_id is not None:
-            result[MessageFields.COMPILE_ARTIFACT_ID] = self.compile_artifact_id
-        return result
 
-    @classmethod
-    def from_dict(cls, data):
-        return cls(
-            plate_id=data[MessageFields.PLATE_ID],
-            pipeline_code=data[MessageFields.PIPELINE_CODE],
-            execution_plate_id=data.get(MessageFields.EXECUTION_PLATE_ID),
-            selected_pipeline_path=data.get(MessageFields.SELECTED_PIPELINE_PATH),
-            config_params=data.get(MessageFields.CONFIG_PARAMS),
-            config_code=data.get(MessageFields.CONFIG_CODE),
-            pipeline_config_code=data.get(MessageFields.PIPELINE_CONFIG_CODE),
-            client_address=data.get(MessageFields.CLIENT_ADDRESS),
-            compile_only=bool(data.get(MessageFields.COMPILE_ONLY, False)),
-            compile_artifact_id=data.get(MessageFields.COMPILE_ARTIFACT_ID),
-        )
+@dataclass(frozen=True, slots=True)
+class StatusRequest(ControlRequestHeader):
+    message_type: ControlMessageType = field(default=ControlMessageType.STATUS, init=False)
+    execution_id: Optional[str] = None
+
+    def validate(self):
+        return None
 
 
-class ControlResponse(ABC):
+@dataclass(frozen=True, slots=True)
+class CancelRequest(ControlRequestHeader):
+    message_type: ControlMessageType = field(default=ControlMessageType.CANCEL, init=False)
+    execution_id: str
+
+    def validate(self):
+        return "Missing execution_id" if not self.execution_id else None
+
+
+@dataclass(frozen=True, slots=True)
+class ProgressRegistrationRequest(ControlRequestHeader):
+    message_type: ControlMessageType = field(
+        default=ControlMessageType.REGISTER_PROGRESS, init=False
+    )
+    client_id: str
+
+    def validate(self):
+        return "Missing client_id" if not self.client_id else None
+
+
+@dataclass(frozen=True, slots=True)
+class ProgressUnregistrationRequest(ControlRequestHeader):
+    message_type: ControlMessageType = field(
+        default=ControlMessageType.UNREGISTER_PROGRESS, init=False
+    )
+    client_id: str
+
+    def validate(self):
+        return "Missing client_id" if not self.client_id else None
+
+
+class ControlResponse(WireMessage):
     """Nominal response that owns its control-wire mapping."""
 
-    @abstractmethod
-    def to_dict(self) -> Dict[str, Any]:
-        """Project this response to its control-wire representation."""
+    __slots__ = ()
 
 
 @dataclass(frozen=True)
-class ControlErrorResponse(ControlResponse):
-    """Canonical control error and its wire projection."""
+class ControlErrorResponse(TypedWireMessage, ControlResponse):
+    """A control request failed; ``message`` says why."""
+
+    wire_type: ClassVar[str] = ResponseType.ERROR.value
 
     message: str
-    response_type: ResponseType = ResponseType.ERROR
+    status: ResponseType = ResponseType.ERROR
 
     @classmethod
     def from_exception(cls, error: Exception) -> "ControlErrorResponse":
         """Create a control failure from the exception owned by dispatch."""
 
         return cls(message=str(error))
-
-    def to_dict(self) -> Dict[str, Any]:
-        response_type = self.response_type.value
-        return {
-            MessageFields.STATUS: response_type,
-            MessageFields.TYPE: response_type,
-            MessageFields.MESSAGE: self.message,
-        }
 
 
 @dataclass(frozen=True)
@@ -803,169 +712,106 @@ class ExecuteResponse(ControlResponse):
     message: Optional[str] = None
     error: Optional[str] = None
 
-    def to_dict(self):
-        result: Dict[str, Any] = {MessageFields.STATUS: self.status.value}
-        if self.execution_id is not None:
-            result[MessageFields.EXECUTION_ID] = self.execution_id
-        if self.message is not None:
-            result[MessageFields.MESSAGE] = self.message
-        if self.error is not None:
-            result[MessageFields.ERROR] = self.error
-        return result
+
+@dataclass(frozen=True)
+class CancelResponse(ControlResponse):
+    """Outcome of one cancellation request."""
+
+    status: ResponseType
+    workers_killed: int
+    message: Optional[str] = None
+    error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ShutdownAck(TypedWireMessage, ControlResponse):
+    """A server accepted a shutdown request."""
+
+    wire_type: ClassVar[str] = ResponseType.SHUTDOWN_ACK.value
+
+    message: str
+    status: str = "success"
+
+
+@dataclass(frozen=True)
+class ProgressSubscriptionResponse(ControlResponse):
+    """A progress subscriber was registered or released.
+
+    A registration carries the latest observation of every execution the
+    server still holds, keyed by execution id, so the subscriber starts from
+    the server's baseline.
+    """
+
+    client_id: str
+    progress_subscribers: int
+    message: str
+    progress_observations: Dict[str, Any] = field(default_factory=dict)
+    status: ResponseType = ResponseType.OK
 
 
 @dataclass
-class ExecutionRecord:
+class ExecutionRecord(WireMessage):
+    """One execution's lifecycle record; its declared fields are its wire record.
+
+    ``extras`` and ``progress_event`` are server-local attachments (an
+    application's orchestrator, the latest progress event). They are not
+    fields, so they never travel.
+    """
+
     execution_id: str
-    plate_id: str
-    client_address: Optional[str]
+    subject_id: str
     status: str
+    client_address: Optional[str] = None
     start_time: Optional[float] = None
     end_time: Optional[float] = None
     error: Optional[str] = None
     traceback: Optional[str] = None
     results_summary: Optional[Dict[str, Any]] = None
     compile_only: bool = False
-    metadata: Dict[str, Any] = field(default_factory=dict)
     progress_sequence: int = 0
-    progress_event: dict | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if isinstance(self.progress_sequence, bool) or not isinstance(self.progress_sequence, int):
             raise TypeError("Execution progress sequence must be an integer")
         if self.progress_sequence < 0:
             raise ValueError("Execution progress sequence cannot be negative")
+        self.extras: Dict[str, Any] = {}
+        self.progress_event: dict | None = None
 
     def set_extra(self, key: str, value: Any) -> None:
-        self.metadata[key] = value
+        self.extras[key] = value
 
     def get_extra(self, key: str, default: Any = None) -> Any:
-        if key in self.metadata:
-            return self.metadata[key]
-        return default
+        return self.extras.get(key, default)
 
     def pop_extra(self, key: str, default: Any = None) -> Any:
-        if key in self.metadata:
-            value = self.metadata[key]
-            del self.metadata[key]
-            return value
-        return default
-
-    def to_dict(self) -> Dict[str, Any]:
-        def _to_transport_value(value: Any) -> Any:
-            if value is None or isinstance(value, (str, int, float, bool)):
-                return value
-            if isinstance(value, Enum):
-                return value.value
-            if isinstance(value, dict):
-                return {
-                    str(_to_transport_value(k)): _to_transport_value(v) for k, v in value.items()
-                }
-            if isinstance(value, (list, tuple, set)):
-                return [_to_transport_value(v) for v in value]
-            return str(value)
-
-        result: Dict[str, Any] = {
-            MessageFields.EXECUTION_ID: self.execution_id,
-            MessageFields.PLATE_ID: _to_transport_value(self.plate_id),
-            MessageFields.CLIENT_ADDRESS: _to_transport_value(self.client_address),
-            MessageFields.STATUS: _to_transport_value(self.status),
-            MessageFields.START_TIME: _to_transport_value(self.start_time),
-            MessageFields.END_TIME: _to_transport_value(self.end_time),
-            MessageFields.ERROR: _to_transport_value(self.error),
-            MessageFields.COMPILE_ONLY: self.compile_only,
-            MessageFields.PROGRESS_SEQUENCE: self.progress_sequence,
-        }
-        if self.traceback is not None:
-            result[MessageFields.TRACEBACK] = _to_transport_value(self.traceback)
-        if self.results_summary is not None:
-            result[MessageFields.RESULTS_SUMMARY] = _to_transport_value(self.results_summary)
-        return result
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ExecutionRecord":
-        known = {
-            MessageFields.EXECUTION_ID,
-            MessageFields.PLATE_ID,
-            MessageFields.CLIENT_ADDRESS,
-            MessageFields.STATUS,
-            MessageFields.START_TIME,
-            MessageFields.END_TIME,
-            MessageFields.ERROR,
-            MessageFields.TRACEBACK,
-            MessageFields.RESULTS_SUMMARY,
-            MessageFields.COMPILE_ONLY,
-            MessageFields.PROGRESS_SEQUENCE,
-        }
-        metadata = {k: v for k, v in data.items() if k not in known}
-        return cls(
-            execution_id=data[MessageFields.EXECUTION_ID],
-            plate_id=data[MessageFields.PLATE_ID],
-            client_address=data.get(MessageFields.CLIENT_ADDRESS),
-            status=data[MessageFields.STATUS],
-            start_time=data.get(MessageFields.START_TIME),
-            end_time=data.get(MessageFields.END_TIME),
-            error=data.get(MessageFields.ERROR),
-            traceback=data.get(MessageFields.TRACEBACK),
-            results_summary=data.get(MessageFields.RESULTS_SUMMARY),
-            compile_only=bool(data.get(MessageFields.COMPILE_ONLY, False)),
-            metadata=metadata,
-            progress_sequence=data.get(MessageFields.PROGRESS_SEQUENCE, 0),
-        )
+        return self.extras.pop(key, default)
 
 
 @dataclass(frozen=True)
-class RunningExecutionInfo:
+class RunningExecutionInfo(WireMessage):
     execution_id: str
-    plate_id: str
+    subject_id: str
     start_time: float
     elapsed: float
     compile_only: bool = False
 
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            MessageFields.EXECUTION_ID: self.execution_id,
-            MessageFields.PLATE_ID: self.plate_id,
-            MessageFields.START_TIME: self.start_time,
-            MessageFields.ELAPSED: self.elapsed,
-            MessageFields.COMPILE_ONLY: self.compile_only,
-        }
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "RunningExecutionInfo":
-        return cls(
-            execution_id=data[MessageFields.EXECUTION_ID],
-            plate_id=data.get(MessageFields.PLATE_ID, "unknown"),
-            start_time=float(data.get(MessageFields.START_TIME) or 0.0),
-            elapsed=float(data.get(MessageFields.ELAPSED) or 0.0),
-            compile_only=bool(data.get(MessageFields.COMPILE_ONLY, False)),
-        )
-
 
 @dataclass(frozen=True)
-class QueuedExecutionInfo:
+class QueuedExecutionInfo(WireMessage):
     execution_id: str
-    plate_id: str
+    subject_id: str
     queue_position: int
 
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            MessageFields.EXECUTION_ID: self.execution_id,
-            MessageFields.PLATE_ID: self.plate_id,
-            MessageFields.QUEUE_POSITION: self.queue_position,
-        }
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "QueuedExecutionInfo":
-        return cls(
-            execution_id=data[MessageFields.EXECUTION_ID],
-            plate_id=data.get(MessageFields.PLATE_ID, "unknown"),
-            queue_position=int(data.get(MessageFields.QUEUE_POSITION) or 0),
-        )
-
 
 @dataclass(frozen=True)
-class ExecutionStatusSnapshot:
+class ExecutionStatusSnapshot(WireView):
+    """Status of one execution, or of the server's executions.
+
+    Read as a view: status responses also carry diagnostics owned by the
+    response envelope (``message``, ``error``).
+    """
+
     status: ResponseType
     execution: Optional[ExecutionRecord] = None
     active_executions: Optional[int] = None
@@ -974,132 +820,9 @@ class ExecutionStatusSnapshot:
     running_executions: Optional[Tuple[RunningExecutionInfo, ...]] = None
     queued_executions: Optional[Tuple[QueuedExecutionInfo, ...]] = None
 
-    def to_dict(self) -> Dict[str, Any]:
-        result: Dict[str, Any] = {MessageFields.STATUS: self.status.value}
-        if self.execution is not None:
-            result[MessageFields.EXECUTION] = self.execution.to_dict()
-        if self.active_executions is not None:
-            result[MessageFields.ACTIVE_EXECUTIONS] = self.active_executions
-        if self.uptime is not None:
-            result[MessageFields.UPTIME] = self.uptime
-        if self.executions is not None:
-            result[MessageFields.EXECUTIONS] = list(self.executions)
-        if self.running_executions is not None:
-            result[MessageFields.RUNNING_EXECUTIONS] = [
-                info.to_dict() for info in self.running_executions
-            ]
-        if self.queued_executions is not None:
-            result[MessageFields.QUEUED_EXECUTIONS] = [
-                info.to_dict() for info in self.queued_executions
-            ]
-        return result
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ExecutionStatusSnapshot":
-        execution = None
-        execution_data = data.get(MessageFields.EXECUTION)
-        if isinstance(execution_data, dict):
-            execution = ExecutionRecord.from_dict(execution_data)
-
-        running_executions = None
-        running_data = data.get(MessageFields.RUNNING_EXECUTIONS)
-        if isinstance(running_data, list):
-            running_executions = tuple(
-                RunningExecutionInfo.from_dict(entry) for entry in running_data
-            )
-
-        queued_executions = None
-        queued_data = data.get(MessageFields.QUEUED_EXECUTIONS)
-        if isinstance(queued_data, list):
-            queued_executions = tuple(QueuedExecutionInfo.from_dict(entry) for entry in queued_data)
-
-        executions = None
-        execution_ids = data.get(MessageFields.EXECUTIONS)
-        if isinstance(execution_ids, list):
-            executions = tuple(str(eid) for eid in execution_ids)
-
-        return cls(
-            status=ResponseType(data[MessageFields.STATUS]),
-            execution=execution,
-            active_executions=data.get(MessageFields.ACTIVE_EXECUTIONS),
-            uptime=data.get(MessageFields.UPTIME),
-            executions=executions,
-            running_executions=running_executions,
-            queued_executions=queued_executions,
-        )
-
 
 @dataclass(frozen=True)
-class StatusRequest:
-    execution_id: Optional[str] = None
-
-    def to_dict(self):
-        result = {MessageFields.TYPE: ControlMessageType.STATUS.value}
-        if self.execution_id is not None:
-            result[MessageFields.EXECUTION_ID] = self.execution_id
-        return result
-
-    @classmethod
-    def from_dict(cls, data):
-        return cls(execution_id=data.get(MessageFields.EXECUTION_ID))
-
-
-@dataclass(frozen=True)
-class CancelRequest:
-    execution_id: str
-
-    def validate(self):
-        return "Missing execution_id" if not self.execution_id else None
-
-    def to_dict(self):
-        return {
-            MessageFields.TYPE: ControlMessageType.CANCEL.value,
-            MessageFields.EXECUTION_ID: self.execution_id,
-        }
-
-    @classmethod
-    def from_dict(cls, data):
-        return cls(execution_id=data[MessageFields.EXECUTION_ID])
-
-
-@dataclass(frozen=True)
-class ProgressRegistrationRequest:
-    client_id: str
-
-    def validate(self):
-        return "Missing client_id" if not self.client_id else None
-
-    def to_dict(self):
-        return {
-            MessageFields.TYPE: ControlMessageType.REGISTER_PROGRESS.value,
-            MessageFields.CLIENT_ID: self.client_id,
-        }
-
-    @classmethod
-    def from_dict(cls, data):
-        return cls(client_id=data[MessageFields.CLIENT_ID])
-
-
-@dataclass(frozen=True)
-class ProgressUnregistrationRequest:
-    client_id: str
-
-    def validate(self):
-        return "Missing client_id" if not self.client_id else None
-
-    def to_dict(self):
-        return {
-            MessageFields.TYPE: ControlMessageType.UNREGISTER_PROGRESS.value,
-            MessageFields.CLIENT_ID: self.client_id,
-        }
-
-    @classmethod
-    def from_dict(cls, data):
-        return cls(client_id=data[MessageFields.CLIENT_ID])
-
-
-@dataclass(frozen=True)
-class ProcessResourceUsage:
+class ProcessResourceUsage(WireMessage):
     """Process resource metrics carried by a server heartbeat."""
 
     memory_mb: float
@@ -1136,7 +859,7 @@ class EndpointControlCapability(str, Enum):
 
 
 @dataclass(frozen=True)
-class EndpointApplication:
+class EndpointApplication(WireMessage):
     """Application identity declared by an endpoint owner."""
 
     identifier: str
@@ -1148,12 +871,6 @@ class EndpointApplication:
         if not self.version:
             raise ValueError("Endpoint application version cannot be empty")
 
-    def to_dict(self) -> Dict[str, str]:
-        return {
-            MessageFields.APPLICATION_ID: self.identifier,
-            MessageFields.APPLICATION_VERSION: self.version,
-        }
-
     def compatibility_with(
         self,
         observed: "EndpointApplication | None",
@@ -1161,14 +878,6 @@ class EndpointApplication:
         """Compare one observed endpoint with this declared application."""
 
         return EndpointApplicationCompatibility(expected=self, observed=observed)
-
-    @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "EndpointApplication":
-        identifier = data[MessageFields.APPLICATION_ID]
-        version = data[MessageFields.APPLICATION_VERSION]
-        if not isinstance(identifier, str) or not isinstance(version, str):
-            raise TypeError("Endpoint application identity fields must be strings")
-        return cls(identifier=identifier, version=version)
 
 
 @dataclass(frozen=True)
@@ -1214,16 +923,18 @@ class EndpointApplicationCompatibilityError(ValueError):
 
 
 @dataclass(frozen=True)
-class PongResponse(ControlResponse):
+class PongResponse(TypedWireMessage, ControlResponse):
     """Complete typed server-heartbeat response."""
+
+    wire_type: ClassVar[str] = "pong"
 
     port: int
     control_port: int
     ready: bool
     server: str
     server_role: ServerRole
-    control_capabilities: frozenset[EndpointControlCapability] = frozenset(
-        {EndpointControlCapability.PING}
+    control_capabilities: Tuple[EndpointControlCapability, ...] = (
+        EndpointControlCapability.PING,
     )
     server_type: Optional[str] = None
     log_file_path: Optional[str] = None
@@ -1239,151 +950,20 @@ class PongResponse(ControlResponse):
     process_usage: Optional[ProcessResourceUsage] = None
     application: Optional[EndpointApplication] = None
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Serialize for transport."""
-        result: Dict[str, Any] = {
-            MessageFields.TYPE: ResponseType.PONG.value,
-            MessageFields.PORT: self.port,
-            MessageFields.CONTROL_PORT: self.control_port,
-            MessageFields.READY: self.ready,
-            MessageFields.SERVER: self.server,
-        }
-        if self.server_type is not None:
-            result[MessageFields.SERVER_TYPE] = self.server_type
-        result[MessageFields.SERVER_ROLE] = self.server_role.value
-        result[MessageFields.CONTROL_CAPABILITIES] = sorted(
-            capability.value for capability in self.control_capabilities
-        )
-        if self.application is not None:
-            result[MessageFields.APPLICATION] = self.application.to_dict()
-        if self.log_file_path is not None:
-            result[MessageFields.LOG_FILE_PATH] = self.log_file_path
-        if self.active_executions is not None:
-            result[MessageFields.ACTIVE_EXECUTIONS] = self.active_executions
-        if self.running_executions is not None:
-            result[MessageFields.RUNNING_EXECUTIONS] = [
-                info.to_dict() for info in self.running_executions
-            ]
-        if self.queued_executions is not None:
-            result[MessageFields.QUEUED_EXECUTIONS] = [
-                info.to_dict() for info in self.queued_executions
-            ]
-        if self.workers is not None:
-            result[MessageFields.WORKERS] = [w.to_dict() for w in self.workers]
-        if self.uptime is not None:
-            result[MessageFields.UPTIME] = self.uptime
-        if self.progress_subscribers is not None:
-            result[MessageFields.PROGRESS_SUBSCRIBERS] = self.progress_subscribers
-        if self.process_identity is not None:
-            result[MessageFields.PROCESS_IDENTITY] = self.process_identity.to_dict()
-        if self.compile_status is not None:
-            result[MessageFields.COMPILE_STATUS] = self.compile_status
-        if self.compile_message is not None:
-            result[MessageFields.COMPILE_MESSAGE] = self.compile_message
-        if self.process_usage is not None:
-            result[MessageFields.MEMORY_MB] = self.process_usage.memory_mb
-            result[MessageFields.CPU_PERCENT] = self.process_usage.cpu_percent
-        return result
+    def __post_init__(self) -> None:
+        """Hold advertised capabilities as one ordered set."""
 
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "PongResponse":
-        """Parse from transport."""
-        if data[MessageFields.TYPE] != ResponseType.PONG.value:
-            raise ValueError(
-                f"PongResponse requires {MessageFields.TYPE}={ResponseType.PONG.value!r}."
-            )
-
-        workers_data = data.get(MessageFields.WORKERS)
-        workers = None
-        if workers_data is not None:
-            if not isinstance(workers_data, list) or not all(
-                isinstance(entry, dict) for entry in workers_data
-            ):
-                raise TypeError("PongResponse.workers must be a list of dict entries")
-            workers = tuple(WorkerState.from_dict(w) for w in workers_data)
-
-        running_executions_data = data.get(MessageFields.RUNNING_EXECUTIONS)
-        running_executions = None
-        if running_executions_data is not None:
-            if not isinstance(running_executions_data, list):
-                raise TypeError("PongResponse.running_executions must be a list of dict entries")
-            if not all(isinstance(entry, dict) for entry in running_executions_data):
-                raise TypeError("PongResponse.running_executions must be a list of dict entries")
-            running_executions = tuple(
-                RunningExecutionInfo.from_dict(entry) for entry in running_executions_data
-            )
-
-        queued_executions_data = data.get(MessageFields.QUEUED_EXECUTIONS)
-        queued_executions = None
-        if queued_executions_data is not None:
-            if not isinstance(queued_executions_data, list):
-                raise TypeError("PongResponse.queued_executions must be a list of dict entries")
-            if not all(isinstance(entry, dict) for entry in queued_executions_data):
-                raise TypeError("PongResponse.queued_executions must be a list of dict entries")
-            queued_executions = tuple(
-                QueuedExecutionInfo.from_dict(entry) for entry in queued_executions_data
-            )
-
-        process_identity_data = data.get(MessageFields.PROCESS_IDENTITY)
-        process_identity = None
-        if process_identity_data is not None:
-            if not isinstance(process_identity_data, dict):
-                raise TypeError("PongResponse.process_identity must be a dict")
-            process_identity = ProcessIdentity.from_dict(process_identity_data)
-
-        control_capabilities_data = data.get(
-            MessageFields.CONTROL_CAPABILITIES,
-            [EndpointControlCapability.PING.value],
-        )
-        if not isinstance(control_capabilities_data, list) or not all(
-            isinstance(capability, str) for capability in control_capabilities_data
-        ):
-            raise TypeError("PongResponse.control_capabilities must be a list of strings")
-        control_capabilities = frozenset(
-            EndpointControlCapability(capability) for capability in control_capabilities_data
+        object.__setattr__(
+            self,
+            "control_capabilities",
+            _capability_set(self.control_capabilities),
         )
 
-        application_data = data.get(MessageFields.APPLICATION)
-        application = None
-        if application_data is not None:
-            if not isinstance(application_data, dict):
-                raise TypeError("PongResponse.application must be a dict")
-            application = EndpointApplication.from_dict(application_data)
 
-        memory_mb = data.get(MessageFields.MEMORY_MB)
-        cpu_percent = data.get(MessageFields.CPU_PERCENT)
-        process_usage = None
-        if memory_mb is not None or cpu_percent is not None:
-            if memory_mb is None or cpu_percent is None:
-                raise TypeError(
-                    "PongResponse process usage requires both memory_mb and cpu_percent"
-                )
-            process_usage = ProcessResourceUsage(
-                memory_mb=float(memory_mb),
-                cpu_percent=float(cpu_percent),
-            )
-
-        return cls(
-            port=data[MessageFields.PORT],
-            control_port=data[MessageFields.CONTROL_PORT],
-            ready=data[MessageFields.READY],
-            server=data[MessageFields.SERVER],
-            server_type=data.get(MessageFields.SERVER_TYPE),
-            server_role=ServerRole(data[MessageFields.SERVER_ROLE]),
-            control_capabilities=control_capabilities,
-            application=application,
-            log_file_path=data.get(MessageFields.LOG_FILE_PATH),
-            active_executions=data.get(MessageFields.ACTIVE_EXECUTIONS),
-            running_executions=running_executions,
-            queued_executions=queued_executions,
-            workers=workers,
-            uptime=data.get(MessageFields.UPTIME),
-            progress_subscribers=data.get(MessageFields.PROGRESS_SUBSCRIBERS),
-            process_identity=process_identity,
-            compile_status=data.get(MessageFields.COMPILE_STATUS),
-            compile_message=data.get(MessageFields.COMPILE_MESSAGE),
-            process_usage=process_usage,
-        )
+def _capability_set(
+    capabilities: Iterable[EndpointControlCapability],
+) -> Tuple[EndpointControlCapability, ...]:
+    return tuple(sorted(set(capabilities), key=lambda capability: capability.value))
 
 
 # =============================================================================
@@ -1392,7 +972,7 @@ class PongResponse(ControlResponse):
 
 
 @dataclass(frozen=True, slots=True)
-class AckReturnRoute:
+class AckReturnRoute(WireMessage):
     """Bound producer destination and exact listener incarnation, not a viewer port."""
 
     url: str
@@ -1406,16 +986,9 @@ class AckReturnRoute:
         if not isinstance(self.owner, ProcessIdentity):
             raise TypeError("ACK route requires a ProcessIdentity")
 
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "AckReturnRoute":
-        return dataclass_from_mapping(cls, data)
-
 
 @dataclass(frozen=True, slots=True)
-class ImageTransferIdentity:
+class ImageTransferIdentity(WireMessage):
     """Per-image return contract carried unchanged through deferred viewer work."""
 
     image_id: str
@@ -1428,28 +1001,23 @@ class ImageTransferIdentity:
         if not isinstance(self.return_route, AckReturnRoute):
             raise TypeError("Image transfer requires an AckReturnRoute")
 
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "ImageTransferIdentity":
-        return dataclass_from_mapping(cls, {member.name: data[member.name] for member in fields(cls)})
-
     @classmethod
     def from_item(cls, data: Mapping[str, Any]) -> "ImageTransferIdentity | None":
         """Untracked control items have no image identity; tracked items require a route."""
         if data.get("image_id") is None:
             return None
-        return cls.from_dict(data)
+        return cls.from_dict({declared.name: data[declared.name] for declared in fields(cls)})
 
 
 @dataclass(frozen=True)
-class ImageAck:
+class ImageAck(TypedWireMessage):
     """Acknowledgment message sent by viewers after processing an image.
 
     Sent via PUSH socket to the original image's producer return route.
     Used to track real-time queue depth and show progress like '3/10 images processed'.
     """
+
+    wire_type: ClassVar[str] = "image_ack"
 
     image_id: str  # UUID of the processed image
     viewer_port: int  # Port of the viewer that processed it (for routing)
@@ -1459,62 +1027,3 @@ class ImageAck:
     status: str = "success"  # 'success', 'error', etc.
     timestamp: Optional[float] = None  # When it was processed
     error: Optional[str] = None  # Error message if status='error'
-
-    def to_dict(self):
-        return {MessageFields.TYPE: "image_ack", **asdict(self)}
-
-    @classmethod
-    def from_dict(cls, data):
-        if data.get(MessageFields.TYPE) != "image_ack":
-            raise ValueError("ImageAck requires type=image_ack")
-        return dataclass_from_mapping(cls, {
-            member.name: data[member.name] for member in fields(cls) if member.name in data
-        })
-
-
-@dataclass(frozen=True)
-class ROIMessage:
-    """Message for streaming ROIs to viewers (Napari/Fiji).
-
-    Sent via ZMQ to viewer servers to display ROIs in real-time.
-    """
-
-    rois: list  # List of ROI dictionaries with shapes and metadata
-    layer_name: str = "ROIs"  # Name of the layer/overlay
-
-    def to_dict(self):
-        return {
-            MessageFields.TYPE: "rois",
-            MessageFields.ROIS: self.rois,
-            MessageFields.LAYER_NAME: self.layer_name,
-        }
-
-    @classmethod
-    def from_dict(cls, data):
-        return cls(
-            rois=data[MessageFields.ROIS], layer_name=data.get(MessageFields.LAYER_NAME, "ROIs")
-        )
-
-
-@dataclass(frozen=True)
-class ShapesMessage:
-    """Message for Napari shapes layer.
-
-    Napari-specific format for displaying polygon/ellipse shapes.
-    """
-
-    shapes: list  # List of shape dictionaries with type, coordinates, metadata
-    layer_name: str = "ROIs"
-
-    def to_dict(self):
-        return {
-            MessageFields.TYPE: "shapes",
-            MessageFields.SHAPES: self.shapes,
-            MessageFields.LAYER_NAME: self.layer_name,
-        }
-
-    @classmethod
-    def from_dict(cls, data):
-        return cls(
-            shapes=data[MessageFields.SHAPES], layer_name=data.get(MessageFields.LAYER_NAME, "ROIs")
-        )

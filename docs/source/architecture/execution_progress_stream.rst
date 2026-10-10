@@ -24,7 +24,7 @@ Responsibilities
 
 - start/stop listener thread safely
 - consume PUB/SUB messages in non-blocking loop
-- validate payload shape via ``validate_progress_payload``
+- validate the generic progress fields via ``TaskProgress.from_dict``
 - dispatch payloads to callback
 - isolate malformed-message or callback failures without terminating the stream
 - retain one immutable latest observation per execution on ``ExecutionClient``
