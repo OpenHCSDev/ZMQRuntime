@@ -90,7 +90,9 @@ class TypedWireMessage(WireMessage):
     def declared_items(cls, data: Mapping[str, Any]) -> Mapping[str, Any]:
         if data.get(MessageFields.TYPE) != cls.wire_type:
             raise ValueError(f"{cls.__name__} requires type={cls.wire_type!r}.")
-        return {key: value for key, value in data.items() if key != MessageFields.TYPE}
+        return super().declared_items(
+            {key: value for key, value in data.items() if key != MessageFields.TYPE}
+        )
 
 
 # =============================================================================
@@ -923,8 +925,12 @@ class EndpointApplicationCompatibilityError(ValueError):
 
 
 @dataclass(frozen=True)
-class PongResponse(TypedWireMessage, ControlResponse):
-    """Complete typed server-heartbeat response."""
+class PongResponse(TypedWireMessage, WireView, ControlResponse):
+    """Complete typed server-heartbeat response.
+
+    Read as a view: a server may extend its heartbeat with fields of its own
+    (a subclass), and every client still reads the declared heartbeat.
+    """
 
     wire_type: ClassVar[str] = "pong"
 
