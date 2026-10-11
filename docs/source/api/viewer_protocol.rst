@@ -13,6 +13,6 @@ axis values.  The protocol classes preserve, validate, and transmit those
 declared values; they do not inspect image arrays to infer semantic axes.
 
 .. automodule:: zmqruntime.viewer_protocol
-   :members: ViewerProtocolStatus, ViewerControlResponseField, ViewerBatchMessageType, ViewerWireField, ViewerWirePayload, ViewerSourceSpatialWireField, ViewerComponentMode, ViewerComponentModeGroups, ViewerBatchMessageExtraPayload, ViewerSourceSpatialDomainPayload, ViewerBatchMessageWirePayload, viewer_wire_key, ViewerBatchDisplayPayload, viewer_component_mode_value, ViewerBatchItemPayload, ViewerComponentMetadataPayload, ViewerBatchMessagePayload, ViewerTransportEndpoint, ViewerControlReplyHeader, ViewerControlReplyPayload, ViewerAckResponsePayload, ViewerAckPolicy
+   :members:
    :member-order: bysource
    :show-inheritance:
