@@ -100,37 +100,6 @@ class TypedWireMessage(WireMessage):
 # =============================================================================
 
 
-class TaskPhase(Enum):
-    """Generic task phases - base vocabulary for workflow states.
-
-    Applications can extend with their own phase enums.
-    TaskProgress accepts TaskPhase | <AppPhase> union types.
-    """
-
-    INIT = "init"
-    QUEUED = "queued"
-    RUNNING = "running"
-    COMPILE = "compile"
-    SUCCESS = "success"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-
-
-class TaskStatus(Enum):
-    """Generic task status - base vocabulary for status values.
-
-    Applications can extend with their own status enums.
-    TaskProgress accepts TaskStatus | <AppStatus> union types.
-    """
-
-    PENDING = "pending"
-    STARTED = "started"
-    RUNNING = "running"
-    SUCCESS = "success"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-
-
 @dataclass(frozen=True)
 class WorkerState(WireMessage):
     """Generic worker/process information."""
@@ -147,13 +116,14 @@ class TaskProgress(WireView):
     """The generic fields of one progress event.
 
     Applications publish progress events that carry these fields beside their
-    own; the runtime reads and validates only these. Phase and status accept
-    strings (as transported) or application enums (encoded by value).
+    own; the runtime reads and validates only these. Phase and status are the
+    application's vocabulary: an application event narrows their type, and the
+    runtime sees the spelling ``to_jsonable`` gives them on the wire.
     """
 
     execution_id: str
-    phase: str | Enum
-    status: str | Enum
+    phase: object
+    status: object
     percent: float
     timestamp: float
     completed: int
@@ -169,10 +139,6 @@ class TaskProgress(WireView):
             raise ValueError(f"percent must be in [0, 100], got {self.percent}")
         if self.completed > self.total:
             raise ValueError(f"completed ({self.completed}) cannot exceed total ({self.total})")
-        if not isinstance(self.phase, (str, Enum)):
-            raise TypeError(f"phase must be a string or Enum, got {type(self.phase)}")
-        if not isinstance(self.status, (str, Enum)):
-            raise TypeError(f"status must be a string or Enum, got {type(self.status)}")
 
 
 # =============================================================================

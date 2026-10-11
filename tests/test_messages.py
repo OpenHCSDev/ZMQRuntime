@@ -1,4 +1,7 @@
+from dataclasses import dataclass
+
 import pytest
+from metaclass_registry import AutoRegisterMeta
 
 from zmqruntime.client import EndpointClientSession, EndpointCompatibilityClientABC
 from zmqruntime.messages import (
@@ -14,6 +17,7 @@ from zmqruntime.messages import (
     ProcessResourceUsage,
     ResponseType,
     ServerRole,
+    TaskProgress,
     WorkerState,
 )
 
@@ -283,3 +287,27 @@ def test_typed_messages_reject_another_kind() -> None:
         messages.ImageAck.from_dict(messages.ShutdownAck("stopping").to_dict())
     with pytest.raises(ValueError, match="message_type"):
         messages.StatusRequest.from_dict(CancelRequest(execution_id="e-1").to_dict())
+
+
+class _Phase(metaclass=AutoRegisterMeta):
+    __registry_key__ = "name"
+    __skip_if_no_key__ = True
+    name = None
+
+
+class _Compiling(_Phase):
+    name = "compiling"
+
+
+@dataclass(frozen=True)
+class _ApplicationProgress(TaskProgress):
+    phase: type[_Phase]
+    status: type[_Phase]
+
+
+def test_task_progress_carries_the_application_phase_vocabulary() -> None:
+    event = _ApplicationProgress("e-1", _Compiling, _Compiling, 10.0, 1.0, 1, 10)
+    wire = event.to_dict()
+
+    assert wire["phase"] == wire["status"] == "compiling"
+    assert TaskProgress.from_dict(wire).phase == "compiling"
