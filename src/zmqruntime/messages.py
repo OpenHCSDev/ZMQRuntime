@@ -984,13 +984,13 @@ class EndpointLaunch(WireMessage):
     @classmethod
     def by_this_process(
         cls,
-        declared: type,
+        code_root: str,
         audience: "type[EndpointAudience]",
     ) -> Self:
-        """The launch of an endpoint class started by the calling process."""
+        """The launch of an endpoint started by the calling process."""
 
         return cls(
-            code_root=imported_code_root(declared),
+            code_root=code_root,
             owner=ProcessIdentity.current(),
             audience=audience.wire_name,
         )

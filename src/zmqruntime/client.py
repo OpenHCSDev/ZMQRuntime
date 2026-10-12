@@ -35,6 +35,7 @@ from zmqruntime.messages import (
     ProcessExit,
     ProcessIdentity,
     ResponseType,
+    imported_code_root,
 )
 from zmqruntime.startup import (
     IDLE_ENDPOINT_STARTUP_OBSERVER,
@@ -932,8 +933,14 @@ class ZMQClient(ABC):
         """
 
         return EndpointLaunch.by_this_process(
-            type(self), EndpointAudience.of_persistent(self.persistent)
+            self.code_root(), EndpointAudience.of_persistent(self.persistent)
         )
+
+    @classmethod
+    def code_root(cls) -> str:
+        """Where this client's code is imported from (see ``ZMQServer.code_root``)."""
+
+        return imported_code_root(cls)
 
     def _require_started_endpoint(self, endpoint: PongResponse) -> None:
         """A client that starts a server connects to that server and no other."""

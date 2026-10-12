@@ -27,6 +27,7 @@ from zmqruntime.messages import (
     ProcessIdentity,
     ServerRole,
     SocketType,
+    imported_code_root,
 )
 from zmqruntime.transport import (
     TransportEndpoint,
@@ -53,6 +54,16 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
     def server_type(cls) -> str | None:
         """Return this server class's registered runtime role."""
         return cls._server_type
+
+    @classmethod
+    def code_root(cls) -> str:
+        """Where this server's code is imported from.
+
+        An application whose import root has a declared owner overrides this,
+        on its clients too, so both sides state the same fact.
+        """
+
+        return imported_code_root(cls)
 
     @classmethod
     def server_role(cls) -> ServerRole:
@@ -85,7 +96,7 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
         self.application = application
         # A server nobody else launched was started by its own process.
         self.launch = launch or EndpointLaunch.by_this_process(
-            type(self), AnySessionAudience
+            self.code_root(), AnySessionAudience
         )
         self._owner_checked_at = time.monotonic()
         self.zmq_context = None

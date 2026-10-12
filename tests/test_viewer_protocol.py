@@ -213,7 +213,7 @@ def test_streaming_server_inheritance_owns_viewer_process_usage(monkeypatch):
     server._ready = True
     server.log_file_path = None
     server.application = None
-    server.launch = EndpointLaunch.by_this_process(type(server), AnySessionAudience)
+    server.launch = EndpointLaunch.by_this_process(server.code_root(), AnySessionAudience)
 
     pong = server._create_pong_response()
 

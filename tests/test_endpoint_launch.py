@@ -219,7 +219,7 @@ def test_a_server_whose_owner_is_alive_keeps_running():
 
 def test_every_audience_decodes_from_its_wire_name():
     for wire_name, audience in EndpointAudience.__registry__.items():
-        launch = EndpointLaunch.by_this_process(LaunchedServer, audience)
+        launch = EndpointLaunch.by_this_process(LaunchedServer.code_root(), audience)
         assert launch.audience == wire_name
         assert EndpointLaunch.from_argument(launch.to_argument()) == launch
         assert launch.audience_type is audience
