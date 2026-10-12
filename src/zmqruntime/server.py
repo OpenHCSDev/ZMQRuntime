@@ -11,7 +11,6 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 
 import zmq
-from metaclass_registry import AutoRegisterMeta
 
 from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.messages import (
@@ -33,17 +32,15 @@ from zmqruntime.transport import (
 logger = logging.getLogger(__name__)
 
 
-class ZMQServer(ABC, metaclass=AutoRegisterMeta):
+class ZMQServer(ABC):
     """
     ABC for ZMQ servers - dual-channel pattern with ping/pong handshake.
 
-    Registry auto-created and stored as ZMQServer.__registry__.
-    Subclasses auto-register by setting _server_type class attribute.
+    ``_server_type`` is the runtime role a server reports in its pong. Several
+    server classes may serve one role, so servers are not registered by it.
     """
 
-    __registry_key__ = "_server_type"
-
-    _server_type: str | None = None  # Override in subclasses for registration
+    _server_type: str | None = None  # The runtime role reported in the pong
     _server_role = ServerRole.GENERIC
 
     @classmethod
