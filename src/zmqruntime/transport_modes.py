@@ -588,6 +588,13 @@ class IpcTransportDeclaration(TransportDeclaration):
     @classmethod
     @contextmanager
     def private_endpoint(cls, config: ZMQConfig) -> Iterator[ZMQConfig]:
-        """A new socket directory, removed when the caller is done with it."""
-        with tempfile.TemporaryDirectory(prefix=f"{config.app_name}-") as directory:
+        """A new socket directory, removed when the caller is done with it.
+
+        The directory is created beneath ``config.socket_root()``, so the
+        length of its socket paths does not depend on ``TMPDIR``: a path
+        longer than ``zmq.IPC_PATH_MAX_LEN`` cannot be bound.
+        """
+        root = config.socket_root()
+        root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="private-", dir=root) as directory:
             yield replace(config, ipc_socket_dir=directory)
