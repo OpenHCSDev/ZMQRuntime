@@ -16,12 +16,10 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from zmqruntime.streaming.process_manager import VisualizerProcessManager
 from zmqruntime.subscription import CallbackSubscription, SubscriptionABC
-
-if TYPE_CHECKING:
-    from zmqruntime.streaming.process_manager import VisualizerProcessManager
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +40,7 @@ class ViewerInstance:
 
     viewer_type: str
     port: int
-    visualizer: "VisualizerProcessManager"
+    visualizer: VisualizerProcessManager
     state: ViewerState = ViewerState.LAUNCHING
     created_at: float = field(default_factory=time.time)
     last_used: float = field(default_factory=time.time)
@@ -59,21 +57,21 @@ class ViewerInstance:
         return self.visualizer.is_running
 
 
-VisualizerFactory = Callable[[], "VisualizerProcessManager"]
+VisualizerFactory = Callable[[], VisualizerProcessManager]
 
 
 class ViewerReuseAdmissionABC(ABC):
     """Caller-owned constraints admitted inside atomic viewer acquisition."""
 
     @abstractmethod
-    def require_reusable(self, visualizer: "VisualizerProcessManager") -> None:
+    def require_reusable(self, visualizer: VisualizerProcessManager) -> None:
         """Raise without changing the existing instance when reuse is forbidden."""
 
 
 class HealthyViewerReuseAdmission(ViewerReuseAdmissionABC):
     """Generic callers require health but declare no application launch settings."""
 
-    def require_reusable(self, visualizer: "VisualizerProcessManager") -> None:
+    def require_reusable(self, visualizer: VisualizerProcessManager) -> None:
         pass
 
 
@@ -141,7 +139,7 @@ class ViewerStateManager:
         ready_timeout: float = 30.0,
         *,
         reuse_admission: ViewerReuseAdmissionABC = HealthyViewerReuseAdmission(),
-    ) -> Tuple["VisualizerProcessManager", bool]:
+    ) -> Tuple[VisualizerProcessManager, bool]:
         """
         Atomically get existing viewer or create a new one.
 
@@ -294,7 +292,7 @@ class ViewerStateManager:
             except Exception as e:
                 logger.warning("Error stopping viewer during removal: %s", e)
 
-    def get_viewer(self, viewer_type: str, port: int) -> Optional["VisualizerProcessManager"]:
+    def get_viewer(self, viewer_type: str, port: int) -> Optional[VisualizerProcessManager]:
         """Get existing viewer if healthy."""
         key = (viewer_type, port)
         with self._lock:
@@ -509,7 +507,7 @@ def get_or_create_viewer(
     ready_timeout: float = 30.0,
     *,
     reuse_admission: ViewerReuseAdmissionABC = HealthyViewerReuseAdmission(),
-) -> Tuple["VisualizerProcessManager", bool]:
+) -> Tuple[VisualizerProcessManager, bool]:
     """
     Convenience function for atomic viewer get-or-create.
 

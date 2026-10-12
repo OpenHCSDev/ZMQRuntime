@@ -469,9 +469,10 @@ class ControlRequestHeader:
         return cls.from_dict(payload)
 
     def to_dict(self) -> dict[str, object]:
+        declared = to_jsonable(replace(self, operation_deadline=None))
         payload = {
-            MessageFields.TYPE: self.message_type.value,
-            **{name: to_jsonable(getattr(self, name)) for name in self.body_fields()},
+            MessageFields.TYPE: declared["message_type"],
+            **{name: declared[name] for name in self.body_fields()},
         }
         return (payload if self.operation_deadline is None else
                 self.with_observation_budget(payload, self.operation_deadline))
