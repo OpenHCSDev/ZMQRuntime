@@ -106,6 +106,7 @@ class _StartupClient(ZMQClient):
             ready=True,
             server=type(self).__name__,
             server_role=ServerRole.GENERIC,
+            launch=self.launch(),
         )
 
     def _setup_client_sockets(self) -> None:

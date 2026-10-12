@@ -25,13 +25,17 @@ from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.messages import (
     ControlMessageType,
     EndpointApplicationCompatibility,
+    EndpointAudience,
     EndpointControlCapability,
+    EndpointLaunch,
+    EndpointLaunchMismatchError,
     EndpointShutdownRequest,
     MessageFields,
     PongResponse,
     ProcessExit,
     ProcessIdentity,
     ResponseType,
+    imported_code_root,
 )
 from zmqruntime.startup import (
     IDLE_ENDPOINT_STARTUP_OBSERVER,
@@ -920,6 +924,52 @@ class ZMQClient(ABC):
         cancellation = self._connection_cancellation.get()
         return cancellation is not None and cancellation.requested()
 
+    def launch(self) -> EndpointLaunch:
+        """The launch of a server this client starts.
+
+        ``_spawn_server_process`` hands it to the server, which reports it in
+        every heartbeat. It is also this client's side of the comparison when
+        it attaches to a server it did not start.
+        """
+
+        return EndpointLaunch.by_this_process(
+            self.code_root(), EndpointAudience.of_persistent(self.persistent)
+        )
+
+    @classmethod
+    def code_root(cls) -> str:
+        """Where this client's code is imported from (see ``ZMQServer.code_root``)."""
+
+        return imported_code_root(cls)
+
+    def _require_started_endpoint(self, endpoint: PongResponse) -> None:
+        """A client that starts a server connects to that server and no other."""
+
+        if endpoint.launch != self.launch():
+            raise EndpointLaunchMismatchError(
+                self.endpoint.control_url(self.config),
+                "it is not the server this client just started",
+            )
+
+    def _require_usable_endpoint(self, endpoint: PongResponse) -> None:
+        """Attach only to a local server whose code and owner admit this client.
+
+        A remote host is an address the user named; its paths and process
+        ids cannot be compared with this machine's.
+        """
+
+        if not self.transport_mode.declaration.endpoint_is_local(self.host, self.port):
+            return
+        reason = (
+            "it does not report where its code is or which process started it"
+            if endpoint.launch is None
+            else endpoint.launch.refusal(self.launch())
+        )
+        if reason is not None:
+            raise EndpointLaunchMismatchError(
+                self.endpoint.control_url(self.config), reason
+            )
+
     def connect(
         self,
         timeout: float = 10.0,
@@ -1137,6 +1187,13 @@ class ZMQClient(ABC):
                 process.stop()
                 self.endpoint.cleanup(self.config)
                 return self._cancelled_connection_result()
+            try:
+                self._require_started_endpoint(endpoint)
+            except EndpointLaunchMismatchError:
+                # Another server holds the address: stop only the child, and
+                # leave that server's socket files alone.
+                process.stop()
+                raise
             owned_connection = OwnedEndpointConnection(
                 process=process,
                 target=self.endpoint,
@@ -1159,6 +1216,7 @@ class ZMQClient(ABC):
         )
         if endpoint is None or self._connection_cancelled():
             return False
+        self._require_usable_endpoint(endpoint)
         self._setup_client_sockets()
         self._connection = AttachedEndpointConnection(endpoint)
         self._emit_connected_status()

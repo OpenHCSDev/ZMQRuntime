@@ -7,18 +7,22 @@ at the application layer, not in this runtime library.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import pickle
 import signal
 import sys
+from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, fields, replace
 from enum import Enum
+from pathlib import Path
 from typing import Any, ClassVar, Dict, Optional, Tuple
 from uuid import UUID
 
 import psutil
+from metaclass_registry import AutoRegisterMeta
 from python_introspect import dataclass_from_mapping
 from python_introspect.jsonable import JsonValue, to_jsonable
 from typing_extensions import Self
@@ -890,6 +894,153 @@ class EndpointApplicationCompatibilityError(ValueError):
         )
 
 
+class EndpointAudience(ABC, metaclass=AutoRegisterMeta):
+    """Which processes may use a server, and what it does once its owner is gone.
+
+    The wire carries ``wire_name``; the registry is the only list of audiences.
+    """
+
+    __registry_key__ = "wire_name"
+    __skip_if_no_key__ = True
+
+    wire_name: ClassVar[Optional[str]] = None
+
+    @classmethod
+    def of_persistent(cls, persistent: bool) -> "type[EndpointAudience]":
+        """A persistent server outlives its client, so other sessions may use it."""
+
+        return AnySessionAudience if persistent else OwnerOnlyAudience
+
+    @classmethod
+    @abstractmethod
+    def admits(cls, owner: "ProcessIdentity", client: "ProcessIdentity") -> bool:
+        """Whether ``client`` may use a server that ``owner`` started."""
+
+    @classmethod
+    @abstractmethod
+    def orphan_stops(cls, unfinished_work: bool) -> bool:
+        """Whether a server whose owner is gone stops now."""
+
+
+class OwnerOnlyAudience(EndpointAudience):
+    """A server for the process that started it: its owner stops it on disconnect."""
+
+    wire_name = "owner_only"
+
+    @classmethod
+    def admits(cls, owner: "ProcessIdentity", client: "ProcessIdentity") -> bool:
+        return client == owner
+
+    @classmethod
+    def orphan_stops(cls, unfinished_work: bool) -> bool:
+        return True
+
+
+class AnySessionAudience(EndpointAudience):
+    """A server other sessions running the same code may attach to."""
+
+    wire_name = "any_session"
+
+    @classmethod
+    def admits(cls, owner: "ProcessIdentity", client: "ProcessIdentity") -> bool:
+        return True
+
+    @classmethod
+    def orphan_stops(cls, unfinished_work: bool) -> bool:
+        return not unfinished_work
+
+
+def imported_code_root(declared: type) -> str:
+    """Directory the top-level package that defines ``declared`` is imported from.
+
+    Two checkouts of one application import the same class from different
+    directories; this is what tells their servers apart.
+    """
+
+    top_level = sys.modules[declared.__module__.partition(".")[0]]
+    package_paths = tuple(getattr(top_level, "__path__", ()))
+    if package_paths:
+        origin = Path(package_paths[0])
+    else:
+        module_file = getattr(top_level, "__file__", None)
+        origin = Path(module_file) if module_file else Path.cwd() / top_level.__name__
+    return str(origin.resolve().parent)
+
+
+@dataclass(frozen=True)
+class EndpointLaunch(WireMessage):
+    """Where a server's code is, which process started it, and who may use it."""
+
+    code_root: str
+    owner: ProcessIdentity
+    audience: str
+
+    def __post_init__(self) -> None:
+        if not self.code_root:
+            raise ValueError("Endpoint launch requires a code root")
+        if self.audience not in EndpointAudience.__registry__:
+            raise ValueError(f"Unknown endpoint audience {self.audience!r}")
+
+    @classmethod
+    def by_this_process(
+        cls,
+        code_root: str,
+        audience: "type[EndpointAudience]",
+    ) -> Self:
+        """The launch of an endpoint started by the calling process."""
+
+        return cls(
+            code_root=code_root,
+            owner=ProcessIdentity.current(),
+            audience=audience.wire_name,
+        )
+
+    @property
+    def audience_type(self) -> "type[EndpointAudience]":
+        return EndpointAudience.__registry__[self.audience]
+
+    def refusal(self, client: "EndpointLaunch") -> Optional[str]:
+        """Why a client launched as ``client`` may not use this server, if so."""
+
+        if self.code_root != client.code_root:
+            return (
+                f"it runs code from {self.code_root}, "
+                f"and this client runs code from {client.code_root}"
+            )
+        if not self.audience_type.admits(self.owner, client.owner):
+            return (
+                f"process {self.owner.pid} started it for its own use, "
+                f"and this client is process {client.owner.pid}"
+            )
+        return None
+
+    def owner_is_gone(self) -> bool:
+        """Whether the starting process has exited (unknown counts as present)."""
+
+        return self.owner.is_alive() is False
+
+    def to_argument(self) -> str:
+        """One command-line argument a spawned server decodes with ``from_argument``."""
+
+        return json.dumps(self.to_dict())
+
+    @classmethod
+    def from_argument(cls, argument: str) -> Self:
+        return cls.from_dict(json.loads(argument))
+
+
+class EndpointLaunchMismatchError(RuntimeError):
+    """A client refused a server it did not start and may not use."""
+
+    def __init__(self, address: str, reason: str) -> None:
+        self.address = address
+        self.reason = reason
+        super().__init__(
+            f"Refusing the server at {address}: {reason}. "
+            "Stop that server, or give this client an address of its own."
+        )
+
+
 @dataclass(frozen=True)
 class PongResponse(TypedWireMessage, WireView, ControlResponse):
     """Complete typed server-heartbeat response.
@@ -921,6 +1072,7 @@ class PongResponse(TypedWireMessage, WireView, ControlResponse):
     compile_message: Optional[str] = None
     process_usage: Optional[ProcessResourceUsage] = None
     application: Optional[EndpointApplication] = None
+    launch: Optional[EndpointLaunch] = None
 
     def __post_init__(self) -> None:
         """Hold advertised capabilities as one ordered set."""

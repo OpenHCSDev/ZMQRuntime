@@ -383,6 +383,14 @@ class ExecutionServer(ZMQServer, ABC):
 
         return self._kill_worker_processes()
 
+    def has_unfinished_work(self) -> bool:
+        return self._lifecycle.snapshot(uptime=0.0).active_executions > 0
+
+    def stop_orphaned(self) -> None:
+        self._cancel_all_executions()
+        self._kill_worker_processes()
+        super().stop_orphaned()
+
     def _shutdown_workers(self, msg: dict[str, Any], force: bool = False) -> dict[str, Any]:
         _request, error = self._validate_and_parse(msg, EndpointShutdownRequest)
         if error:
