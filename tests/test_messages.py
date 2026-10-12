@@ -313,3 +313,44 @@ def test_task_progress_carries_the_application_phase_vocabulary() -> None:
 
     assert wire["phase"] == wire["status"] == "compiling"
     assert TaskProgress.from_dict(wire).phase == "compiling"
+
+
+@dataclass(frozen=True)
+class _ByName:
+    name: str
+
+
+@dataclass(frozen=True)
+class _ByAlias:
+    name: str
+
+
+@dataclass(frozen=True, slots=True)
+class _SelectRequest(ControlRequestHeader):
+    selector: _ByName | _ByAlias
+
+
+def test_request_body_field_admitting_several_classes_is_tagged_on_the_wire() -> None:
+    request = _SelectRequest(ControlMessageType.STATUS, _ByAlias("a"))
+
+    payload = request.to_dict()
+
+    assert payload == {"type": "status", "selector": {"_ByAlias": {"name": "a"}}}
+    assert _SelectRequest.from_dict(payload) == request
+    assert _SelectRequest.from_wire_payload(request.to_wire_payload()) == request
+    with pytest.raises(ValueError, match="_ByName"):
+        _SelectRequest.from_dict({"type": "status", "selector": {"Unknown": {"name": "a"}}})
+
+
+@dataclass(frozen=True)
+class _NamedProcessIdentity(ProcessIdentity):
+    name: str = ""
+
+
+def test_field_declared_as_one_class_refuses_a_subclass_with_more_fields() -> None:
+    from zmqruntime import messages
+
+    launch = messages.EndpointLaunch("/code", _NamedProcessIdentity(1, 2.0, "n"), "any_session")
+
+    with pytest.raises(ValueError, match="name"):
+        messages.EndpointLaunch.from_dict(launch.to_dict())
