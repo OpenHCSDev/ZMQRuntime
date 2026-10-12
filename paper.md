@@ -19,59 +19,49 @@ bibliography: paper.bib
 
 # Summary
 
-`zmqruntime` provides a distributed execution framework for Python using ZMQ (ZeroMQ) as the transport layer. The key innovation is the **dual-channel pattern**: a control channel for commands (execute, status, cancel) and a data channel for results and streaming output. This separation enables:
+`zmqruntime` runs tasks in a separate server process over ZeroMQ [@Hintjens2013]. Each server binds two sockets, the **dual-channel pattern**: a control channel (REQ/REP) for commands and a data channel (PUB/SUB by default). An application subclasses `ExecutionServer` and `ExecutionClient` and gets:
 
-- **Non-blocking execution**: Submit a job, get an execution ID, poll for results asynchronously
-- **Streaming results**: Large arrays stream directly to disk/memory without buffering in memory
-- **Graceful cancellation**: Cancel running jobs without killing the server
-- **Auto-spawning servers**: If no server is running, the client spawns one automatically
+- **Non-blocking submission**: `submit_execution` returns an execution ID to poll or wait on
+- **Progress streaming**: numbered progress events arrive on the data channel
+- **Cancellation**: cancelling terminates the server's worker processes, not the server
+- **Server start on connect**: `connect` attaches to a usable server or starts one
 
 ```python
-from zmqruntime import ExecutionClient
+import subprocess, sys
+from zmqruntime.execution import ExecutionClient, ExecutionSubmissionResponse
+from zmqruntime.messages import ExecuteRequest
 
-client = ExecutionClient(port=5555)
-exec_id = client.execute(pipeline_code, config_code)  # Non-blocking
-status = client.get_status(exec_id)  # Poll for results
-results = client.get_results(exec_id)  # Retrieve when ready
+class PipelineClient(ExecutionClient):
+    def serialize_task(self, task, config):
+        return ExecuteRequest(subject_id="plate1", pipeline_code=task, config_code=config)
+    def _spawn_server_process(self):
+        return subprocess.Popen([sys.executable, "serve.py", self.launch().to_argument()])
+    def send_data(self, data): ...
+
+client = PipelineClient(port=7777)
+reply = client.submit_execution(pipeline_code, config_code)
+exec_id = ExecutionSubmissionResponse.from_wire(reply).require_execution_id("submit")
+result = client.wait_for_completion(exec_id)
 ```
 
 # Statement of Need
 
-Scientific pipelines often require distributed execution: process thousands of images across multiple machines, stream results to visualization tools, and handle failures gracefully. Traditional approaches either use heavyweight frameworks (Celery, Dask) or hand-written socket code.
+Scientific pipelines often run in a process separate from the interface that submits them. Task frameworks such as Celery and Dask need a broker or scheduler service; hand-written socket code leaves server startup and shutdown to each application.
 
-`zmqruntime` provides a lightweight middle ground: ZMQ's simplicity with structured message types, dual-channel transport for non-blocking execution, and automatic server spawning for development convenience.
+`zmqruntime` sits between the two: typed messages over ZeroMQ and one owner for the server lifecycle. That owner also decides which server a client may use: by port number alone, two checkouts of an application on one machine could attach to each other's servers.
 
 # Software Design
 
-**Dual-Channel Transport**: Control channel (REQ/REP) for commands; data channel (PUSH/PULL) for results. This prevents head-of-line blocking where a slow result transfer blocks incoming commands.
+**Dual-Channel Transport**: The server answers control requests in its main loop and runs executions one at a time on a worker thread, so status and cancel requests are answered while a task runs.
 
-```python
-# Control channel: fast, synchronous
-client.execute(pipeline_code, config)  # Returns execution_id immediately
+**Transports**: `TransportDeclaration` is an abstract base class with one subclass each for TCP and IPC. IPC (Unix sockets) is the default; on Windows only TCP is supported. An IPC endpoint is a file `<prefix>-<port>.sock` below `ZMQConfig.socket_root()` (default `~/.<app_name>`), which an application overrides to keep installations apart. For IPC, `private_endpoint` yields a new socket directory under that root and removes it afterwards.
 
-# Data channel: asynchronous, streaming
-results = client.get_results(execution_id)  # Retrieves streamed results
-```
+**Server Isolation**: Every pong carries an `EndpointLaunch`: the directory the server's code is imported from, the process that started it and its audience. A client attaches to a local server only if the code roots match and the audience admits it; a server started by a non-persistent client admits only that process. Otherwise `connect` raises `EndpointLaunchMismatchError` and leaves that server running. A server stops once its starter has exited; a persistent one first finishes its executions.
 
-**Message Type Dispatch**: Enum-based message types with automatic handler dispatch. Adding a new command requires only defining the enum and implementing the handler method:
-
-```python
-class ControlMessageType(Enum):
-    EXECUTE = "execute"
-    STATUS = "status"
-    CANCEL = "cancel"
-
-    def dispatch(self, server, message):
-        return getattr(server, self.get_handler_method())(message)
-```
-
-**Execution Tracking**: Each execution gets a unique ID. Clients poll for status without blocking. Results are streamed to disk or memory as they arrive.
-
-**Auto-Spawning Servers**: If no server is running on the specified port, the client automatically spawns one. This enables development workflows where users don't need to manually start servers.
+**Message Types**: Requests and responses are dataclasses; `ExecutionServer` maps each `ControlMessageType` member to a handler.
 
 # Research Application
 
-`zmqruntime` powers distributed execution in OpenHCS, enabling high-throughput screening where thousands of images are processed across multiple worker nodes. The dual-channel design allows the orchestrator to submit new jobs while previous jobs are still streaming results.
+`zmqruntime` runs pipeline execution in OpenHCS: the interface submits pipelines to an execution server and follows their progress.
 
 # References
-
