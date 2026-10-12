@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
 from annotated_types import Ge, Gt, Le, MinLen, Predicate
@@ -94,8 +95,8 @@ class ZMQConfig:
     ipc_socket_dir: NonBlankString = "ipc"
     """Directory containing IPC socket files.
 
-    Relative values are resolved beneath the runtime socket root; absolute
-    values select an explicit directory. TCP transport ignores this field.
+    Relative values are resolved beneath ``socket_root()``; absolute values
+    select an explicit directory. TCP transport ignores this field.
     """
 
     ipc_socket_prefix: NonBlankString = "zmq"
@@ -123,3 +124,13 @@ class ZMQConfig:
         validate_annotated_dataclass(self)
         if self.default_port + self.control_port_offset > 65535:
             raise ValueError("default_port plus control_port_offset must not exceed 65535.")
+
+    def socket_root(self) -> Path:
+        """Directory under which this application's socket and lock files live.
+
+        Every process that resolves the same root shares one address
+        namespace: port ``n`` names the same socket file for all of them. An
+        application overrides this to keep installations or sessions apart.
+        """
+
+        return Path.home() / f".{self.app_name}"

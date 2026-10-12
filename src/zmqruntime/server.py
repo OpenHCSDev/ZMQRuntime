@@ -7,23 +7,28 @@ import pickle
 import platform
 import subprocess
 import threading
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 
 import zmq
 from metaclass_registry import AutoRegisterMeta
+from typing_extensions import Self
 
 from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.messages import (
+    AnySessionAudience,
     ControlErrorResponse,
     ControlMessageType,
     ControlResponse,
     EndpointApplication,
+    EndpointLaunch,
     MessageFields,
     PongResponse,
     ProcessIdentity,
     ServerRole,
     SocketType,
+    imported_code_root,
 )
 from zmqruntime.transport import (
     TransportEndpoint,
@@ -50,6 +55,22 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
     def server_type(cls) -> str | None:
         """Return this server class's registered runtime role."""
         return cls._server_type
+
+    @classmethod
+    def code_root(cls) -> str:
+        """Where this server's code is imported from.
+
+        An application whose import root has a declared owner overrides this,
+        on its clients too, so both sides state the same fact.
+        """
+
+        return imported_code_root(cls)
+
+    def launched_by(self, launch: EndpointLaunch) -> Self:
+        """Record the launch the starting client handed this server's process."""
+
+        self.launch = launch
+        return self
 
     @classmethod
     def server_role(cls) -> ServerRole:
@@ -79,6 +100,12 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
         self.log_file_path = log_file_path
         self.data_socket_type = data_socket_type if data_socket_type is not None else zmq.PUB
         self.application = application
+        # Until a starting client's launch is recorded (``launched_by``), the
+        # server was started by its own process.
+        self.launch = EndpointLaunch.by_this_process(
+            self.code_root(), AnySessionAudience
+        )
+        self._owner_checked_at = time.monotonic()
         self.zmq_context = None
         self.data_socket = None
         self.control_socket = None
@@ -178,6 +205,9 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
     def process_messages(self):
         if not self._running:
             return
+        self._stop_if_orphaned()
+        if not self._running:
+            return
 
         # CRITICAL: ZMQ REP sockets require strict recv->send alternation.
         try:
@@ -270,12 +300,46 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
             server_type=self.__class__.server_type(),
             server_role=self.__class__.server_role(),
             application=self.application,
+            launch=self.launch,
             log_file_path=self.log_file_path,
             process_identity=ProcessIdentity.current(),
         )
 
     def request_shutdown(self):
         self._running = False
+
+    orphan_check_interval_seconds = 1.0
+
+    def _stop_if_orphaned(self) -> None:
+        """Stop once the process that launched this server is gone.
+
+        Nothing else stops a server whose client was killed, or a persistent
+        server whose session ended: it would hold its code and workers forever.
+        """
+
+        now = time.monotonic()
+        if now - self._owner_checked_at < self.orphan_check_interval_seconds:
+            return
+        self._owner_checked_at = now
+        if not self.launch.owner_is_gone():
+            return
+        if not self.launch.audience_type.orphan_stops(self.has_unfinished_work()):
+            return
+        logger.info(
+            "Process %s, which started this server, is gone; stopping",
+            self.launch.owner.pid,
+        )
+        self.stop_orphaned()
+
+    def has_unfinished_work(self) -> bool:
+        """Whether this server still has work an absent owner would lose."""
+
+        return False
+
+    def stop_orphaned(self) -> None:
+        """Release this server's work and end its message loop."""
+
+        self.request_shutdown()
 
     @staticmethod
     def kill_processes_on_port(port):
