@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import platform
 import json
+import os
 import socket
 import tempfile
 from abc import ABC, abstractmethod
@@ -12,7 +13,7 @@ from contextlib import AbstractContextManager, contextmanager
 from ipaddress import ip_address
 from pathlib import Path
 from dataclasses import replace
-from typing import ClassVar
+from typing import BinaryIO, ClassVar
 
 import portalocker
 import zmq
@@ -21,6 +22,11 @@ from metaclass_registry import AutoRegisterMeta
 from .config import TransportMode, ZMQConfig
 from .timeouts import OperationCancellation, OperationDeadline
 from .messages import ProcessIdentity
+
+# Startup lock handles this process holds, by lock path. Windows locks are
+# mandatory, so the owner record inside a held lock file is readable and
+# writable only through the handle that holds the lock.
+_HELD_STARTUP_LOCKS: dict[Path, BinaryIO] = {}
 
 
 class TransportDeclaration(ABC, metaclass=AutoRegisterMeta):
@@ -137,7 +143,9 @@ class TransportDeclaration(ABC, metaclass=AutoRegisterMeta):
 
         lock_path = cls.startup_lock_path(port, config)
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        with lock_path.open("a+b") as lock_file:
+        # Read/write without append: the owner record is rewritten in place.
+        descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0))
+        with os.fdopen(descriptor, "r+b") as lock_file:
             while True:
                 if cancellation.requested():
                     yield False
@@ -158,10 +166,27 @@ class TransportDeclaration(ABC, metaclass=AutoRegisterMeta):
                             operation_deadline.remaining_seconds(),
                         )
                     cancellation.wait(wait_seconds)
+            _HELD_STARTUP_LOCKS[lock_path] = lock_file
             try:
                 yield True
             finally:
+                del _HELD_STARTUP_LOCKS[lock_path]
                 portalocker.unlock(lock_file)
+
+    @classmethod
+    @contextmanager
+    def _startup_record(cls, port: int, config: ZMQConfig) -> Iterator[BinaryIO | None]:
+        """Yield the owner record stream: the held lock handle when this process holds it."""
+        path = cls.startup_lock_path(port, config)
+        held = _HELD_STARTUP_LOCKS.get(path)
+        if held is not None:
+            yield held
+            return
+        if not path.exists():
+            yield None
+            return
+        with path.open("r+b") as stream:
+            yield stream
 
     @classmethod
     def startup_owner(cls, port: int, config: ZMQConfig) -> ProcessIdentity | None:
@@ -169,8 +194,11 @@ class TransportDeclaration(ABC, metaclass=AutoRegisterMeta):
 
         Call under startup_lock. Invalid records fail closed, never as absence.
         """
-        path = cls.startup_lock_path(port, config)
-        source = path.read_text(encoding="utf-8") if path.exists() else ""
+        with cls._startup_record(port, config) as stream:
+            if stream is None:
+                return None
+            stream.seek(0)
+            source = stream.read().decode("utf-8")
         return ProcessIdentity.from_dict(json.loads(source)) if source else None
 
     @classmethod
@@ -181,7 +209,9 @@ class TransportDeclaration(ABC, metaclass=AutoRegisterMeta):
         owner: ProcessIdentity,
     ) -> None:
         """Publish an exact invoker or child reservation under the held startup lock."""
-        with cls.startup_lock_path(port, config).open("r+b") as stream:
+        with cls._startup_record(port, config) as stream:
+            if stream is None:
+                raise FileNotFoundError(cls.startup_lock_path(port, config))
             stream.seek(0)
             stream.write(json.dumps(owner.to_dict()).encode("utf-8"))
             stream.truncate()
@@ -205,7 +235,7 @@ class TransportDeclaration(ABC, metaclass=AutoRegisterMeta):
             return False
         if recorded_owner != owner:
             return False
-        with cls.startup_lock_path(port, config).open("r+b") as stream:
+        with cls._startup_record(port, config) as stream:
             stream.truncate(0)
             stream.flush()
         return True

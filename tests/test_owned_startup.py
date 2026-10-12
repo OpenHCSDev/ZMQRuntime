@@ -415,3 +415,30 @@ def test_provisional_release_preserves_unproved_or_changed_owner(
         if record == "unknown":
             with pytest.raises(ValueError):
                 declaration.startup_owner(client.port, client.config)
+
+
+@pytest.mark.parametrize("mode", [TransportMode.TCP, TransportMode.IPC])
+def test_owner_record_uses_only_the_held_lock_handle(client, monkeypatch, mode):
+    """Windows locks are mandatory: a second handle on the held lock file is denied."""
+    declaration = mode.declaration
+    paths = client.transport_mode.declaration.startup_lock_path
+    monkeypatch.setattr(declaration, "startup_lock_path", paths)
+    path = declaration.startup_lock_path(client.port, client.config)
+    owner = ProcessIdentity.current()
+    original_open = type(path).open
+
+    def denied(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError(13, "Permission denied", str(self))
+        return original_open(self, *args, **kwargs)
+
+    with declaration.startup_lock(client.port, client.config, None, OperationCancellation()):
+        with monkeypatch.context() as mandatory:
+            mandatory.setattr(type(path), "open", denied)
+            assert declaration.startup_owner(client.port, client.config) is None
+            declaration.record_startup_owner(client.port, client.config, owner)
+            assert declaration.startup_owner(client.port, client.config) == owner
+            assert declaration.release_startup_owner(client.port, client.config, owner) is True
+            assert declaration.startup_owner(client.port, client.config) is None
+            declaration.record_startup_owner(client.port, client.config, owner)
+    assert declaration.startup_owner(client.port, client.config) == owner
