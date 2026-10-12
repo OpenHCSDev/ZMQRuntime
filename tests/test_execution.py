@@ -741,6 +741,7 @@ class EndpointPolicyExecutionClient(ExecutionClient):
             ready=True,
             server=type(self).__name__,
             server_role=ServerRole.EXECUTION,
+            launch=self.launch(),
         )
 
     def _kill_processes_on_port(self, port: int):
@@ -866,6 +867,7 @@ def test_attach_existing_connects_a_ready_endpoint_without_spawning(monkeypatch)
         ready=True,
         server="EndpointPolicyExecutionClient",
         server_role=ServerRole.EXECUTION,
+        launch=client.launch(),
     )
     monkeypatch.setattr(
         client,
@@ -1200,6 +1202,7 @@ class ConcurrentStartupExecutionClient(ExecutionClient):
             ready=True,
             server="ConcurrentStartupExecutionClient",
             server_role=ServerRole.EXECUTION,
+            launch=self.launch(),
         )
 
     def _spawn_server_process(self):

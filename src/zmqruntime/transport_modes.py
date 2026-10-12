@@ -5,9 +5,10 @@ from __future__ import annotations
 import platform
 import json
 import socket
+import tempfile
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from ipaddress import ip_address
 from pathlib import Path
 from dataclasses import replace
@@ -220,6 +221,15 @@ class TransportDeclaration(ABC, metaclass=AutoRegisterMeta):
     ) -> bool:
         """Return whether both endpoint identities can be acquired together."""
 
+    @classmethod
+    @abstractmethod
+    def private_endpoint(cls, config: ZMQConfig) -> AbstractContextManager[ZMQConfig]:
+        """Yield ``config`` moved to an address no other caller is given.
+
+        A caller that starts its own server takes its address here instead of
+        picking a free port in the shared namespace, which reserves nothing.
+        """
+
 
 class TcpTransportDeclaration(TransportDeclaration):
     """Complete TCP endpoint semantics."""
@@ -342,7 +352,7 @@ class TcpTransportDeclaration(TransportDeclaration):
         port: int,
         config: ZMQConfig,
     ) -> Path:
-        return Path.home() / f".{config.app_name}" / "tcp" / f"{port}.startup.lock"
+        return config.socket_root() / "tcp" / f"{port}.startup.lock"
 
     @classmethod
     def endpoint_is_stale(cls, port: int, config: ZMQConfig) -> bool:
@@ -368,6 +378,19 @@ class TcpTransportDeclaration(TransportDeclaration):
         except OSError:
             return False
         return True
+
+    @classmethod
+    @contextmanager
+    def private_endpoint(cls, config: ZMQConfig) -> Iterator[ZMQConfig]:
+        """TCP ports are one namespace per host: take the first unbound pair.
+
+        Another process can still bind the pair before the caller does. The
+        client's launch check then refuses that server instead of using it.
+        """
+        from .transport import DataControlPortPairAuthority
+
+        pair = DataControlPortPairAuthority.acquire(config, transport_mode=cls.mode)
+        yield replace(config, default_port=pair.data_port)
 
 
 class IpcTransportDeclaration(TransportDeclaration):
@@ -405,7 +428,7 @@ class IpcTransportDeclaration(TransportDeclaration):
     ) -> Path | None:
         if not cls.is_supported():
             return None
-        ipc_dir = Path.home() / f".{config.app_name}" / config.ipc_socket_dir
+        ipc_dir = config.socket_root() / config.ipc_socket_dir
         socket_name = f"{config.ipc_socket_prefix}-{port}{config.ipc_socket_extension}"
         return ipc_dir / socket_name
 
@@ -531,3 +554,10 @@ class IpcTransportDeclaration(TransportDeclaration):
         return not any(
             cls.endpoint_in_use(port, host, config) for port in (data_port, control_port)
         )
+
+    @classmethod
+    @contextmanager
+    def private_endpoint(cls, config: ZMQConfig) -> Iterator[ZMQConfig]:
+        """A new socket directory, removed when the caller is done with it."""
+        with tempfile.TemporaryDirectory(prefix=f"{config.app_name}-") as directory:
+            yield replace(config, ipc_socket_dir=directory)

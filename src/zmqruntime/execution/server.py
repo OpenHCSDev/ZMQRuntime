@@ -21,6 +21,7 @@ from zmqruntime.messages import (
     CancelRequest,
     ControlMessageType,
     EndpointApplication,
+    EndpointLaunch,
     EndpointControlCapability,
     EndpointShutdownRequest,
     ExecuteRequest,
@@ -69,6 +70,7 @@ class ExecutionServer(ZMQServer, ABC):
         transport_mode=None,
         config: ZMQConfig | None = None,
         application: EndpointApplication | None = None,
+        launch: EndpointLaunch | None = None,
     ):
         config = config or ZMQConfig()
         if port is None:
@@ -80,6 +82,7 @@ class ExecutionServer(ZMQServer, ABC):
             transport_mode=transport_mode,
             config=config,
             application=application,
+            launch=launch,
         )
         self._lifecycle = InMemoryExecutionLifecycleEngine(
             finalize_terminal_record=self.finalize_execution_record,
@@ -382,6 +385,14 @@ class ExecutionServer(ZMQServer, ABC):
         """Interrupt worker resources owned by one running execution."""
 
         return self._kill_worker_processes()
+
+    def has_unfinished_work(self) -> bool:
+        return self._lifecycle.snapshot(uptime=0.0).active_executions > 0
+
+    def stop_orphaned(self) -> None:
+        self._cancel_all_executions()
+        self._kill_worker_processes()
+        super().stop_orphaned()
 
     def _shutdown_workers(self, msg: dict[str, Any], force: bool = False) -> dict[str, Any]:
         _request, error = self._validate_and_parse(msg, EndpointShutdownRequest)
