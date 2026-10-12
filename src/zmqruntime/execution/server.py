@@ -21,7 +21,6 @@ from zmqruntime.messages import (
     CancelRequest,
     ControlMessageType,
     EndpointApplication,
-    EndpointLaunch,
     EndpointControlCapability,
     EndpointShutdownRequest,
     ExecuteRequest,
@@ -70,7 +69,6 @@ class ExecutionServer(ZMQServer, ABC):
         transport_mode=None,
         config: ZMQConfig | None = None,
         application: EndpointApplication | None = None,
-        launch: EndpointLaunch | None = None,
     ):
         config = config or ZMQConfig()
         if port is None:
@@ -82,7 +80,6 @@ class ExecutionServer(ZMQServer, ABC):
             transport_mode=transport_mode,
             config=config,
             application=application,
-            launch=launch,
         )
         self._lifecycle = InMemoryExecutionLifecycleEngine(
             finalize_terminal_record=self.finalize_execution_record,

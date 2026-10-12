@@ -13,6 +13,7 @@ from collections.abc import Callable, Mapping
 
 import zmq
 from metaclass_registry import AutoRegisterMeta
+from typing_extensions import Self
 
 from zmqruntime.config import TransportMode, ZMQConfig
 from zmqruntime.messages import (
@@ -65,6 +66,12 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
 
         return imported_code_root(cls)
 
+    def launched_by(self, launch: EndpointLaunch) -> Self:
+        """Record the launch the starting client handed this server's process."""
+
+        self.launch = launch
+        return self
+
     @classmethod
     def server_role(cls) -> ServerRole:
         """Return the protocol-level category of this server."""
@@ -80,7 +87,6 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
         transport_mode: TransportMode | None = None,
         config: ZMQConfig | None = None,
         application: EndpointApplication | None = None,
-        launch: EndpointLaunch | None = None,
     ):
         import zmq
 
@@ -94,8 +100,9 @@ class ZMQServer(ABC, metaclass=AutoRegisterMeta):
         self.log_file_path = log_file_path
         self.data_socket_type = data_socket_type if data_socket_type is not None else zmq.PUB
         self.application = application
-        # A server nobody else launched was started by its own process.
-        self.launch = launch or EndpointLaunch.by_this_process(
+        # Until a starting client's launch is recorded (``launched_by``), the
+        # server was started by its own process.
+        self.launch = EndpointLaunch.by_this_process(
             self.code_root(), AnySessionAudience
         )
         self._owner_checked_at = time.monotonic()

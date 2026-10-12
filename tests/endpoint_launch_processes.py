@@ -84,8 +84,7 @@ def serve(socket_directory: str, port: str, launch: str) -> None:
             host="127.0.0.1",
             transport_mode=TRANSPORT_MODE,
             config=config,
-            launch=EndpointLaunch.from_argument(launch),
-        )
+        ).launched_by(EndpointLaunch.from_argument(launch))
     )
 
 

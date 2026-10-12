@@ -170,13 +170,12 @@ def test_a_server_exits_after_its_owner_is_killed(two_addresses, persistence):
 
 
 def _orphaned_server(audience: type[EndpointAudience]) -> LaunchedServer:
-    server = LaunchedServer(
-        port=41999,
-        launch=EndpointLaunch(
+    server = LaunchedServer(port=41999).launched_by(
+        EndpointLaunch(
             code_root="/checkout-a",
             owner=ProcessIdentity(pid=ProcessIdentity.current().pid, create_time=0.0),
             audience=audience.wire_name,
-        ),
+        )
     )
     server._running = True
     return server
