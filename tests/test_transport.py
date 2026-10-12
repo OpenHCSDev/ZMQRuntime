@@ -196,6 +196,36 @@ def test_transport_mode_owns_ipc_socket_binding() -> None:
 
 
 @pytest.mark.skipif(platform.system() == "Windows", reason="IPC is POSIX-only")
+def test_private_ipc_endpoint_lives_under_the_socket_root_not_tmpdir(
+    monkeypatch, tmp_path
+) -> None:
+    long_tmpdir = tmp_path / ("t" * 120)
+    long_tmpdir.mkdir()
+    monkeypatch.setenv("TMPDIR", str(long_tmpdir))
+    monkeypatch.setattr("tempfile.tempdir", None)
+    config = ZMQConfig(app_name=f"zmqruntime-test-{uuid.uuid4().hex[:8]}")
+    root = config.socket_root()
+    declaration = TransportMode.IPC.declaration
+
+    try:
+        with declaration.private_endpoint(config) as first:
+            with declaration.private_endpoint(config) as second:
+                first_dir = Path(first.ipc_socket_dir)
+                second_dir = Path(second.ipc_socket_dir)
+                assert first_dir != second_dir
+                assert first_dir.parent == second_dir.parent == root
+                assert first_dir.is_dir() and second_dir.is_dir()
+                socket_path = declaration.socket_path(65535, first)
+                assert socket_path.parent == first_dir
+                assert len(str(socket_path).encode()) <= zmq.IPC_PATH_MAX_LEN
+        assert not first_dir.exists() and not second_dir.exists()
+        assert list(long_tmpdir.iterdir()) == []
+    finally:
+        if root.exists():
+            root.rmdir()
+
+
+@pytest.mark.skipif(platform.system() == "Windows", reason="IPC is POSIX-only")
 def test_ipc_startup_lock_obeys_total_operation_deadline() -> None:
     config = ZMQConfig(
         app_name=f"zmqruntime-lock-{uuid.uuid4().hex}",

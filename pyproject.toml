@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "zmqruntime"
-version = "0.6.3"
+version = "0.6.4"
 description = "Generic ZMQ-based distributed execution framework"
 authors = [{name = "Tristan Simas", email = "tristan.simas@mail.mcgill.ca"}]
 license = {text = "MIT"}
@@ -26,7 +26,7 @@ keywords = ["zmq", "zeromq", "distributed", "execution", "rpc", "messaging"]
 
 dependencies = [
     "annotated-types>=0.7.0",
-    "metaclass-registry>=0.1.6",
+    "metaclass-registry>=0.4.0",
     "numpy>=1.24",
     "portalocker>=2.8.2",
     "pyzmq>=22.0",
