@@ -40,7 +40,7 @@ jobs:
         run: python -m build
 
       - name: Validate immutable release declaration
-        uses: OpenHCSDev/python-introspect/.github/actions/validate-python-release@5bb79d5edb7250083a09ab77b2d9177e3ba202ab
+        uses: OpenHCSDev/python-introspect/.github/actions/validate-python-release@a9428c3b5a5f7c4091049ac977dff8fd48f76b2e
 
       - name: Check distribution
         run: python -m twine check dist/*
