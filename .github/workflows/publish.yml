@@ -40,7 +40,7 @@ jobs:
         run: python -m build
 
       - name: Validate immutable release declaration
-        uses: OpenHCSDev/python-introspect/.github/actions/validate-python-release@a9428c3b5a5f7c4091049ac977dff8fd48f76b2e
+        uses: OpenHCSDev/python-introspect/.github/actions/validate-python-release@510657068f72e0b9e7b714f891430a318fb26e9b
 
       - name: Check distribution
         run: python -m twine check dist/*
@@ -49,7 +49,7 @@ jobs:
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           files: dist/*
           generate_release_notes: true
