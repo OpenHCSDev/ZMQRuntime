@@ -8,11 +8,14 @@ therefore do not pay the zmq/psutil/threading import cost.
 
 from __future__ import annotations
 
-from importlib.metadata import version as _distribution_version
+from importlib.metadata import PackageNotFoundError, version as _distribution_version
 
 from python_introspect.public_api import lazy_exports
 
-__version__ = _distribution_version("zmqruntime")
+try:
+    __version__ = _distribution_version("zmqruntime")
+except PackageNotFoundError:
+    __version__ = "0.0.0"
 
 __all__ = (
     "__version__",
